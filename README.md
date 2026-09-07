@@ -161,6 +161,7 @@ go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
 ## 开源与授权
 
 - 使用说明：[USAGE.md](USAGE.md)
+- 后续优化路线：[ROADMAP.md](ROADMAP.md)（会话抖动、屏幕流/截图跨平台、Agent 记忆、横向移动等规划）
 - 安全披露：[SECURITY.md](SECURITY.md)
 - License：[MIT](LICENSE)
 - **免责声明**：仅用于授权测试与学习研究，禁止任何未授权的入侵、攻击或数据窃取行为；使用者后果自负。

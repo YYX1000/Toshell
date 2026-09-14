@@ -513,26 +513,57 @@ func (s *Server) webConfig() auth.WebGateConfig {
 		TrustProxyHeaders: cfg.Server.TrustProxyHeaders,
 		StealthKey:        cfg.Web.StealthKey,
 		StealthCookie:     cfg.Web.StealthCookie,
+		EntryChallenge:    cfg.Web.EntryChallenge,
 	}
 }
 
-// gateEntryHandler 隐蔽入口：GET /__gate?k=<stealth_key>
+// gateEntryHandler 隐蔽入口：GET /__gate[?k=<stealth_key>]
 //
-// disguise 模式下服务端不返回 401 挑战（浏览器不会弹认证框），且浏览器不会把
-// URL 中的 Basic 凭据带到 JS/CSS 子资源请求上，因此浏览器无法进入控制台。
-// 本入口用一次带密钥的访问种下 HttpOnly 入口 Cookie，之后整个控制台
-// （含静态资源与 API）凭该 Cookie 通行；密钥错误则保持 404 伪装。
+// disguise 模式下服务端对 / 不返回 401 挑战（浏览器不会弹认证框），且浏览器不会把
+// URL 中内嵌的 Basic 凭据带到 JS/CSS 子资源请求上，因此浏览器无法进入控制台。
+// 本入口提供两种进入方式：
+//  1. /__gate?k=<密钥>            —— 直接带密钥进入（适合书签，无需输入）
+//  2. /__gate（浏览器弹认证框）    —— 该路径返回 401 挑战，输入控制台防护的
+//     用户名/密码后种下入口 Cookie；只有这个路径给挑战，/ 与其他路径依旧 404 伪装。
+//
+// 成功后种下 HttpOnly 入口 Cookie，之后整个控制台（含静态资源与 API）凭 Cookie 通行。
 func (s *Server) gateEntryHandler(w http.ResponseWriter, r *http.Request) {
 	cfg := s.webConfig()
-	if cfg.Disabled() || strings.TrimSpace(cfg.StealthKey) == "" {
+	if cfg.Disabled() {
 		http.NotFound(w, r)
 		return
 	}
-	key := r.URL.Query().Get("k")
-	if !auth.StealthKeyMatches(cfg.StealthKey, key) {
-		http.NotFound(w, r) // 密钥不对：与未认证探测表现一致，不泄露入口存在
+
+	// 方式 1：入口密钥
+	if auth.StealthKeyMatches(cfg.StealthKey, r.URL.Query().Get("k")) {
+		s.issueGateCookie(w, r, cfg)
 		return
 	}
+
+	// 方式 2：Basic 凭据（浏览器弹框）
+	if user, pass, ok := r.BasicAuth(); ok {
+		if auth.ValidateGateBasic(cfg, user, pass) {
+			s.issueGateCookie(w, r, cfg)
+			return
+		}
+		// 凭据错误：保持在入口路径上的挑战，让浏览器重新提示（不泄露其他信息）
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	// 未提供任何凭据：入口路径可给出 401 挑战（便于浏览器弹框）；
+	// 关闭 entry_challenge 时与普通路径一致返回 404，不暴露入口存在。
+	if cfg.EntryChallenge {
+		w.Header().Set("WWW-Authenticate", `Basic realm="restricted"`)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+	http.NotFound(w, r)
+}
+
+// issueGateCookie 种下入口 Cookie 并跳转首页（去掉 URL 中的密钥，避免留在历史记录）。
+func (s *Server) issueGateCookie(w http.ResponseWriter, r *http.Request, cfg auth.WebGateConfig) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     cfg.GateCookieName(),
 		Value:    auth.GateCookieValue(cfg.StealthKey),
@@ -542,8 +573,7 @@ func (s *Server) gateEntryHandler(w http.ResponseWriter, r *http.Request) {
 		Secure:   r.TLS != nil,
 		MaxAge:   30 * 24 * 3600, // 30 天
 	})
-	logging.Info("api", "Web gate stealth entry used from %s (cookie issued)", r.RemoteAddr)
-	// 跳转到首页并去掉密钥，避免密钥留在地址栏/历史记录中
+	logging.Info("api", "Web gate entry used from %s (cookie issued)", r.RemoteAddr)
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 

@@ -47,6 +47,8 @@ type WebGateConfig struct {
 	StealthKey string
 	// StealthCookie 入口 Cookie 名（默认 tsh_gate）。
 	StealthCookie string
+	// EntryChallenge 入口路径是否返回 401 挑战（供浏览器弹认证框）。
+	EntryChallenge bool
 }
 
 // DefaultStealthCookie 入口 Cookie 的默认名称。
@@ -84,6 +86,17 @@ func GenerateStealthKey() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(raw), nil
+}
+
+// ValidateGateBasic 校验入口路径上的 Basic 凭据（与 WebGate 同一套用户名/密码）。
+func ValidateGateBasic(cfg WebGateConfig, user, pass string) bool {
+	if cfg.Disabled() {
+		return false
+	}
+	if !subtleCompare(user, cfg.User) {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(cfg.PasswordHash), []byte(pass)) == nil
 }
 
 // Disabled 报告防护是否实际生效（未启用或凭据不完整时视为不生效）。

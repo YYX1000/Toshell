@@ -53,6 +53,11 @@ type WebConfig struct {
 	StealthKey string `mapstructure:"stealth_key" json:"-"`
 	// StealthCookie 入口 Cookie 名（默认 tsh_gate）。
 	StealthCookie string `mapstructure:"stealth_cookie" json:"stealth_cookie"`
+	// EntryChallenge 是否允许在入口路径 /__gate 上返回 401 挑战（默认 true）：
+	// disguise 模式下浏览器不会对 / 弹认证框，但在入口路径上给出挑战后，
+	// 浏览器会弹出认证框，输入控制台防护的用户名/密码即可种下入口 Cookie。
+	// 只有 /__gate 会给出挑战；其他任何路径（含 /）依旧 404 伪装。
+	EntryChallenge bool `mapstructure:"entry_challenge" json:"entry_challenge"`
 }
 
 // AIConfig AI 副驾驶（LLM 聊天 + 工具调用）配置。
@@ -513,6 +518,8 @@ func Load(configPath string) (*Config, error) {
 	// 隐蔽入口（disguise 模式下浏览器进入控制台的唯一方式）
 	viper.SetDefault("web.stealth_key", "")
 	viper.SetDefault("web.stealth_cookie", "tsh_gate")
+	// 入口路径 /__gate 上返回 401 挑战，让浏览器能弹认证框（仅该路径；/ 仍 404）
+	viper.SetDefault("web.entry_challenge", true)
 
 	viper.SetDefault("ai.enabled", false)
 	viper.SetDefault("ai.base_url", "")

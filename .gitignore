@@ -88,3 +88,6 @@ cmd/server/webdist/
 release/bin/
 # release 发布包 USAGE 说明含真实默认凭据示例，开源不提交（release 内容保留不动）
 release/USAGE.md
+
+# 构建临时文件（Go 在 Windows 上覆盖 exe 时的残留）
+*.exe~

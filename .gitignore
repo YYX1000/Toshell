@@ -73,6 +73,9 @@ data/backup/*
 .check64.c
 *.zip
 *.html
+# 例外：Vite 入口 HTML 是前端源码的一部分，必须入库
+# （曾被 *.html 误伤，导致 CI/干净检出 vite build 报 Could not resolve entry module "index.html"）
+!web/index.html
 release/implants/
 
 # ── 前端 tsc 构建产物 / 含内部凭据的测试脚本（勿提交） ──
@@ -84,6 +87,8 @@ web/ws_test.cjs
 # 前端构建产物（CI 构建后生成，勿提交）
 web/dist/
 cmd/server/webdist/
+# TypeScript 增量构建缓存（含本机绝对路径，跨机器会误导 tsc，勿提交）
+web/*.tsbuildinfo
 # 多系统发布二进制（仅作为 GitHub Release 资产，不提交）
 release/bin/
 # release 发布包 USAGE 说明含真实默认凭据示例，开源不提交（release 内容保留不动）

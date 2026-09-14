@@ -8,7 +8,7 @@
 set -e
 cd "$(dirname "$0")"
 
-VERSION="v1.3.1"
+VERSION="v1.3.2"
 CFG_FILE="configs/server.yaml"
 EXAMPLE="configs/server.yaml.example"
 

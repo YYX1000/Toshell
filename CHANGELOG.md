@@ -3,6 +3,35 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含会话抖动、屏幕流/截图跨平台、远程工具加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
+## [v1.3.2] - 2026-09-14
+
+重点：Web 控制台防资产测绘、配置写入可靠性、跨平台载荷构建修复（对应 issue #1 / #2）。
+
+### 🛡 Web 控制台防资产测绘（issue #1）
+- **基础认证前置门槛**：新增 `web.*` 配置（`basic_auth_enabled` / `basic_auth_user` / `basic_auth_password`(bcrypt) / `unauth_mode` / `decoy_title` / `allow_cidrs`），在控制台与全部管理 API 前加一道认证，阻止 Fofa/Quake/Hunter 等测绘引擎抓取收录；设置页「安全 → 防资产测绘」可视化配置，保存即热生效。
+- **未认证响应双模式**：`basic` = 401 + 认证挑战（浏览器弹框，前端照常可用，默认）；`disguise` = 纯 404 伪装（不泄露任何 C2 特征）。
+- **隐蔽入口**：disguise 模式下浏览器无法弹认证框（服务端不返回 401 挑战，且浏览器不会把 URL 内嵌凭据带到 JS/CSS 子资源请求），新增 `GET /__gate`：
+  - `/__gate?k=<stealth_key>` 带密钥直接进入（可书签，无需输入）；
+  - `/__gate` 返回 401 挑战，浏览器弹框输入控制台凭据即可进入；
+  - 两者都只种下 HttpOnly 入口 Cookie（30 天），之后前端与 API 凭 Cookie 通行；`/` 与其他任何路径依旧 404 伪装。
+- **不破坏业务**：植入端 `/api/v1/implant/*`（注册/心跳/结果/一条命令上线载荷/UAC 一次性载荷）完全豁免；已持有 API Key / JWT 的脚本、AI 副驾驶与 MCP 调用继续放行；C2 监听器端口不受影响。
+- 附带加固：`/api/v1/health` 纳入防护（原先 200 响应是测绘指纹）、`robots.txt` 拒绝收录、入口密钥用 hex 生成（base64 的 `+` `/` 放进 URL 查询串会被解析坏）。
+
+### ⚙️ 配置写入可靠性（issue #2 第一部分）
+- **原子写 + 读-改-写**：配置保存改为 YAML 节点树「只改目标 key → 同目录临时文件 fsync → rename 原子替换」，不再使用 `viper.WriteConfig()`。修复点：不再丢字段、**不再抹掉手工维护的注释与字段顺序**、写入中途中断不会损坏配置。
+- **凭据必须落盘**：首次启动生成的 admin 密码 / JWT key / 监听加密 key 若写入失败，将**直接终止启动并打印配置路径**（此前只打 WARNING 继续运行，导致每次重启都重新生成随机密码 → 用户被永久锁在门外）；配置文件不存在时自动创建（含父目录）。
+- 启动日志打印实际使用的配置路径，避免"改了 A 文件、服务端读的是 B 文件"这类排查困难。
+- 修复设置页保存破坏 API Key 的事故：前端脱敏回显值（`Qing****2026`）曾被当作新密钥整组写回，现前端不再回传该字段、后端忽略含 `****` 的条目。
+- 测试新增 14 项（auth 10 + config 4：伪装/挑战/凭据/植入端豁免/API Key 放行/CIDR/入口 Cookie、注释保留、缺文件创建、示例文件保护）。
+
+### 🔧 跨平台载荷构建修复（issue #2 第二部分）
+- **非 Windows full 档构建失败**：`stompShellcode` 仅存在 `windows && !light` 与 `light` 两个实现，macOS/Linux 的 full 档报 `undefined: stompShellcode`；补 `!windows && !light` 空实现。
+- **非 Windows light 档编译失败**：`features_unix.go` / `injection_unix.go` / `screen_stream_unix.go` 构建标签只写了 `!windows`，与 `features_stub_light.go` 重复定义；补齐 `&& !light`。
+- 实测验收：`{windows,linux,darwin} × {amd64,arm64} × {full,light}` 构建矩阵全部通过（此前仅 Windows 可用）。
+
+### 🧪 工程
+- 新增本地打包脚本 `scripts/package_release.ps1`（复刻 CI 布局，输出 6 平台 zip）；CI `-ldflags` 版本号同步。
+
 ## [v1.3.1] - 2026-09-08
 
 重点：Agent 执行可靠性重构、会话实时事件推送、Web 控制台体验优化。

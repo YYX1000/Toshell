@@ -1,5 +1,4 @@
-//go:build !windows
-
+//go:build !windows && !light
 package main
 
 // handlePersistence 持久化功能仅支持 Windows

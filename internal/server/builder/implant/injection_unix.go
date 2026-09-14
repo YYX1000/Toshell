@@ -1,5 +1,4 @@
-//go:build !windows
-
+//go:build !windows && !light
 package main
 
 func handleProcessInject(data string) (string, int32, string) {

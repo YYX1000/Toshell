@@ -1,5 +1,4 @@
-//go:build !windows
-
+//go:build !windows && !light
 package main
 
 // handleScreenStream 实时屏幕流：非 Windows 平台不支持。

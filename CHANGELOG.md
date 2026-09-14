@@ -3,9 +3,21 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含会话抖动、屏幕流/截图跨平台、远程工具加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
-## [未发布] - 下一步
+## [v1.3.3] - 2026-09（待发布，等待实测确认）
 
-重点：ROADMAP P0 两项（会话掉线抖动、屏幕流/截图可控）、issue #7（飞书通知）、多平台 webhook 与一键上线命令。
+重点：ROADMAP P0 两项（会话掉线抖动、屏幕流/截图可控）、内存模块 EXE 带参执行、平台工具库、BYOVD 驱动可插拔、issue #6 / #7。
+
+### 🧠 内存模块支持 EXE 带参数执行
+- 新增 `fileless_exec` 的 **`exe_mem`**：植入端反射式映射 EXE（映射/重定位/导入表）后 `CreateThread` 到入口点，并把 `args` **注入 PEB 命令行**（`RTL_USER_PROCESS_PARAMETERS.CommandLine`），使被执行的 EXE 的 `argv` 真正拿到参数。实测：反射执行测试 PE 后其 `argv` 为 `["tool.exe","mem-hello","42"]`（`argc=3`）。
+- 新增 `wait_ms`：等待执行线程结束并回传退出码；0 = 立即返回（后台线程继续运行）。
+- 退出保护：对映射镜像 **IAT 里的 `ExitProcess`/`TerminateProcess`/`RtlExitUserProcess` 重定向到 `ExitThread`**，避免载荷退出时带走植入体（局限见下）。
+- 架构校验：32 位 PE 无法进 64 位进程时**明确报错**，不再静默失败。
+- 前端「内存执行」面板新增 `exe_mem` 选项、`args`（EXE 命令行）、`entry`（argv[0]）与 `wait_ms` 输入，并按 kind 给出提示。
+- 修正既有 `exe`（donut）路径：原先 `Thread=0 + ExitOpt=2`，内存执行的程序结束时调用 `RtlExitUserProcess` 会**把植入体一起杀掉**；改为 `Thread=1 + ExitOpt=1`（独立线程 + 只退线程），并支持把 `args` 作为 donut `Parameters`（上限 255 字节，超长直接报错）。
+- **已知边界**（写在面板提示与任务输出里）：`exe_mem` 要求与植入体同架构；**不要用它跑 Go 编译的 EXE**（宿主也是 Go，两个 runtime 冲突）；载荷 CRT 内部直接调用的 `ExitProcess` 拦不住（彻底解决需 hook 系统 API），「跑完即退」的工具请走落地执行；内存执行不重定向 stdout，故无控制台输出。
+
+### 🔢 版本
+- 全量版本号更新为 **1.3.3**（服务端 `-version`、Web、About、README、USAGE、部署脚本、打包脚本、CDN 指南），CI 的 `main.version` 改为跟随 tag（`${GITHUB_REF_NAME#v}`），避免每次发版手改 workflow。
 
 ### 📡 会话稳定性：不再「离线几秒又在线」（ROADMAP P0-1）
 - **判活阈值强制留余量**：实际超时 = `max(listener.heartbeat_timeout, 3 × 实测心跳间隔)`，并在启动日志里写明「margin 3x」。此前 `heartbeat_timeout=60s` 与心跳间隔 60s 几乎零余量，任何一次心跳迟到（调度抖动/网络排队/休眠唤醒）都会被判离线，下一个心跳又恢复，前端表现为闪断。

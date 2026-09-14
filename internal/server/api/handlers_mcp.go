@@ -628,7 +628,14 @@ func (s *Server) invokeTool(name string, params map[string]string) (interface{},
 		if rerr != nil {
 			return nil, fmt.Errorf("read tool failed: %w", rerr)
 		}
-		taskInfo, cerr := s.taskMgr.CreateFilelessExec(sid, kind, base64.StdEncoding.EncodeToString(data), params["args"], "")
+		// exe/exe_mem：args 会作为被内存执行程序的命令行参数注入
+		waitMs := 0
+		if v := params["wait_ms"]; v != "" {
+			if n, aerr := strconv.Atoi(v); aerr == nil {
+				waitMs = n
+			}
+		}
+		taskInfo, cerr := s.taskMgr.CreateFilelessExec(sid, kind, base64.StdEncoding.EncodeToString(data), params["args"], params["entry"], waitMs)
 		if cerr != nil {
 			return nil, cerr
 		}

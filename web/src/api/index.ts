@@ -113,11 +113,13 @@ export const sessionApi = {
   pplKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/ppl-kill`, { processes }),
   filelessExec: (id: string, payload: {
-    kind: 'shellcode' | 'bof' | 'dll' | 'exe'
+    kind: 'shellcode' | 'bof' | 'dll' | 'exe' | 'exe_mem'
     payload_b64: string
     args?: string
     entry?: string
     arch?: string
+    /** exe_mem：等待执行线程结束的毫秒数（0/省略 = 不等待） */
+    wait_ms?: number
   }) =>
     api.post<{ task_id: number; task_type: string; kind: string; message: string }>(`/sessions/${id}/fileless-exec`, payload),
   // UAC 提权：fodhelper 拉起高完整性进程，内存执行 shellcode 回连上线

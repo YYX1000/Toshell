@@ -43,6 +43,11 @@ func loadDLL(data string) (string, int32, string) {
 	return "", -1, "插件未包含在精简构建中"
 }
 
+// loadEXEMem 反射式内存执行 EXE（含参数）：精简构建裁剪（见 memexe_windows.go）
+func loadEXEMem(dataB64, args, imageName string, waitMs int) (string, int32, string) {
+	return "", -1, "内存执行 EXE 未包含在精简构建中"
+}
+
 func loadShellcode(data string) (string, int32, string) {
 	return "", -1, "插件未包含在精简构建中"
 }

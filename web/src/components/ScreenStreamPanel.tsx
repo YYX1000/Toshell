@@ -25,6 +25,17 @@ interface StreamParams {
 
 const DEFAULT_PARAMS: StreamParams = { fps: 2, quality: 70, max_kbps: 0, monitor: 0, max_width: 0 }
 
+/** 参数名标签样式：把接口字段名（fps/quality/...）显著标出，避免只看中文名不知对应字段 */
+const paramKeyStyle: CSSProperties = {
+  fontFamily: 'var(--font-mono, monospace)',
+  fontSize: 11,
+  padding: '1px 5px',
+  borderRadius: 3,
+  background: 'var(--bg-deep, #12121a)',
+  border: '1px solid var(--border, #3a3a4a)',
+  color: 'var(--text-dim, #9a9aab)',
+}
+
 export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
   const [streaming, setStreaming] = useState(false)
   const [frame, setFrame] = useState<StreamFrame | null>(null)
@@ -167,31 +178,31 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
       {showParams && (
         <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12, padding: '10px 12px', border: '1px solid var(--border, #3a3a4a)', borderRadius: 6, background: 'var(--bg-elevated, #1e1e2a)', fontSize: 12 }}>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            帧率 (1-10)
+            帧率 <code style={paramKeyStyle}>fps</code> (1-10)
             <input type="number" min={1} max={10} value={params.fps}
               onChange={(e) => setParams((p) => ({ ...p, fps: Number(e.target.value) || 1 }))}
               style={{ width: 72, padding: '4px 6px' }} />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-            JPEG 画质 (20-95)
+            JPEG 画质 <code style={paramKeyStyle}>quality</code> (20-95)
             <input type="number" min={20} max={95} value={params.quality}
               onChange={(e) => setParams((p) => ({ ...p, quality: Number(e.target.value) || 70 }))}
               style={{ width: 72, padding: '4px 6px' }} />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 不限；超限时植入端自动降画质/降帧">
-            带宽上限 KB/s
+            带宽上限 <code style={paramKeyStyle}>max_kbps</code> (KB/s)
             <input type="number" min={0} value={params.max_kbps}
               onChange={(e) => setParams((p) => ({ ...p, max_kbps: Number(e.target.value) || 0 }))}
               style={{ width: 90, padding: '4px 6px' }} />
           </label>
-          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 全部显示器拼接；N = 第 N 个显示器">
-            显示器
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 全部显示器拼接；N = 第 N 个显示器（1 通常是主显示器）">
+            显示器 <code style={paramKeyStyle}>monitor</code> (0=全部)
             <input type="number" min={0} max={16} value={params.monitor}
               onChange={(e) => setParams((p) => ({ ...p, monitor: Number(e.target.value) || 0 }))}
               style={{ width: 72, padding: '4px 6px' }} />
           </label>
           <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 原始分辨率；如 1280 可大幅降低带宽">
-            缩放宽度
+            缩放宽度 <code style={paramKeyStyle}>max_width</code> (0=原始)
             <input type="number" min={0} value={params.max_width}
               onChange={(e) => setParams((p) => ({ ...p, max_width: Number(e.target.value) || 0 }))}
               style={{ width: 90, padding: '4px 6px' }} />

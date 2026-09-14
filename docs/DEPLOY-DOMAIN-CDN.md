@@ -1,6 +1,6 @@
 # 域名 + CDN 上线使用说明
 
-> 适用版本：**v1.3.2+** ｜ 对应 [issue #3](https://github.com/iQingshan/Toshell/issues/3)
+> 适用版本：**v1.3.3+** ｜ 对应 [issue #3](https://github.com/iQingshan/Toshell/issues/3)
 > 目标：把植入端回连从「裸 IP + 端口」改成「合法域名（+ CDN / 反代）」，让出站流量看起来像正常 HTTPS 访问，提升存活与过白名单能力。
 
 **结论：支持。** 本项目通过 **HTTP(S) 轮询监听器 + 流量拟态 + 域前置** 支持三种上线方式，按自己的条件选一种即可：
@@ -60,7 +60,7 @@ listener:
     mimicry_site: ""          # 想更真实就填一个真站，如 https://www.example.com
 ```
 
-> **强烈建议**：控制台端口（默认 `18081`）**不要**挂到 CDN 上，并按 v1.3.2 的能力给它加一层防测绘（见文末「安全建议」）。
+> **强烈建议**：控制台端口（默认 `18081`）**不要**挂到 CDN 上，并按 v1.3.3 的能力给它加一层防测绘（见文末「安全建议」）。
 
 ### 2) CDN 侧配置
 
@@ -195,7 +195,7 @@ server {
 ## 六、安全建议
 
 1. **控制台与 C2 分离**：只把 C2 监听端口放到 CDN/公网；控制台端口尽量只对运维网段开放。
-2. **启用控制台防护（v1.3.2+）**：`web.basic_auth_enabled: true`，并选择未认证响应方式——`basic`（401 弹认证框）或 `disguise`（纯 404 伪装）。disguise 模式下用入口 `/__gate?k=<stealth_key>`（或访问 `/__gate` 弹框输入凭据）进入控制台。详见 `configs/server.yaml.example` 的 `web:` 段。
+2. **启用控制台防护（v1.3.3+）**：`web.basic_auth_enabled: true`，并选择未认证响应方式——`basic`（401 弹认证框）或 `disguise`（纯 404 伪装）。disguise 模式下用入口 `/__gate?k=<stealth_key>`（或访问 `/__gate` 弹框输入凭据）进入控制台。详见 `configs/server.yaml.example` 的 `web:` 段。
 3. **密钥与域名轮换**：`encryption_key`、`jwt_key`、CDN 域名与 `front_domain` 建议定期更换；更换 `encryption_key` 后必须重新生成全部植入端。
 4. **最小暴露**：CDN 只回源必要端口；源站安全组只放行 CDN 回源 IP 段（CDN 提供商一般提供回源 IP 列表）。
 5. **合规**：仅在你获得书面授权的目标与范围内使用。

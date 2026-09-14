@@ -331,9 +331,22 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 
 ---
 
-## 七、免责声明
+## 七、联系方式与支持
 
-本工具仅限**授权测试**与安全研究使用。使用者须自行遵守当地法律法规,因滥用造成的后果与作者无关。
+| 渠道 | 地址 | 用途 |
+|---|---|---|
+| GitHub | <https://github.com/iQingshan/Toshell> | 源码、Release、Wiki |
+| Issue | <https://github.com/iQingshan/Toshell/issues> | 使用问题、功能建议、Bug 反馈(建议附版本/系统环境/复现步骤/日志) |
+| 邮箱 | <qingshan@88.com> | 商务合作、授权咨询、漏洞与滥用披露 |
+| 作者主页 | <https://github.com/iQingshan> | 其它工具与项目 |
+
+提 Issue 前建议先检索已有 Issue 与本文「六、常见问题」;安全/滥用问题请走邮件,**不要**在公开 Issue 里贴可利用细节(详见 `SECURITY.md`)。
+
+---
+
+## 八、免责声明
+
+本工具仅限**授权测试**与安全研究使用。使用者须自行遵守当地法律法规,因滥用造成的后果与作者无关。详见 `LICENSE` 与 `DISCLAIMER.md`。
 
 ---
 

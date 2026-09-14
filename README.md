@@ -3,7 +3,7 @@
 > 自托管的 C2（命令与控制）远程管理平台，用于**授权红队演练、渗透测试与安全研究**。
 > **仅限获得授权后使用。** 严禁未授权的入侵 / 攻击 / 数据窃取。
 
-**v1.3.3** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee
+**v1.3.3** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
 
 ---
 
@@ -160,11 +160,29 @@ go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
 
 复制 `configs/server.yaml.example` → 修改 `public_host / api_keys / jwt_key / encryption_key / admin_password`；更多字段说明见 [USAGE.md](USAGE.md)。设置页可热更新多数配置（无需重启）。
 
+## 联系方式 / Contact
+
+| 渠道 / Channel | 地址 / Link |
+| :--- | :--- |
+| 作者 / Author | 青山（iQingshan） |
+| GitHub | [@iQingshan](https://github.com/iQingshan) |
+| 邮箱 / Email | [qingshan@88.com](mailto:qingshan@88.com) |
+| Issue / 功能建议 | [提交 Issue](https://github.com/iQingshan/Toshell/issues) |
+| 安全 / 滥用报告 | [SECURITY.md](SECURITY.md)（**不要**在公开 Issue 里贴可利用细节，可走邮件） |
+| 个人主页 / Profile | [github.com/iQingshan](https://github.com/iQingshan) |
+
+> 使用问题、配置排查、功能建议：优先提 Issue（附版本、系统环境、复现步骤与相关日志），这样别人也能搜到答案。
+> 商务合作 / 授权咨询 / 漏洞披露：邮件联系。
+>
+> *Bug reports and feature requests: please open an issue with version, environment and reproduction steps.*
+> *Security disclosures / business & authorization enquiries: email [qingshan@88.com](mailto:qingshan@88.com).*
+
 ## 开源与授权
 
 - 使用说明：[USAGE.md](USAGE.md)
 - 后续优化路线：[ROADMAP.md](ROADMAP.md)（会话抖动、屏幕流/截图跨平台、Agent 记忆、横向移动等规划）
 - 安全披露：[SECURITY.md](SECURITY.md)
+- 一键部署：[release/install.ps1](release/install.ps1) / [release/install.sh](release/install.sh)（发布包内自带，环境检测 + 按需在线安装 + 直接启动）
 - License：**[MIT](LICENSE)**（Copyright © 2026 iQingshan 与 ToShell 贡献者）
 - 使用声明：**[DISCLAIMER.md](DISCLAIMER.md)** —— 仅限**授权**安全测试/红队演练/自建实验环境，禁止任何未授权用途；使用者须自行确保授权充分并承担全部责任。
 - 第三方组件声明：**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** —— 发布包内捆绑的 **UPX（GPL-2.0-or-later + 特殊例外）**、内置 BYOVD 驱动 `kgameprotect.sys`（第三方签名二进制，版权归其权利人）以及 Go 模块依赖的许可清单；这些组件**不受 MIT 覆盖**，各自遵循原许可。

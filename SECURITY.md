@@ -19,9 +19,16 @@ ToShell 是**仅供授权红队演练 / 渗透测试 / 安全研究**的自托�
 - **代码安全缺陷**（如凭据硬编码、鉴权绕过、注入等），或
 - **滥用 / 误用 / 违规分发**（本工具被用于未授权攻击），
 
-请通过 GitHub 私密渠道（或作者联系邮箱）报告，**不要**在公开 Issue 中披露可用于攻击的细节。
+请通过以下渠道报告，**不要**在公开 Issue 中披露可用于攻击的细节：
 
-对于**授权测试中出现的功能缺陷或误报**，请直接提 Issue（附复现步骤、版本、系统环境）。
+| 渠道 | 地址 |
+|---|---|
+| 邮箱（推荐） | [qingshan@88.com](mailto:qingshan@88.com) |
+| GitHub 私密报告 | [Security Advisories](https://github.com/iQingshan/Toshell/security/advisories/new)（"Report a vulnerability"） |
+
+建议在报告中附上：影响版本、复现步骤或 PoC 要点、影响面评估、以及你希望的披露时间线。我们会在确认后同步修复计划，并在修复版本发布时致谢（如你同意署名）。
+
+对于**授权测试中出现的功能缺陷或误报**，请直接提 [Issue](https://github.com/iQingshan/Toshell/issues)（附复现步骤、版本、系统环境）。
 
 ## 加固提示（部署）
 

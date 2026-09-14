@@ -16,7 +16,9 @@
 | `README.md` / `USAGE.md` | 本说明 |
 | `upx/ drivers/ plugins/ data/` | 运行时依赖/数据目录 |
 
-## 一键部署
+## 一键部署（推荐）
+
+发布包根目录自带傻瓜式部署脚本，**直接运行即可**（Windows 双击 `deploy.bat`，Linux/macOS `chmod +x deploy.sh && ./deploy.sh`）：
 
 ```bash
 # Linux / macOS（在 release 目录）
@@ -26,7 +28,24 @@ chmod +x deploy.sh && ./deploy.sh
 deploy.bat
 ```
 
-脚本会自动：从 `configs/server.yaml.example` 生成配置（首次）、后台/前台启动服务端、打印 Web 控制台地址。日志在 `server.log`（Windows 前台启动则显示在控制台窗口）。
+脚本会逐项检测并打印 `[ OK ] / [WARN] / [FAIL]`：服务端二进制（含 `-version`）、配置文件、`data/` 可写、磁盘空间、**控制台与监听端口占用**、Go 工具链版本、`GOPROXY` 可达性、UPX（随包自带）、garble、mingw gcc。
+
+缺 Go 时会询问是否**从 go.dev 官方源在线安装**（下载后校验官方 SHA-256，解压到 `./.tools/go` 或 `%LOCALAPPDATA%\ToShell\tools` 并写入 PATH）。其它可选：
+
+```powershell
+deploy.bat -Check                 # 只检测环境，不安装、不启动（建议先跑）
+deploy.bat -Yes                   # 无人值守，全部自动确认
+deploy.bat -NoStart               # 只装依赖 + 生成配置
+deploy.bat -WithMingw -WithGarble # 额外装 MinGW（C 植入端）/ garble（混淆）
+deploy.bat -OpenFirewall          # 放行控制台与监听端口（需管理员）
+```
+
+```bash
+./deploy.sh --check        # 只检测
+./deploy.sh --yes --daemon # 后台启动（日志写 server.log）
+```
+
+启动后：从 `configs/server.yaml.example` 自动生成配置（首次）、打印 Web 控制台地址；日志在 `server.log`（Windows 前台启动则显示在控制台窗口）。
 
 ## 首次配置（必改）
 
@@ -58,13 +77,19 @@ deploy.bat
 - Linux/macOS：`kill <PID>`（deploy.sh 启动时打印）或 `pkill -f toserver`
 - Windows：关闭 `deploy.bat` 启动的“ToShell Server”控制台窗口
 
+## 联系方式 / Contact
+
+| 渠道 | 地址 |
+|---|---|
+| 作者 | 青山（iQingshan） |
+| GitHub | <https://github.com/iQingshan> |
+| Issue / 功能建议 | <https://github.com/iQingshan/Toshell/issues> |
+| 邮箱（合作 / 漏洞披露） | <qingshan@88.com> |
+| 使用说明 | <https://github.com/iQingshan/Toshell/blob/main/USAGE.md> |
+| 更新日志 | <https://github.com/iQingshan/Toshell/blob/main/CHANGELOG.md> |
+
+> 遇到问题请先看 `USAGE.md` 的「常见问题」章节，仍未解决再到 GitHub 提 Issue（附版本、系统环境、复现步骤与相关日志）。安全/滥用问题请走邮箱，**不要**在公开 Issue 里贴可利用细节。
+
 ## 免责声明
 
-仅用于**授权测试与学习研究**，严禁未经授权的入侵/攻击/数据窃取。因使用本工具产生的任何后果由使用者自行承担。详见项目根 README「免责声明」。
-
-## 一键部署（推荐）
-
-发布包根目录自带部署脚本：**Windows 双击 `deploy.bat`**，**Linux/macOS 运行 `./deploy.sh`**。
-它会检测环境（服务端二进制/配置/端口/Go/UPX/garble/mingw），缺 Go 时可从 go.dev 官方源**校验 SHA-256 后在线安装**，随后直接启动服务端并打印控制台地址。
-
-只想看环境不安装不启动：`deploy.bat -Check` / `./deploy.sh --check`。
+仅用于**授权测试与学习研究**，严禁未经授权的入侵/攻击/数据窃取。因使用本工具产生的任何后果由使用者自行承担。详见包内 `LICENSE` / `DISCLAIMER.md` 与项目根 README「免责声明」。

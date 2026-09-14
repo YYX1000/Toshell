@@ -69,6 +69,12 @@ export function Settings() {
       if (group === 'security' && draft.new_password) {
         payload.new_password = draft.new_password
       }
+      if (group === 'security') {
+        // 脱敏回显字段绝不回传：api_keys 是掩码展示值（回传会破坏真实密钥）、
+        // api_key_count 是只读统计。密钥只能通过「轮换 / 移除」动作修改。
+        delete payload.api_keys
+        delete payload.api_key_count
+      }
       // 安全 tab 同时提交「防测绘」分组（该页包含 web.* 控件）
       if (group === 'security' && draft.web) {
         const web = { ...draft.web }

@@ -175,3 +175,57 @@ func TestWebGateAllowCIDRs(t *testing.T) {
 		t.Error("白名单外来源不应放行")
 	}
 }
+
+// 隐蔽入口 Cookie：disguise 模式下浏览器靠它在无认证框的情况下进入控制台。
+func TestWebGateStealthCookie(t *testing.T) {
+	a := newTestAuth()
+	secret := "stealth-key-0123456789"
+	cfg := WebGateConfig{
+		Enabled: true, User: "ops", PasswordHash: hashOf(t, "supersecret"),
+		Disguise: true, StealthKey: secret, StealthCookie: "tsh_gate",
+	}
+	h := newGate(t, cfg, a, "console")
+
+	// 无 Cookie：404 伪装
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("GET", "/", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("无 Cookie 应 404, got %d", rec.Code)
+	}
+
+	// 带正确 Cookie：放行（静态资源同样适用）
+	for _, p := range []string{"/", "/assets/index-abc.js", "/api/v1/sessions"} {
+		req := httptest.NewRequest("GET", p, nil)
+		req.AddCookie(&http.Cookie{Name: "tsh_gate", Value: GateCookieValue(secret)})
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s 带入口 Cookie 应放行, got %d", p, rec.Code)
+		}
+	}
+
+	// 伪造 Cookie：仍 404
+	req := httptest.NewRequest("GET", "/", nil)
+	req.AddCookie(&http.Cookie{Name: "tsh_gate", Value: "deadbeef"})
+	rec2 := httptest.NewRecorder()
+	h.ServeHTTP(rec2, req)
+	if rec2.Code != http.StatusNotFound {
+		t.Errorf("伪造 Cookie 不应放行, got %d", rec2.Code)
+	}
+}
+
+// 入口密钥比对：空密钥 / 错误密钥一律不通过。
+func TestStealthKeyMatches(t *testing.T) {
+	if StealthKeyMatches("", "x") {
+		t.Error("空密钥不应匹配")
+	}
+	if StealthKeyMatches("secret", "") {
+		t.Error("空输入不应匹配")
+	}
+	if !StealthKeyMatches("secret", "secret") {
+		t.Error("正确密钥应匹配")
+	}
+	if StealthKeyMatches("secret", "secret2") {
+		t.Error("错误密钥不应匹配")
+	}
+}

@@ -1,7 +1,10 @@
 package auth
 
 import (
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"log"
 	"net"
 	"net/http"
@@ -38,6 +41,49 @@ type WebGateConfig struct {
 	AllowCIDRs []string
 	// TrustProxyHeaders 为 true 时按 X-Forwarded-For 取真实来源 IP。
 	TrustProxyHeaders bool
+	// StealthKey 隐蔽入口密钥：非空时，携带正确入口 Cookie 的请求直接放行。
+	// disguise 模式不返回 401 挑战（浏览器不会弹认证框），且浏览器不会把 URL 里的
+	// Basic 凭据带到 JS/CSS 子资源请求上，因此入口 Cookie 是浏览器进入控制台的通道。
+	StealthKey string
+	// StealthCookie 入口 Cookie 名（默认 tsh_gate）。
+	StealthCookie string
+}
+
+// DefaultStealthCookie 入口 Cookie 的默认名称。
+const DefaultStealthCookie = "tsh_gate"
+
+// GateCookieName 返回生效的入口 Cookie 名。
+func (c WebGateConfig) GateCookieName() string {
+	if strings.TrimSpace(c.StealthCookie) != "" {
+		return strings.TrimSpace(c.StealthCookie)
+	}
+	return DefaultStealthCookie
+}
+
+// GateCookieValue 由入口密钥派生入口 Cookie 值（sha256 摘要，
+// 避免明文密钥出现在浏览器 Cookie 中）。
+func GateCookieValue(stealthKey string) string {
+	sum := sha256.Sum256([]byte("toshell-gate:" + stealthKey))
+	return hex.EncodeToString(sum[:])
+}
+
+// StealthKeyMatches 常量时间比较入口密钥（空密钥视为未启用）。
+func StealthKeyMatches(want, provided string) bool {
+	if strings.TrimSpace(want) == "" || provided == "" {
+		return false
+	}
+	return subtleCompare(want, provided)
+}
+
+// GenerateStealthKey 生成隐蔽入口密钥（hex，32 字节 → 64 字符）。
+// 用 hex 而非 base64：base64 的 "+" "/" "=" 放进 URL 查询串会被解析坏
+// （"+" 会被解码成空格），导致入口链接直接失效。
+func GenerateStealthKey() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw), nil
 }
 
 // Disabled 报告防护是否实际生效（未启用或凭据不完整时视为不生效）。
@@ -121,6 +167,17 @@ func (a *Auth) WebGate(cfg WebGateConfig, exemptPrefixes []string, next http.Han
 			if !allowed {
 				reject(w, r)
 				return
+			}
+		}
+
+		// 0) 隐蔽入口 Cookie：disguise 模式下浏览器进入控制台的通道
+		//    （由 /__gate?k=<stealth_key> 种下；静态资源与 API 请求会自动携带）
+		if strings.TrimSpace(cfg.StealthKey) != "" {
+			if ck, err := r.Cookie(cfg.GateCookieName()); err == nil && ck != nil {
+				if subtleCompare(ck.Value, GateCookieValue(cfg.StealthKey)) {
+					next.ServeHTTP(w, r)
+					return
+				}
 			}
 		}
 

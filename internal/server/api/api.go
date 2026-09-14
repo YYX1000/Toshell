@@ -478,6 +478,10 @@ func (s *Server) setupRoutes() {
 	// robots.txt：避免被搜索引擎收录（测绘引擎不遵守，但成本为零）
 	s.router.HandleFunc("/robots.txt", s.robotsHandler).Methods("GET")
 
+	// 隐蔽入口（disguise 模式下浏览器进入控制台）：/__gate?k=<stealth_key>
+	// 必须在 SPA 兜底之前注册；密钥错误时返回 404，不暴露入口存在。
+	s.router.HandleFunc("/__gate", s.gateEntryHandler).Methods("GET")
+
 	// SPA 前端 — 嵌入在二进制中，非 API 路径回退到 index.html。
 	// 同样经过 Web 防护：未认证访问 / 与 /assets/* 只会得到 404/401，不返回任何前端内容
 	// （否则测绘引擎可通过 index.html 标题与静态资源指纹收录本资产）。
@@ -507,7 +511,40 @@ func (s *Server) webConfig() auth.WebGateConfig {
 		Disguise:          strings.ToLower(strings.TrimSpace(cfg.Web.UnauthMode)) != "basic",
 		AllowCIDRs:        cfg.Web.AllowCIDRs,
 		TrustProxyHeaders: cfg.Server.TrustProxyHeaders,
+		StealthKey:        cfg.Web.StealthKey,
+		StealthCookie:     cfg.Web.StealthCookie,
 	}
+}
+
+// gateEntryHandler 隐蔽入口：GET /__gate?k=<stealth_key>
+//
+// disguise 模式下服务端不返回 401 挑战（浏览器不会弹认证框），且浏览器不会把
+// URL 中的 Basic 凭据带到 JS/CSS 子资源请求上，因此浏览器无法进入控制台。
+// 本入口用一次带密钥的访问种下 HttpOnly 入口 Cookie，之后整个控制台
+// （含静态资源与 API）凭该 Cookie 通行；密钥错误则保持 404 伪装。
+func (s *Server) gateEntryHandler(w http.ResponseWriter, r *http.Request) {
+	cfg := s.webConfig()
+	if cfg.Disabled() || strings.TrimSpace(cfg.StealthKey) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	key := r.URL.Query().Get("k")
+	if !auth.StealthKeyMatches(cfg.StealthKey, key) {
+		http.NotFound(w, r) // 密钥不对：与未认证探测表现一致，不泄露入口存在
+		return
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     cfg.GateCookieName(),
+		Value:    auth.GateCookieValue(cfg.StealthKey),
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+		MaxAge:   30 * 24 * 3600, // 30 天
+	})
+	logging.Info("api", "Web gate stealth entry used from %s (cookie issued)", r.RemoteAddr)
+	// 跳转到首页并去掉密钥，避免密钥留在地址栏/历史记录中
+	http.Redirect(w, r, "/", http.StatusFound)
 }
 
 // webGate 给任意 handler 套上 Web 防护（配置在每次请求时解析，支持热生效）。

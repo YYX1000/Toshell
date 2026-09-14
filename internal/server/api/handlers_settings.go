@@ -45,6 +45,9 @@ type settingsWebUpdate struct {
 	UnauthMode  *string   `json:"unauth_mode"` // disguise(默认,404) / basic(401 挑战)
 	DecoyTitle  *string   `json:"decoy_title"`
 	AllowCIDRs  *[]string `json:"allow_cidrs"`
+	// StealthKey 隐蔽入口密钥（disguise 模式下浏览器进入控制台的通道）：
+	// 传空字符串 = 清除；传 "regenerate" = 服务端生成新密钥并仅在本次响应回传。
+	StealthKey *string `json:"stealth_key"`
 }
 
 type settingsAIUpdate struct {
@@ -176,6 +179,9 @@ func (s *Server) getSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			"unauth_mode":  cfg.Web.UnauthMode,
 			"decoy_title":  cfg.Web.DecoyTitle,
 			"allow_cidrs":  cfg.Web.AllowCIDRs,
+			// 隐蔽入口：只回传是否已设置 + 入口路径，密钥本身不回传
+			"stealth_key_set": strings.TrimSpace(cfg.Web.StealthKey) != "",
+			"stealth_entry":   "/__gate?k=<密钥>",
 		},
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -369,8 +375,24 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			keys := make([]string, len(curKeys))
 			copy(keys, curKeys)
 			if sec.APIKeys != nil {
-				// 整组替换（前端传完整新列表）
-				keys = *sec.APIKeys
+				// 整组替换（前端传完整新列表）。
+				// 防御：前端回显的是脱敏值（如 Qing****2026），绝不能把它当成新密钥写回
+				// —— 否则会把真实密钥破坏成掩码串（历史缺陷）。含 **** 的条目一律忽略。
+				filtered := make([]string, 0, len(*sec.APIKeys))
+				for _, k := range *sec.APIKeys {
+					k = strings.TrimSpace(k)
+					if k == "" || strings.Contains(k, "****") {
+						continue
+					}
+					filtered = append(filtered, k)
+				}
+				if len(*sec.APIKeys) > 0 && len(filtered) == 0 {
+					// 传进来的全是脱敏回显：视为"未修改"，保持现有密钥不变
+					logging.Warn("settings", "api_keys 仅包含脱敏回显值，已忽略本次替换以避免破坏密钥")
+					sec.APIKeys = nil
+				} else {
+					keys = filtered
+				}
 			}
 			if sec.RemoveAPIKey != nil && *sec.RemoveAPIKey != "" {
 				removed := *sec.RemoveAPIKey
@@ -538,6 +560,28 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 				}())
 			}
 		}
+		// 隐蔽入口密钥：disguise 模式下浏览器进入控制台的通道
+		if wu.StealthKey != nil {
+			k := strings.TrimSpace(*wu.StealthKey)
+			switch {
+			case k == "":
+				updates["web.stealth_key"] = ""
+			case strings.EqualFold(k, "regenerate"):
+				gen, gerr := auth.GenerateStealthKey()
+				if gerr != nil {
+					http.Error(w, `{"error":"生成隐蔽入口密钥失败"}`, http.StatusInternalServerError)
+					return
+				}
+				updates["web.stealth_key"] = gen
+				updates["_new_stealth_key"] = gen // 仅本次响应回传，供前端展示一次
+			default:
+				if len(k) < 16 {
+					http.Error(w, `{"error":"隐蔽入口密钥至少 16 位（建议直接用「生成」按钮）"}`, http.StatusBadRequest)
+					return
+				}
+				updates["web.stealth_key"] = k
+			}
+		}
 	}
 
 	if len(updates) == 0 {
@@ -550,6 +594,11 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if v, ok := updates["_new_api_key"].(string); ok {
 		newAPIKey = v
 		delete(updates, "_new_api_key")
+	}
+	var newStealthKey string
+	if v, ok := updates["_new_stealth_key"].(string); ok {
+		newStealthKey = v
+		delete(updates, "_new_stealth_key")
 	}
 
 	if err := config.Save(updates); err != nil {
@@ -576,6 +625,12 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 	if newAPIKey != "" {
 		resp["new_api_key"] = newAPIKey
 		resp["warning"] = "请立即保存该 API Key，关闭后不再显示"
+	}
+	if newStealthKey != "" {
+		// 仅本次响应回传隐蔽入口密钥；入口链接与密钥请立即保存
+		resp["new_stealth_key"] = newStealthKey
+		resp["stealth_entry"] = "/__gate?k=" + newStealthKey
+		resp["warning"] = "请立即保存该隐蔽入口链接（含密钥），关闭后不再显示；disguise 模式下用它进入控制台"
 	}
 	logging.Info("settings", "settings saved (hot=%v, %d keys)", hot, len(updates))
 	json.NewEncoder(w).Encode(resp)

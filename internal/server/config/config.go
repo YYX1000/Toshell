@@ -45,6 +45,14 @@ type WebConfig struct {
 	// AllowCIDRs 可选：控制台访问来源白名单（CIDR 列表，如 203.0.113.0/24）。
 	// 非空时，不在列表内的来源即使凭据正确也会被拒（用于把控制台限制在运维网段）。
 	AllowCIDRs []string `mapstructure:"allow_cidrs" json:"allow_cidrs"`
+	// StealthKey 隐蔽入口密钥（非空时启用）：由于 disguise 模式不返回 401 挑战，
+	// 浏览器无法弹出认证框，也没有办法把 Basic 凭据带到 JS/CSS 子资源请求上。
+	// 设置本密钥后，浏览器访问一次 /__gate?k=<密钥> 即会种下入口 Cookie，
+	// 之后整个控制台（含静态资源与 API）凭该 Cookie 通行；
+	// 其他任何未持凭据的请求依旧返回 404 伪装，不留 C2 特征。
+	StealthKey string `mapstructure:"stealth_key" json:"-"`
+	// StealthCookie 入口 Cookie 名（默认 tsh_gate）。
+	StealthCookie string `mapstructure:"stealth_cookie" json:"stealth_cookie"`
 }
 
 // AIConfig AI 副驾驶（LLM 聊天 + 工具调用）配置。
@@ -502,6 +510,9 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("web.unauth_mode", "basic")
 	viper.SetDefault("web.decoy_title", "")
 	viper.SetDefault("web.allow_cidrs", []string{})
+	// 隐蔽入口（disguise 模式下浏览器进入控制台的唯一方式）
+	viper.SetDefault("web.stealth_key", "")
+	viper.SetDefault("web.stealth_cookie", "tsh_gate")
 
 	viper.SetDefault("ai.enabled", false)
 	viper.SetDefault("ai.base_url", "")

@@ -66,6 +66,10 @@
 - **移除包内残留的 `RTCore64.sys`**：v1.3.3 首次打包时 `release/drivers/RTCore64.sys`（git 跟踪的另一份副本）仍被 CI 打进 zip，与「删除 RTCore64」目标不符；现已删除，改为随包提供内置驱动 `kgameprotect.sys` 副本 + `release/drivers/README.md`（写明 SHA-256、签名者、设备名、IOCTL 与离线复核命令），便于操作员加载前自行核对。
 - CI 与本地 `scripts/package_release.ps1` 同步：`install.sh` / `install.ps1` 一并打进包。
 
+### ⚖️ 开源许可补齐
+- 补回丢失的 **`LICENSE`（MIT）**：README 一直写着 MIT 并链接 `LICENSE`，但仓库里没有该文件（链接是死的、GitHub 识别不到许可）。现补上 MIT 全文 + 中文附加声明（仅限授权测试、责任自负），README 增加 MIT 徽章并指向该文件。
+- 新增 **`THIRD-PARTY-NOTICES.md`**：集中声明发布包内**不受 MIT 覆盖**的第三方组件——**UPX**（GPL-2.0-or-later + 压缩产物例外，`COPYING`/`LICENSE` 已随包放在 `upx/` 目录内）、内置 **`kgameprotect.sys`**（第三方 WHQL 签名驱动，版权归原权利人，附哈希/来源/移除承诺）、Go 模块依赖清单（BSD/MIT/EPL 等）与 `data/` 数据说明；并说明 `RTCore64.sys`/`dbutil_2_3.sys` 自 v1.3.3 起不再捆绑。
+- CI 与 `scripts/package_release.ps1` 把 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 一并打进发布包（此前 zip 内含 UPX 却没有任何许可文本）。
 ### ✅ 实测验收（本轮已跑过的真实验证）
 - **会话抖动**：60s 心跳（jitter 5s）的植入端连续运行 220s → 状态**零抖动**；杀掉植入端后按 3m1s（3 倍间隔）判死并只广播一次 `session_offline`；启动日志可见 `Session heartbeat timeout: 3m0s (implant interval 1m0s, margin 3x)`。
 - **屏幕流/截图**：`max_width=640` → 640×360 JPEG 约 21KB（原始 2560×1440 约 343KB）；`monitor=1` 单选显示器生效；屏幕流回执确认 `fps=5 quality=60 max_kbps=1200` 已下发且 WS 侧可见真实 JPEG 帧。

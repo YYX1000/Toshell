@@ -46,6 +46,9 @@ foreach ($m in $matrix) {
   Copy-Item (Join-Path $base 'configs\server.yaml.example') (Join-Path $pkg 'configs\server.yaml.example')
   Copy-Item (Join-Path $base 'README.md') (Join-Path $pkg 'README.md')
   Copy-Item (Join-Path $base 'USAGE.md')  (Join-Path $pkg 'USAGE.md')
+  # 许可与第三方声明（包内含 UPX(GPL) 与第三方签名驱动，需随包分发）
+  Copy-Item (Join-Path $base 'LICENSE') (Join-Path $pkg 'LICENSE')
+  Copy-Item (Join-Path $base 'THIRD-PARTY-NOTICES.md') (Join-Path $pkg 'THIRD-PARTY-NOTICES.md')
   Copy-Item (Join-Path $base $m.deploy)   (Join-Path $pkg (Split-Path -Leaf $m.deploy))
   # 一键部署脚本（环境检测 + 按需在线安装 + 直接启动打包好的服务端）
   Copy-Item (Join-Path $base 'release\install.sh')  (Join-Path $pkg 'install.sh')

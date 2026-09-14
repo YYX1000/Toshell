@@ -16,6 +16,14 @@
 - 修正既有 `exe`（donut）路径：原先 `Thread=0 + ExitOpt=2`，内存执行的程序结束时调用 `RtlExitUserProcess` 会**把植入体一起杀掉**；改为 `Thread=1 + ExitOpt=1`（独立线程 + 只退线程），并支持把 `args` 作为 donut `Parameters`（上限 255 字节，超长直接报错）。
 - **已知边界**（写在面板提示与任务输出里）：`exe_mem` 要求与植入体同架构；**不要用它跑 Go 编译的 EXE**（宿主也是 Go，两个 runtime 冲突）；载荷 CRT 内部直接调用的 `ExitProcess` 拦不住（彻底解决需 hook 系统 API），「跑完即退」的工具请走落地执行；内存执行不重定向 stdout，故无控制台输出。
 
+### 🔩 BYOVD 内置驱动换成 kgameprotect（删除 RTCore64.sys）
+- **内置驱动替换**：删除 `RTCore64.sys`（MSI Afterburner / CVE-2019-16098，任意内核读写，被微软易受攻击驱动黑名单与几乎所有杀软重点标记），改为内置 **`kgameprotect.sys`**（WHQL 签名 / Microsoft Windows Hardware Compatibility Publisher，AMD64，59,592 字节，SHA-256 `6c1d596d…126ee`，与 [LOLDrivers PR #428](https://github.com/magicsword-io/LOLDrivers/pull/428) 记录一致）。
+- **能力定位改为"击杀"**：该驱动设备 `\\.\kgameprotect`，暴露**无鉴权进程终止 IOCTL `0x222048`**（METHOD_BUFFERED + FILE_ANY_ACCESS，入参首个 DWORD 为 PID），驱动内部 `PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) → ZwTerminateProcess`，因此**不需要调用方持有目标进程权限**即可终止普通杀软/EDR 进程。
+- **新增 `byovd_kill` 任务与接口**：`POST /api/v1/sessions/{id}/edr/byovd-kill`（`pid` 或 `process_name`，`driver` 可选），前端杀软对抗页新增「驱动击杀」入口与目标输入。
+- **能力变化（如实说明）**：kgameprotect 只提供进程终止、**没有任意内核读写**，因此"用驱动改 EPROCESS.Protection"的 PPL 清除路线**已移除**；`ppl_kill` 只保留**句柄窃取**路线，对 PPL 保护进程（如 Defender 的 MsMpEng）无效时会有明确提示。
+- 前端文案与排版一并整理：BYOVD 区块改为「驱动说明 + 内置驱动一键加载/卸载 + 驱动击杀 + 自定义 .sys 上传」四段式，去掉原先那段与实现不再匹配的 RTCore64 长文与挤在一行的排版；About/USAGE 同步更新。
+
+
 ### 🔢 版本
 - 全量版本号更新为 **1.3.3**（服务端 `-version`、Web、About、README、USAGE、部署脚本、打包脚本、CDN 指南），CI 的 `main.version` 改为跟随 tag（`${GITHUB_REF_NAME#v}`），避免每次发版手改 workflow。
 

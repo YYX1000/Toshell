@@ -359,12 +359,12 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 ### 2. 网络与对抗能力
 - **Beacon Mesh 中继**:在线会话可一键升级为中继节点(会话详情「中继」页),叶子植入端链式回连,支持多跳;中继链路 SM4-GCM 加密;构建页可从在线中继列表直接选取回连地址。
 - **实时屏幕流**:会话详情「屏幕流」页,前端支持缩放与全屏。
-- **内核级对抗(Windows,实验性)**:EDR 失明(ntdll 脱钩 + ETW 抑制 + Autologger 禁用)、EDR 击杀、BYOVD 驱动加载(内置原厂签名 RTCore64.sys,SHA-256 `01AA278B…E87F1FD` 已核对)、PPL 保护清除(RTCore64 任意内核虚拟地址读写,EPROCESS.Protection 偏移按 Windows 版本自适应,24H2+ 为 0x5FA)。
+- **内核级对抗(Windows,实验性)**:EDR 失明(ntdll 脱钩 + ETW 抑制 + Autologger 禁用)、EDR 击杀、**BYOVD 驱动击杀**(内置 WHQL 签名的 `kgameprotect.sys`:设备 `\\.\kgameprotect`、无鉴权进程终止 IOCTL `0x222048`,入参首个 DWORD 为 PID,可击杀普通杀软/EDR 进程;对 PPL 保护进程无效,那类走句柄窃取)、PPL 保护清除(句柄窃取路线)。RTCore64/dbutil_2_3 已不再内置(黑名单重点标记、落地即被查杀);如需自定义驱动,可在杀软对抗页上传 .sys。
 
 ### 3. 设置与运维
 - **运行时设置热更新**:设置页真实读写配置(监听器/拟态模板/通知/账户),webhook、流量拟态模板、认证信息保存即热生效,无需重启进程;配置文件被外部修改自动重载。
 - **各平台 webhook 通知**:按 URL 自动识别目标平台并发送**各自要求的消息结构**——钉钉(markdown,加签走 URL 参数)、飞书/Lark(`msg_type`+`content.text`,加签走 body 内 `timestamp`+`sign`)、企业微信(`msgtype`+`text.content`)、Slack(`text`)、Discord(`content`),其它地址回退通用 JSON;也可在设置页手动指定格式。加签 Secret 配 `server.yaml` 的 `webhook.secret`。**判定结果同时看响应体**:飞书 `code≠0`、钉钉/企业微信 `errcode≠0` 都算失败并显示平台原话(HTTP 200 不代表成功),设置页「发送测试通知」会显示识别到的平台与失败原因。
-- **内置 BYOVD 驱动下载**:服务端内置 RTCore64.sys(原厂签名),杀软对抗页一键加载,无需手动准备驱动文件。
+- **内置 BYOVD 驱动**:服务端内置 `kgameprotect.sys`(WHQL 签名,AMD64;设备 `\\.\kgameprotect`、进程终止 IOCTL `0x222048`),杀软对抗页「一键加载」后即可用「驱动击杀」按 PID 或进程名终止普通杀软/EDR 进程,无需手动准备驱动文件;也支持上传自定义 .sys。
 - **会话判活余量**:实际判活阈值 = `max(listener.heartbeat_timeout, 3 × 植入端实测心跳间隔)`,启动日志会打印 `margin 3x`。因此心跳间隔与超时几乎相等也不会出现「离线几秒又在线」抖动;只有真正持续失联才判死。会话闪断重连在 15 秒观察窗内**不会**广播离线/上线事件(也不再重复推送上线通知)。
 - **屏幕流/截图参数**:实时屏幕流与截图支持 `fps`(1-10)/`quality`(20-95)/`max_kbps`(带宽上限,超限自动降画质再降帧)/`monitor`(0=全部显示器拼接,N=第 N 个显示器)/`max_width`(缩放宽度)。屏幕流面板「画质参数」可直接设置;实测 2560×1440 缩放到 640 宽后 JPEG 体积从约 343KB 降到约 21KB。捕获失败(锁屏/无交互桌面/Headless)会立即回传原因并在面板提示。
 

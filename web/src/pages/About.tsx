@@ -60,7 +60,7 @@ const features = [
   {
     icon: <Shield size={22} />,
     title: '内核级对抗',
-    desc: '内置 ntdll 脱钩 + ETW 事件抑制（EDR 失明）、BYOVD 驱动加载（内置原厂签名 RTCore64）、PPL 保护清除与杀软击杀。',
+    desc: '内置 ntdll 脱钩 + ETW 事件抑制（EDR 失明）、BYOVD 驱动加载（内置 WHQL 签名的 kgameprotect：无鉴权进程终止 IOCTL，击杀普通杀软/EDR）、PPL 保护清除（句柄窃取路线）与杀软击杀。',
   },
   {
     icon: <Monitor size={22} />,

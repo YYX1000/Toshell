@@ -454,6 +454,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/sessions/{id}/edr/kill", s.edrKillHandler).Methods("POST")
 	api.HandleFunc("/sessions/{id}/edr/byovd-load", s.byovdLoadHandler).Methods("POST")
 	api.HandleFunc("/sessions/{id}/edr/byovd-unload", s.byovdUnloadHandler).Methods("POST")
+	api.HandleFunc("/sessions/{id}/edr/byovd-kill", s.byovdKillHandler).Methods("POST")
 	api.HandleFunc("/sessions/{id}/edr/ppl-kill", s.pplKillHandler).Methods("POST")
 	api.HandleFunc("/drivers", s.listDriversHandler).Methods("GET")
 	api.HandleFunc("/drivers/{name}/raw", s.downloadDriverHandler).Methods("GET")

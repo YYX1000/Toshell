@@ -67,7 +67,7 @@
 - CI 与本地 `scripts/package_release.ps1` 同步：`install.sh` / `install.ps1` 一并打进包。
 
 ### ⚖️ 开源许可补齐
-- 补回丢失的 **`LICENSE`（MIT）**：README 一直写着 MIT 并链接 `LICENSE`，但仓库里没有该文件（链接是死的、GitHub 识别不到许可）。现补上 MIT 全文 + 中文附加声明（仅限授权测试、责任自负），README 增加 MIT 徽章并指向该文件。
+- 补回丢失的 **`LICENSE`（MIT）**：README 一直标注并链接 `LICENSE`，但仓库里没有该文件（链接 404、GitHub 侧识别不到许可）。现补回**纯净的 MIT 全文**（不掺别的文字，保证 GitHub 正确识别为 MIT），README 加 MIT 徽章；授权使用声明单独放在新增的 **`DISCLAIMER.md`**（中英双语：仅限授权测试/红队演练/自建实验环境，禁止未授权用途）。
 - 新增 **`THIRD-PARTY-NOTICES.md`**：集中声明发布包内**不受 MIT 覆盖**的第三方组件——**UPX**（GPL-2.0-or-later + 压缩产物例外，`COPYING`/`LICENSE` 已随包放在 `upx/` 目录内）、内置 **`kgameprotect.sys`**（第三方 WHQL 签名驱动，版权归原权利人，附哈希/来源/移除承诺）、Go 模块依赖清单（BSD/MIT/EPL 等）与 `data/` 数据说明；并说明 `RTCore64.sys`/`dbutil_2_3.sys` 自 v1.3.3 起不再捆绑。
 - CI 与 `scripts/package_release.ps1` 把 `LICENSE` 与 `THIRD-PARTY-NOTICES.md` 一并打进发布包（此前 zip 内含 UPX 却没有任何许可文本）。
 ### ✅ 实测验收（本轮已跑过的真实验证）

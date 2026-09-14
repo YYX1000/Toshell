@@ -88,6 +88,7 @@ jobs:
           cp USAGE.md "$STAGE/USAGE.md"
           # 许可与第三方声明：包里捆绑了 UPX(GPL) 与第三方签名驱动，必须随包分发
           cp LICENSE "$STAGE/LICENSE"
+          cp DISCLAIMER.md "$STAGE/DISCLAIMER.md"
           cp THIRD-PARTY-NOTICES.md "$STAGE/THIRD-PARTY-NOTICES.md"
           cp "${{ matrix.deploy }}" "$STAGE/"
           # 一键部署脚本（傻瓜式：环境检测 + 按需在线安装 + 直接启动打包好的服务端）

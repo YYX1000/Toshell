@@ -55,6 +55,17 @@
 ### 🔢 版本
 - 全量版本号更新为 **1.3.3**（服务端 `-version`、Web、About、README、USAGE、部署脚本、打包脚本、CDN 指南），CI 的 `main.version` 改为跟随 tag（`${GITHUB_REF_NAME#v}`），避免每次发版手改 workflow。
 
+### 🚀 一键部署脚本（发布包自带）
+- 新增 **`install.ps1`（Windows）/ `install.sh`（Linux、macOS）**；`deploy.bat` / `deploy.sh` 变为调用它们的入口（双击 `deploy.bat` 即可，不用记参数）：
+  1. **环境检测**：服务端二进制（并打印 `-version`）、配置文件（缺失自动生成）、`data/` 可写、磁盘剩余空间、**控制台端口与监听端口占用**（正确区分 `listener.port` 与 `database.port`）、Go 工具链版本、`GOPROXY` 可达性、UPX（随包自带）、garble、mingw gcc（含 32/64 位提示）；
+  2. **按需在线安装**：Go 缺失或过旧时从 go.dev 官方源下载并**校验官方 SHA-256**，解压到 `./.tools/go`（Windows 为 `%LOCALAPPDATA%\ToShell\tools`）并写入 PATH；`-WithGarble` 装 garble；`-WithMingw` 在 Windows 上尝试用 winget/choco 装 MSYS2/MinGW；`-OpenFirewall` 用 netsh 放行端口（需管理员）；
+  3. 末尾给出「通过 / 警告 / 失败」汇总与「必须处理 / 建议处理」清单，随后可直接启动服务端并打印控制台地址。
+- 安全设计：默认**不改动系统**（每步询问，`-Check` 只检测）；所有在线下载均做 SHA-256 校验，失败即删除并报错；脚本以 UTF-8 BOM 存盘，避免 PowerShell 5.1 按 ANSI 解析导致乱码/语法错误。
+
+### 📦 发布包修正
+- **移除包内残留的 `RTCore64.sys`**：v1.3.3 首次打包时 `release/drivers/RTCore64.sys`（git 跟踪的另一份副本）仍被 CI 打进 zip，与「删除 RTCore64」目标不符；现已删除，改为随包提供内置驱动 `kgameprotect.sys` 副本 + `release/drivers/README.md`（写明 SHA-256、签名者、设备名、IOCTL 与离线复核命令），便于操作员加载前自行核对。
+- CI 与本地 `scripts/package_release.ps1` 同步：`install.sh` / `install.ps1` 一并打进包。
+
 ### ✅ 实测验收（本轮已跑过的真实验证）
 - **会话抖动**：60s 心跳（jitter 5s）的植入端连续运行 220s → 状态**零抖动**；杀掉植入端后按 3m1s（3 倍间隔）判死并只广播一次 `session_offline`；启动日志可见 `Session heartbeat timeout: 3m0s (implant interval 1m0s, margin 3x)`。
 - **屏幕流/截图**：`max_width=640` → 640×360 JPEG 约 21KB（原始 2560×1440 约 343KB）；`monitor=1` 单选显示器生效；屏幕流回执确认 `fps=5 quality=60 max_kbps=1200` 已下发且 WS 侧可见真实 JPEG 帧。

@@ -1,0 +1,7 @@
+# Shell 脚本必须保持 LF：CRLF 会让 Linux/macOS 上出现 "bad interpreter: /usr/bin/env bash^M"
+*.sh text eol=lf
+# PowerShell 脚本用 CRLF（文件内已带 UTF-8 BOM，避免 PS 5.1 按 ANSI 解析中文）
+*.ps1 text eol=crlf
+# 二进制驱动/工具不参与行尾转换
+*.sys binary
+*.exe binary

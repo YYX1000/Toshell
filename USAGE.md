@@ -49,6 +49,41 @@ ToShell 由三部分组成:
    ```
 4. 浏览器访问 `http://<服务器IP>:18081`,使用默认账号 `admin / toshell` 登录(登录后请立即修改密码)。
 
+### 2.1 一键部署脚本(发布包自带,推荐)
+
+发布包根目录自带傻瓜式部署脚本,**直接运行即可**:检测环境 → 按需在线安装依赖 → 生成配置 → 启动打包好的 `toserver`。
+
+| 平台 | 入口 | 说明 |
+| --- | --- | --- |
+| Windows | 双击 `deploy.bat`(或 `install.ps1`) | 内部就是 `install.ps1`,已绕过执行策略限制 |
+| Linux / macOS | `./deploy.sh`(或 `./install.sh`) | 首次需 `chmod +x` |
+
+脚本逐项检测并给出 `[ OK ] / [WARN] / [FAIL]`:
+
+- **服务端二进制**(并打印 `-version`)、**配置文件**(缺失时从 `server.yaml.example` 自动生成)、**data/ 可写**、**磁盘剩余空间**;
+- **端口占用**:控制台 `api_port`(默认 18081)与监听 `listener.port`(默认 8080);
+- **Go 工具链**:构建载荷必需(≥ 1.21;Windows 载荷默认用 go1.20.14 工具链编译以兼容 Win7/2008R2,首次构建自动下载)。**缺失时可选择在线安装**——从 go.dev 官方源下载 `go<版本>.<os>-<arch>`,**校验官方 SHA-256** 后解压到 `./.tools/go`(Windows 为 `%LOCALAPPDATA%\ToShell\tools`)并写入 PATH;
+- **模块代理可达性**(`GOPROXY`;国内建议 `go env -w GOPROXY=https://goproxy.cn,direct`);
+- **UPX**(包内自带 `upx/`)、**garble**(可选,`-WithGarble` 在线安装)、**mingw gcc**(可选,仅 C 植入端需要;Windows 下 `-WithMingw` 会用 winget/choco 尝试在线安装)。
+
+常用参数:
+
+```powershell
+.\deploy.bat -Check          # 只检测环境,不安装、不启动(建议先跑这个)
+.\deploy.bat -Yes            # 无人值守,全部自动确认
+.\deploy.bat -NoStart        # 只装依赖、生成配置,不启动
+.\deploy.bat -WithMingw -WithGarble
+.\deploy.bat -OpenFirewall   # 放行控制台与监听端口(需管理员)
+```
+
+```bash
+./deploy.sh --check          # 只检测
+./deploy.sh --yes --daemon   # 后台启动(日志写 server.log)
+./deploy.sh --with-garble
+```
+
+> 首次启动会把自动生成的 admin 密码 / JWT key / 监听加密 key 打印在日志里**并落盘到 `configs/server.yaml`**(下次重启沿用,不会变)。生产部署请再按 [docs/DEPLOY-DOMAIN-CDN.md](docs/DEPLOY-DOMAIN-CDN.md) 配置域名/反代与防测绘。
+
 ### 3. 默认凭据与安全提醒
 
 | 项 | 默认值 | 说明 |

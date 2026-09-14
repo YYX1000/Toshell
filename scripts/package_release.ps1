@@ -47,6 +47,9 @@ foreach ($m in $matrix) {
   Copy-Item (Join-Path $base 'README.md') (Join-Path $pkg 'README.md')
   Copy-Item (Join-Path $base 'USAGE.md')  (Join-Path $pkg 'USAGE.md')
   Copy-Item (Join-Path $base $m.deploy)   (Join-Path $pkg (Split-Path -Leaf $m.deploy))
+  # 一键部署脚本（环境检测 + 按需在线安装 + 直接启动打包好的服务端）
+  Copy-Item (Join-Path $base 'release\install.sh')  (Join-Path $pkg 'install.sh')
+  Copy-Item (Join-Path $base 'release\install.ps1') (Join-Path $pkg 'install.ps1')
   New-Item -ItemType Directory -Force -Path (Join-Path $pkg 'data') | Out-Null
   Copy-Item (Join-Path $base 'data\av_fingerprints.json') (Join-Path $pkg 'data\av_fingerprints.json')
   foreach ($d in @('upx','drivers','plugins')) {

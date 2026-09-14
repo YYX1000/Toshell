@@ -87,6 +87,9 @@ jobs:
           cp README.md "$STAGE/README.md"
           cp USAGE.md "$STAGE/USAGE.md"
           cp "${{ matrix.deploy }}" "$STAGE/"
+          # 一键部署脚本（傻瓜式：环境检测 + 按需在线安装 + 直接启动打包好的服务端）
+          cp release/install.sh "$STAGE/"
+          cp release/install.ps1 "$STAGE/"
           # 运行时数据预设：data 目录 + 杀软指纹库（服务端必需，db 由首次启动自动创建）
           mkdir -p "$STAGE/data"
           cp data/av_fingerprints.json "$STAGE/data/av_fingerprints.json"

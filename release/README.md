@@ -61,3 +61,10 @@ deploy.bat
 ## 免责声明
 
 仅用于**授权测试与学习研究**，严禁未经授权的入侵/攻击/数据窃取。因使用本工具产生的任何后果由使用者自行承担。详见项目根 README「免责声明」。
+
+## 一键部署（推荐）
+
+发布包根目录自带部署脚本：**Windows 双击 `deploy.bat`**，**Linux/macOS 运行 `./deploy.sh`**。
+它会检测环境（服务端二进制/配置/端口/Go/UPX/garble/mingw），缺 Go 时可从 go.dev 官方源**校验 SHA-256 后在线安装**，随后直接启动服务端并打印控制台地址。
+
+只想看环境不安装不启动：`deploy.bat -Check` / `./deploy.sh --check`。

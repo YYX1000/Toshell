@@ -104,3 +104,98 @@ func toInt(v interface{}) int {
 	}
 	return -1
 }
+
+// TestSavePreservesCommentsAndOrder 守护「节点树编辑」语义：
+// 用户手工维护的注释与字段顺序必须保留（历史缺陷：viper 序列化会重排为字母序并抹掉注释）。
+func TestSavePreservesCommentsAndOrder(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "server.yaml")
+	original := "# 顶部说明：这是运维手工维护的配置\n" +
+		"server:\n" +
+		"    api_port: 18081  # 管理 API 端口\n" +
+		"listener:\n" +
+		"    port: 8080\n" +
+		"auth:\n" +
+		"    admin_password: \"$2a$10$abcdefghijklmnopqrstuv\"\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Save(map[string]interface{}{"listener.port": 38080}); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{
+		"# 顶部说明：这是运维手工维护的配置",
+		"# 管理 API 端口",
+		"admin_password",
+		"38080",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("写入后丢失内容 %q\n文件内容:\n%s", want, text)
+		}
+	}
+	// server.api_port 必须在 listener.port 之前（保持原有顺序）
+	if strings.Index(text, "api_port") > strings.Index(text, "port: 38080") {
+		t.Errorf("字段顺序被打乱（api_port 应在前）\n文件内容:\n%s", text)
+	}
+}
+
+// TestPersistCreatesMissingFile 守护「凭据必须落盘」：
+// 配置文件不存在时也必须被创建并写入内容（历史缺陷：viper.WriteConfig 要求文件已存在，
+// 失败后仅打 WARNING，导致每次重启都重新生成随机密码 → 用户被锁在门外）。
+func TestPersistCreatesMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "nested", "server.yaml")
+	if _, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := Persist(map[string]interface{}{
+		"auth.admin_password": "$2a$10$hashhashhash",
+		"auth.jwt_key":        "jwt-key-value",
+	}); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("配置文件未被创建: %v", err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "$2a$10$hashhashhash") || !strings.Contains(text, "jwt-key-value") {
+		t.Errorf("凭据未写入配置文件:\n%s", text)
+	}
+	// 不应残留临时文件
+	entries, _ := os.ReadDir(filepath.Dir(path))
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".tmp-") {
+			t.Errorf("残留临时文件: %s", e.Name())
+		}
+	}
+}
+
+// TestPersistNeverWritesExampleFile 守护：绝不把真实密钥写进 *.example 模板。
+func TestPersistNeverWritesExampleFile(t *testing.T) {
+	dir := t.TempDir()
+	example := filepath.Join(dir, "server.yaml.example")
+	if err := os.WriteFile(example, []byte("auth:\n    jwt_key: \"\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	Load(example)
+	if err := Persist(map[string]interface{}{"auth.jwt_key": "real-secret"}); err != nil {
+		t.Fatalf("Persist: %v", err)
+	}
+	raw, _ := os.ReadFile(example)
+	if strings.Contains(string(raw), "real-secret") {
+		t.Errorf("示例文件被写入真实密钥（不应发生）:\n%s", raw)
+	}
+	real, err := os.ReadFile(filepath.Join(dir, "server.yaml"))
+	if err != nil || !strings.Contains(string(real), "real-secret") {
+		t.Errorf("真实密钥未写入 server.yaml: err=%v content=%s", err, real)
+	}
+}

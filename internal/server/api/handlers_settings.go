@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -22,6 +23,7 @@ type SettingsResponse struct {
 	Notifications map[string]interface{} `json:"notifications"`
 	Security      map[string]interface{} `json:"security"`
 	AI            map[string]interface{} `json:"ai"`
+	Web           map[string]interface{} `json:"web"`
 }
 
 // SettingsUpdate 设置页 PUT 请求体（均为可选，缺省不修改）。
@@ -31,18 +33,30 @@ type SettingsUpdate struct {
 	Notifications *settingsWebhookUpdate  `json:"notifications"`
 	Security      *settingsSecurityUpdate `json:"security"`
 	AI            *settingsAIUpdate       `json:"ai"`
+	Web           *settingsWebUpdate      `json:"web"`
+}
+
+// settingsWebUpdate Web 控制台防护（防测绘）更新项。
+type settingsWebUpdate struct {
+	BasicAuthEnabled *bool   `json:"basic_auth_enabled"`
+	BasicAuthUser    *string `json:"basic_auth_user"`
+	// NewPassword 明文新密码：保存时 bcrypt 哈希落盘（不回显、不落明文）。
+	NewPassword *string   `json:"new_password"`
+	UnauthMode  *string   `json:"unauth_mode"` // disguise(默认,404) / basic(401 挑战)
+	DecoyTitle  *string   `json:"decoy_title"`
+	AllowCIDRs  *[]string `json:"allow_cidrs"`
 }
 
 type settingsAIUpdate struct {
-	Enabled            *bool    `json:"enabled"`
-	BaseURL            *string  `json:"base_url"`
-	APIKey             *string  `json:"api_key"`
-	Model              *string  `json:"model"`
-	Timeout            *int     `json:"timeout"`
-	MaxTurns           *int     `json:"max_turns"`
-	ConsentMode        *string  `json:"consent_mode"` // auto=全自动(默认) / normal=影响会话操作需用户同意(任务流除外)
-	AgentConcurrency   *int     `json:"agent_concurrency"`
-	DownloadAllowlist  *[]string `json:"download_allowlist"`
+	Enabled           *bool     `json:"enabled"`
+	BaseURL           *string   `json:"base_url"`
+	APIKey            *string   `json:"api_key"`
+	Model             *string   `json:"model"`
+	Timeout           *int      `json:"timeout"`
+	MaxTurns          *int      `json:"max_turns"`
+	ConsentMode       *string   `json:"consent_mode"` // auto=全自动(默认) / normal=影响会话操作需用户同意(任务流除外)
+	AgentConcurrency  *int      `json:"agent_concurrency"`
+	DownloadAllowlist *[]string `json:"download_allowlist"`
 }
 
 type settingsListenerUpdate struct {
@@ -77,15 +91,15 @@ type settingsWebhookUpdate struct {
 }
 
 type settingsSecurityUpdate struct {
-	AdminUsername *string  `json:"admin_username"`
-	NewPassword   *string  `json:"new_password"` // 明文新密码，保存时 bcrypt 哈希
+	AdminUsername *string `json:"admin_username"`
+	NewPassword   *string `json:"new_password"` // 明文新密码，保存时 bcrypt 哈希
 	// API Keys 管理（可选，三种动作可组合）：
 	// api_keys        整组替换（传 []string 或空数组清空；null=不改动）
 	// rotate_api_key  一键轮换：生成新 key 追加到列表（保留旧 key 宽限期）
 	// remove_api_key  从列表移除指定 key
-	APIKeys       *[]string `json:"api_keys"`
-	RotateAPIKey  *bool     `json:"rotate_api_key"`
-	RemoveAPIKey  *string   `json:"remove_api_key"`
+	APIKeys      *[]string `json:"api_keys"`
+	RotateAPIKey *bool     `json:"rotate_api_key"`
+	RemoveAPIKey *string   `json:"remove_api_key"`
 }
 
 // getSettingsHandler 返回当前配置（分组、脱敏），供设置页面加载。
@@ -99,10 +113,10 @@ func (s *Server) getSettingsHandler(w http.ResponseWriter, r *http.Request) {
 
 	resp := SettingsResponse{
 		General: map[string]interface{}{
-			"api_host":       cfg.Server.APIHost,
-			"api_port":       cfg.Server.APIPort,
-			"log_level":      cfg.Logging.Level,
-			"log_format":     cfg.Logging.Format,
+			"api_host":          cfg.Server.APIHost,
+			"api_port":          cfg.Server.APIPort,
+			"log_level":         cfg.Logging.Level,
+			"log_format":        cfg.Logging.Format,
 			"heartbeat_timeout": cfg.Listener.HeartbeatTimeout.String(),
 			"write_queue_size":  cfg.Listener.WriteQueueSize,
 		},
@@ -140,19 +154,28 @@ func (s *Server) getSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			"api_key_enabled": cfg.Auth.APIKeyEnabled,
 			"admin_username":  cfg.Auth.AdminUsername,
 			// API keys：返回脱敏版本用于展示（首 4 + 尾 4），不泄露全文
-			"api_keys":        maskedAPIKeys(cfg.Auth.APIKeys),
-			"api_key_count":   len(cfg.Auth.APIKeys),
+			"api_keys":      maskedAPIKeys(cfg.Auth.APIKeys),
+			"api_key_count": len(cfg.Auth.APIKeys),
 		},
 		AI: map[string]interface{}{
-			"enabled":      cfg.AI.Enabled,
-			"base_url":     cfg.AI.BaseURL,
-			"api_key":      maskSecret(cfg.AI.APIKey),
-			"model":        cfg.AI.Model,
-			"timeout":      cfg.AI.Timeout,
-			"max_turns":    cfg.AI.MaxTurns,
-			"consent_mode": cfg.AI.ConsentMode,
-			"agent_concurrency": cfg.AI.AgentConcurrency,
+			"enabled":            cfg.AI.Enabled,
+			"base_url":           cfg.AI.BaseURL,
+			"api_key":            maskSecret(cfg.AI.APIKey),
+			"model":              cfg.AI.Model,
+			"timeout":            cfg.AI.Timeout,
+			"max_turns":          cfg.AI.MaxTurns,
+			"consent_mode":       cfg.AI.ConsentMode,
+			"agent_concurrency":  cfg.AI.AgentConcurrency,
 			"download_allowlist": cfg.AI.DownloadAllowlist,
+		},
+		Web: map[string]interface{}{
+			"basic_auth_enabled": cfg.Web.BasicAuthEnabled,
+			"basic_auth_user":    cfg.Web.BasicAuthUser,
+			// 只回传"是否已设置密码"，绝不回传哈希
+			"password_set": cfg.Web.BasicAuthPassword != "",
+			"unauth_mode":  cfg.Web.UnauthMode,
+			"decoy_title":  cfg.Web.DecoyTitle,
+			"allow_cidrs":  cfg.Web.AllowCIDRs,
 		},
 	}
 	json.NewEncoder(w).Encode(resp)
@@ -434,6 +457,86 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			updates["ai.download_allowlist"] = cleaned
+		}
+	}
+
+	// ── Web 控制台防护（防测绘）段 ──
+	if wu := upd.Web; wu != nil {
+		cur := config.Get()
+		curUser := ""
+		curHash := ""
+		curEnabled := false
+		if cur != nil {
+			curUser, curHash, curEnabled = cur.Web.BasicAuthUser, cur.Web.BasicAuthPassword, cur.Web.BasicAuthEnabled
+		}
+		newUser := curUser
+		newHash := curHash
+
+		if wu.BasicAuthUser != nil {
+			newUser = strings.TrimSpace(*wu.BasicAuthUser)
+			if newUser == "" {
+				http.Error(w, `{"error":"basic_auth_user 不能为空"}`, http.StatusBadRequest)
+				return
+			}
+			updates["web.basic_auth_user"] = newUser
+		}
+		if wu.NewPassword != nil && *wu.NewPassword != "" {
+			if len(*wu.NewPassword) < 8 {
+				http.Error(w, `{"error":"Basic 认证密码至少 8 位"}`, http.StatusBadRequest)
+				return
+			}
+			hashed, herr := auth.HashPassword(*wu.NewPassword)
+			if herr != nil {
+				http.Error(w, `{"error":"密码哈希失败"}`, http.StatusInternalServerError)
+				return
+			}
+			newHash = hashed
+			updates["web.basic_auth_password"] = hashed
+		}
+		if wu.UnauthMode != nil {
+			m := strings.ToLower(strings.TrimSpace(*wu.UnauthMode))
+			if m != "basic" && m != "disguise" {
+				http.Error(w, `{"error":"unauth_mode 仅支持 disguise / basic"}`, http.StatusBadRequest)
+				return
+			}
+			updates["web.unauth_mode"] = m
+		}
+		if wu.DecoyTitle != nil {
+			updates["web.decoy_title"] = strings.TrimSpace(*wu.DecoyTitle)
+		}
+		if wu.AllowCIDRs != nil {
+			cleaned := []string{}
+			for _, c := range *wu.AllowCIDRs {
+				c = strings.TrimSpace(c)
+				if c == "" {
+					continue
+				}
+				if _, _, err := net.ParseCIDR(c); err != nil && net.ParseIP(c) == nil {
+					http.Error(w, fmt.Sprintf(`{"error":"allow_cidrs 项非法: %s"}`, c), http.StatusBadRequest)
+					return
+				}
+				cleaned = append(cleaned, c)
+			}
+			updates["web.allow_cidrs"] = cleaned
+		}
+		if wu.BasicAuthEnabled != nil {
+			// 防自锁：开启时必须已有可用凭据（用户名 + 已设置密码）
+			if *wu.BasicAuthEnabled && (newUser == "" || newHash == "") {
+				http.Error(w, `{"error":"开启基础认证前请先填写用户名与密码（密码至少 8 位）"}`, http.StatusBadRequest)
+				return
+			}
+			updates["web.basic_auth_enabled"] = *wu.BasicAuthEnabled
+			if *wu.BasicAuthEnabled && !curEnabled {
+				logging.Info("api", "Web basic auth enabled (unauth_mode=%s)", func() string {
+					if wu.UnauthMode != nil {
+						return strings.ToLower(strings.TrimSpace(*wu.UnauthMode))
+					}
+					if cur != nil {
+						return cur.Web.UnauthMode
+					}
+					return "disguise"
+				}())
+			}
 		}
 	}
 

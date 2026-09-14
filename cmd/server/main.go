@@ -145,13 +145,25 @@ func NewServer(cfgPath string) (*Server, error) {
 	}
 
 	if configChanged {
-		if err := viper.WriteConfig(); err != nil {
-			log.Printf("[WARNING] Failed to write config file: %v", err)
-			log.Printf("[WARNING] Credentials are active for this session but will not persist after restart.")
-		} else {
-			log.Printf("[SECURITY] Config file updated with generated credentials.")
+		// 凭据必须真正落盘：写失败会让每次重启都重新生成随机密码，
+		// 用户将被永久锁在门外（历史缺陷：仅打 WARNING 后继续运行）。
+		if err := config.Persist(map[string]interface{}{
+			"auth.admin_password":     cfg.Auth.AdminPassword,
+			"auth.jwt_key":            cfg.Auth.JWTKey,
+			"listener.encryption_key": cfg.Listener.EncryptionKey,
+		}); err != nil {
+			log.Printf("[ERROR] 生成的凭据无法写入配置文件: %v", err)
+			log.Printf("[ERROR] 配置路径: %s", config.ConfigPath())
+			log.Printf("[ERROR] 请确认该路径可写（或先用 -config 指定可写路径）后重启；")
+			log.Printf("[ERROR] 否则每次重启都会重新生成随机密码，导致无法登录。")
+			return nil, fmt.Errorf("failed to persist generated credentials to %s: %w", config.ConfigPath(), err)
 		}
+		log.Printf("[SECURITY] Generated credentials persisted to %s", config.ConfigPath())
 	}
+
+	// 启动可观测性：明确告知实际使用的配置与数据库位置，
+	// 避免「改了 A 文件、服务端读的是 B 文件」这类排查困难。
+	log.Printf("[INFO] [server] using config file: %s", config.ConfigPath())
 
 	logger, err := logging.New(cfg.Logging.Output, cfg.Logging.Level, cfg.Logging.Format)
 	if err != nil {

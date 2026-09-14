@@ -10,10 +10,12 @@ interface SettingsData {
   notifications: Record<string, any>
   security: Record<string, any>
   ai: Record<string, any>
+  /** 防测绘（控制台前置认证）配置 */
+  web: Record<string, any>
   new_password?: string // 仅前端草稿，不随分组提交
 }
 
-type SettingsGroup = 'general' | 'listener' | 'implant' | 'notifications' | 'security' | 'ai'
+type SettingsGroup = 'general' | 'listener' | 'implant' | 'notifications' | 'security' | 'ai' | 'web'
 
 const EMPTY: SettingsData = {
   general: {},
@@ -22,6 +24,7 @@ const EMPTY: SettingsData = {
   notifications: {},
   security: {},
   ai: {},
+  web: {},
 }
 
 /** 设置页：真实读写运行时配置（/api/v1/settings），保存后热生效 */
@@ -66,8 +69,15 @@ export function Settings() {
       if (group === 'security' && draft.new_password) {
         payload.new_password = draft.new_password
       }
-      // 保存成功后提示
-      await settingsApi.save({ [group]: payload })
+      // 安全 tab 同时提交「防测绘」分组（该页包含 web.* 控件）
+      if (group === 'security' && draft.web) {
+        const web = { ...draft.web }
+        delete web.password_set // 只读回显字段，不提交
+        if (!web.new_password) delete web.new_password // 留空 = 不修改密码
+        await settingsApi.save({ security: payload, web })
+      } else {
+        await settingsApi.save({ [group]: payload })
+      }
       setDraft((p) => ({ ...p, new_password: '' }))
       // 重新拉取最新配置
       await load()
@@ -326,6 +336,94 @@ export function Settings() {
                     <button className="save-btn sm" onClick={() => rotateApiKey()} disabled={saving || !draft.security.api_key_enabled}>
                       <RefreshCw size={14} /> 轮换新密钥
                     </button>
+                  </div>
+                </div>
+
+                {/* ── 防资产测绘：控制台前置认证 ── */}
+                <h2>防资产测绘（控制台防护）</h2>
+                <div className="settings-group">
+                  <div className="setting-item">
+                    <div className="setting-info">
+                      <label>基础认证（Basic Auth）</label>
+                      <span className="setting-desc">
+                        开启后访问控制台需先通过浏览器认证框，阻止 Fofa/Quake/Hunter 等资产测绘引擎抓取并收录本资产。
+                        已持有 API Key 的脚本与 AI 调用不受影响；<b>植入端回连不受影响</b>。
+                      </span>
+                    </div>
+                    <label className="toggle">
+                      <input
+                        type="checkbox"
+                        checked={!!draft.web?.basic_auth_enabled}
+                        onChange={(e) => setField('web', 'basic_auth_enabled', e.target.checked)}
+                      />
+                      <span className="toggle-slider" />
+                    </label>
+                  </div>
+                  <div className="setting-item">
+                    <div className="setting-info">
+                      <label>认证用户名</label>
+                      <span className="setting-desc">浏览器弹框中的用户名</span>
+                    </div>
+                    <input
+                      type="text"
+                      className="setting-input"
+                      value={draft.web?.basic_auth_user || ''}
+                      onChange={(e) => setField('web', 'basic_auth_user', e.target.value)}
+                      placeholder="toshell"
+                    />
+                  </div>
+                  <div className="setting-item">
+                    <div className="setting-info">
+                      <label>认证密码</label>
+                      <span className="setting-desc">
+                        {draft.web?.password_set ? '已设置（留空表示不修改；bcrypt 存储，不回显）' : '至少 8 位；保存后以 bcrypt 哈希写入配置'}
+                      </span>
+                    </div>
+                    <input
+                      type="password"
+                      className="setting-input"
+                      value={draft.web?.new_password || ''}
+                      onChange={(e) => setField('web', 'new_password', e.target.value)}
+                      placeholder={draft.web?.password_set ? '留空 = 不修改' : '设置密码'}
+                    />
+                  </div>
+                  <div className="setting-item">
+                    <div className="setting-info">
+                      <label>未认证响应</label>
+                      <span className="setting-desc">
+                        basic = 返回 401 认证框（<b>推荐</b>：浏览器会弹框，前端照常可用）；
+                        disguise = 返回 404（对测绘更隐蔽，但浏览器不弹框，需用 https://用户名:密码@主机/ 才能进入前端）
+                      </span>
+                    </div>
+                    <select
+                      className="setting-input"
+                      value={draft.web?.unauth_mode || 'basic'}
+                      onChange={(e) => setField('web', 'unauth_mode', e.target.value)}
+                    >
+                      <option value="basic">basic（401 认证框，推荐）</option>
+                      <option value="disguise">disguise（404 伪装，隐蔽优先）</option>
+                    </select>
+                  </div>
+                  <div className="setting-item">
+                    <div className="setting-info">
+                      <label>来源白名单（CIDR）</label>
+                      <span className="setting-desc">
+                        可选：逗号分隔，如 203.0.113.0/24,10.0.0.0/8。非空时仅这些网段可访问控制台（建议同时开启 basic auth 以免自锁）
+                      </span>
+                    </div>
+                    <input
+                      type="text"
+                      className="setting-input"
+                      value={(draft.web?.allow_cidrs || []).join(', ')}
+                      onChange={(e) =>
+                        setField(
+                          'web',
+                          'allow_cidrs',
+                          e.target.value.split(',').map((s) => s.trim()).filter(Boolean)
+                        )
+                      }
+                      placeholder="留空 = 不限制"
+                    />
                   </div>
                 </div>
                 <div className="settings-actions">

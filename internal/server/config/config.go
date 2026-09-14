@@ -1,13 +1,16 @@
 package config
 
 import (
+	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/viper"
+	"gopkg.in/yaml.v3"
 )
 
 type Config struct {
@@ -19,18 +22,41 @@ type Config struct {
 	Auth     AuthConfig     `mapstructure:"auth" json:"auth"`
 	Webhook  WebhookConfig  `mapstructure:"webhook" json:"webhook"`
 	AI       AIConfig       `mapstructure:"ai" json:"ai"`
+	Web      WebConfig      `mapstructure:"web" json:"web"`
+}
+
+// WebConfig Web 控制台防护配置（防资产测绘引擎收录、防未授权访问）。
+// 注意：只作用于「控制台 + 管理 API」端口；植入端回连（/api/v1/implant/*）
+// 与 C2 监听器端口不受影响，否则植入端会失联。
+type WebConfig struct {
+	// BasicAuthEnabled 开启 HTTP Basic 认证前置门槛（浏览器弹框），
+	// 用于阻止测绘引擎（Fofa/Quake/Hunter 等）抓取并收录本资产。
+	BasicAuthEnabled bool `mapstructure:"basic_auth_enabled" json:"basic_auth_enabled"`
+	// BasicAuthUser Basic 认证用户名。
+	BasicAuthUser string `mapstructure:"basic_auth_user" json:"basic_auth_user"`
+	// BasicAuthPassword Basic 认证密码的 bcrypt 哈希（不存明文）。
+	BasicAuthPassword string `mapstructure:"basic_auth_password" json:"-"`
+	// UnauthMode 未认证时的响应方式：
+	//   disguise（默认）= 返回 404（对外表现"无此服务"，不留 C2 特征）
+	//   basic          = 返回 401 + WWW-Authenticate（浏览器弹出认证框，便于日常使用）
+	UnauthMode string `mapstructure:"unauth_mode" json:"unauth_mode"`
+	// DecoyTitle 可选：替换控制台首页 <title>，避免默认标题暴露用途。
+	DecoyTitle string `mapstructure:"decoy_title" json:"decoy_title"`
+	// AllowCIDRs 可选：控制台访问来源白名单（CIDR 列表，如 203.0.113.0/24）。
+	// 非空时，不在列表内的来源即使凭据正确也会被拒（用于把控制台限制在运维网段）。
+	AllowCIDRs []string `mapstructure:"allow_cidrs" json:"allow_cidrs"`
 }
 
 // AIConfig AI 副驾驶（LLM 聊天 + 工具调用）配置。
 // BaseURL 为 OpenAI 兼容的 chat/completions 端点（如 https://api.deepseek.com/v1）；
 // 留空时 AI 副驾驶不可用（前端显示未配置提示）。
 type AIConfig struct {
-	Enabled bool   `mapstructure:"enabled" json:"enabled"`     // 是否启用
-	BaseURL string `mapstructure:"base_url" json:"base_url"`   // OpenAI 兼容端点
-	APIKey  string `mapstructure:"api_key" json:"api_key"`     // API Key
-	Model   string `mapstructure:"model" json:"model"`         // 模型名（如 deepseek-chat）
-	Timeout int    `mapstructure:"timeout" json:"timeout"`     // 单次请求超时（秒），默认 60
-	MaxTurns int   `mapstructure:"max_turns" json:"max_turns"` // 工具调用最大轮数，默认 8
+	Enabled  bool   `mapstructure:"enabled" json:"enabled"`     // 是否启用
+	BaseURL  string `mapstructure:"base_url" json:"base_url"`   // OpenAI 兼容端点
+	APIKey   string `mapstructure:"api_key" json:"api_key"`     // API Key
+	Model    string `mapstructure:"model" json:"model"`         // 模型名（如 deepseek-chat）
+	Timeout  int    `mapstructure:"timeout" json:"timeout"`     // 单次请求超时（秒），默认 60
+	MaxTurns int    `mapstructure:"max_turns" json:"max_turns"` // 工具调用最大轮数，默认 8
 	// ConsentMode 权限模式：auto=全自动（默认，工具直接执行）；
 	// normal=影响会话的操作（命令下发/文件/进程/凭据/截屏/隧道/插件等）执行前需用户同意，
 	// 任务流(delegate/剧本)除外。读取/查询类工具不拦截。
@@ -197,16 +223,216 @@ func Apply() error {
 }
 
 // Save 批量应用配置项（key 为 viper 路径，如 "listener.mimicry_profile"），
-// 写回配置文件并立即热生效（WriteConfig 同时会触发 WatchConfig 自动重载）。
-// 返回写回后的生效配置。
+// 原子写回配置文件并立即热生效。
+//
+// 写入语义（重要）：采用「读-改-写 + 原子替换」而不是 viper.WriteConfig()：
+//  1. 把配置文件读成 YAML 节点树（保留注释、字段顺序与缩进）；
+//  2. 只修改传入的 key，其余内容原样保留；
+//  3. 写同目录临时文件 → fsync → rename 覆盖（避免截断写入导致配置损坏/丢凭据）。
 func Save(updates map[string]interface{}) error {
-	for k, v := range updates {
-		viper.Set(k, v)
-	}
-	if err := viper.WriteConfig(); err != nil {
+	if err := Persist(updates); err != nil {
 		return err
 	}
+	// 用文件内容同步 viper 内存态（比逐个 viper.Set 更贴近磁盘真实值）
+	if err := viper.ReadInConfig(); err != nil {
+		for k, v := range updates {
+			viper.Set(k, v)
+		}
+	}
 	return Apply()
+}
+
+// configFilePath 记录本次进程实际使用的配置文件绝对路径（Load 时确定）。
+var configFilePath string
+
+// ConfigPath 返回当前生效的配置文件绝对路径（空 = 未使用配置文件）。
+func ConfigPath() string { return configFilePath }
+
+// resolveConfigPath 解析配置文件路径：显式 -config 优先，其次 viper 实际读到的文件，
+// 最后回退到 ./configs/server.yaml（首个启动目录）。返回绝对路径。
+func resolveConfigPath(explicit string) string {
+	p := strings.TrimSpace(explicit)
+	if p == "" {
+		if used := viper.ConfigFileUsed(); used != "" {
+			p = used
+		}
+	}
+	if p == "" {
+		p = filepath.Join("configs", "server.yaml")
+	}
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
+}
+
+// Persist 把 updates 原子写回配置文件：只改传入的 key，其余字段与注释原样保留。
+// 文件不存在时会创建（含父目录），因此首次启动生成的凭据也能真正落盘。
+func Persist(updates map[string]interface{}) error {
+	if len(updates) == 0 {
+		return nil
+	}
+	path := configFilePath
+	if path == "" {
+		path = resolveConfigPath("")
+	}
+	if strings.HasSuffix(path, ".yaml.example") || strings.HasSuffix(path, ".yml.example") {
+		// 兜底：绝不写入示例文件（否则会污染模板并可能泄露真实密钥）
+		path = strings.TrimSuffix(path, ".example")
+	}
+	doc, err := loadYAMLDoc(path)
+	if err != nil {
+		return err
+	}
+	for k, v := range updates {
+		if strings.HasPrefix(k, "_") {
+			continue // 内部字段（如 _new_api_key）只回传前端，不落盘
+		}
+		if err := setYAMLPath(doc, k, v); err != nil {
+			return fmt.Errorf("set %s: %w", k, err)
+		}
+	}
+	return writeYAMLAtomic(path, doc)
+}
+
+// loadYAMLDoc 读取 YAML 文件为节点树；文件不存在时返回空映射文档。
+func loadYAMLDoc(path string) (*yaml.Node, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return newEmptyYAMLDoc(), nil
+		}
+		return nil, fmt.Errorf("read config %s: %w", path, err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		return nil, fmt.Errorf("parse config %s: %w", path, err)
+	}
+	if len(doc.Content) == 0 || doc.Content[0] == nil {
+		return newEmptyYAMLDoc(), nil
+	}
+	if doc.Content[0].Kind != yaml.MappingNode {
+		return newEmptyYAMLDoc(), nil
+	}
+	return &doc, nil
+}
+
+// newEmptyYAMLDoc 构造「空映射」文档节点。
+func newEmptyYAMLDoc() *yaml.Node {
+	root := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	return &yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{root}}
+}
+
+// setYAMLPath 在节点树中设置 "a.b.c" 路径的值为 v；中间层级缺失时自动创建映射。
+func setYAMLPath(doc *yaml.Node, dotted string, v interface{}) error {
+	parts := strings.Split(dotted, ".")
+	root := doc.Content[0]
+	cur := root
+	for i, part := range parts {
+		last := i == len(parts)-1
+		// 在映射中查找 key
+		idx := -1
+		for j := 0; j+1 < len(cur.Content); j += 2 {
+			if cur.Content[j].Value == part {
+				idx = j
+				break
+			}
+		}
+		if last {
+			valNode, err := encodeYAMLValue(v)
+			if err != nil {
+				return err
+			}
+			if idx >= 0 {
+				cur.Content[idx+1] = valNode
+			} else {
+				cur.Content = append(cur.Content,
+					&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: part}, valNode)
+			}
+			return nil
+		}
+		if idx >= 0 && cur.Content[idx+1].Kind == yaml.MappingNode {
+			cur = cur.Content[idx+1]
+			continue
+		}
+		child := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		if idx >= 0 {
+			cur.Content[idx+1] = child // 叶子与中间层级冲突时以中间映射为准
+		} else {
+			cur.Content = append(cur.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: part}, child)
+		}
+		cur = child
+	}
+	return nil
+}
+
+// encodeYAMLValue 把 Go 值编码为 YAML 节点（保留类型：整数/布尔/字符串/序列）。
+func encodeYAMLValue(v interface{}) (*yaml.Node, error) {
+	b, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var tmp yaml.Node
+	if err := yaml.Unmarshal(b, &tmp); err != nil {
+		return nil, err
+	}
+	if len(tmp.Content) == 0 {
+		return &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!null", Value: ""}, nil
+	}
+	return tmp.Content[0], nil
+}
+
+// writeYAMLAtomic 原子写回：同目录临时文件 → fsync → rename 覆盖。
+// 任一步失败都不会破坏原文件（这是「配置写坏导致凭据丢失」的根治手段）。
+func writeYAMLAtomic(path string, doc *yaml.Node) error {
+	data, err := yaml.Marshal(doc)
+	if err != nil {
+		return fmt.Errorf("marshal config: %w", err)
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	mode := os.FileMode(0o600)
+	if st, serr := os.Stat(path); serr == nil {
+		mode = st.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(dir, ".server.yaml.tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp in %s: %w", dir, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpName) }
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("write temp: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		cleanup()
+		return fmt.Errorf("sync temp: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("close temp: %w", err)
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		cleanup()
+		return fmt.Errorf("chmod temp: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		// Windows 上 rename 到已存在文件会失败：先移除目标再重试。
+		if rmErr := os.Remove(path); rmErr == nil {
+			if err2 := os.Rename(tmpName, path); err2 == nil {
+				return nil
+			}
+		}
+		cleanup()
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	return nil
 }
 
 func Load(configPath string) (*Config, error) {
@@ -266,6 +492,17 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("webhook.content", "")
 	viper.SetDefault("webhook.only_online", true)
 
+	// Web 控制台防护（防资产测绘/未授权访问）
+	viper.SetDefault("web.basic_auth_enabled", false)
+	viper.SetDefault("web.basic_auth_user", "toshell")
+	viper.SetDefault("web.basic_auth_password", "")
+	// 默认 basic：未认证返回 401 挑战 → 浏览器弹出认证框，前端仍可正常使用。
+	// disguise（404 伪装）更隐蔽，但浏览器不会弹框，需在 URL 里携带凭据
+	// （https://user:pass@host/）才能进入前端，适合纯 API/CLI 场景。
+	viper.SetDefault("web.unauth_mode", "basic")
+	viper.SetDefault("web.decoy_title", "")
+	viper.SetDefault("web.allow_cidrs", []string{})
+
 	viper.SetDefault("ai.enabled", false)
 	viper.SetDefault("ai.base_url", "")
 	viper.SetDefault("ai.api_key", "")
@@ -281,6 +518,9 @@ func Load(configPath string) (*Config, error) {
 	if err := viper.ReadInConfig(); err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
+
+	// 记录本次进程实际使用的配置文件绝对路径（写回凭据/设置时使用）
+	configFilePath = resolveConfigPath(configPath)
 
 	var config Config
 	if err := viper.Unmarshal(&config); err != nil {
@@ -314,14 +554,17 @@ func Set(config *Config) {
 }
 
 // UpdateListenerConfig 将监听器运行参数同步写回配置文件（供 Web 编辑默认监听器使用）。
+// 走 Save 的原子读-改-写路径，只改动 listener.* 这几项，其余字段与注释保留。
 // 返回写回后的当前生效配置。
 func UpdateListenerConfig(cfg *Config, lc ListenerConfig) error {
-	viper.Set("listener.enabled", lc.Enabled)
-	viper.Set("listener.host", lc.Host)
-	viper.Set("listener.port", lc.Port)
-	viper.Set("listener.public_host", lc.PublicHost)
-	viper.Set("listener.protocol", lc.Protocol)
-	if err := viper.WriteConfig(); err != nil {
+	updates := map[string]interface{}{
+		"listener.enabled":     lc.Enabled,
+		"listener.host":        lc.Host,
+		"listener.port":        lc.Port,
+		"listener.public_host": lc.PublicHost,
+		"listener.protocol":    lc.Protocol,
+	}
+	if err := Save(updates); err != nil {
 		return err
 	}
 	cfg.Listener = lc

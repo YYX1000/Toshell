@@ -97,10 +97,10 @@ type Server struct {
 	socks5Servers map[string]*tunnel.SOCKS5Server
 	socks5Mu      sync.RWMutex
 	wsHub         *WSHub
-	webFS         http.FileSystem // 嵌入式前端文件系统（nil = 未嵌入）
-	copilot       *ai.Copilot     // AI 副驾驶（LLM 聊天 + 工具调用；nil = 未配置）
+	webFS         http.FileSystem    // 嵌入式前端文件系统（nil = 未嵌入）
+	copilot       *ai.Copilot        // AI 副驾驶（LLM 聊天 + 工具调用；nil = 未配置）
 	playbookR     *ai.PlaybookRunner // 剧本化执行引擎（确定性攻击链）
-	agentMgr      *ai.AgentManager  // 异步自主 Agent 运行时（run 生命周期 + 并发上限）
+	agentMgr      *ai.AgentManager   // 异步自主 Agent 运行时（run 生命周期 + 并发上限）
 	// onConfigApplied 配置保存并热应用后的回调（由服务器主循环注册，
 	// 用于通知各组件如 HTTP listener 拟态模板切换）。
 	onConfigApplied func(cfg *config.Config)
@@ -335,7 +335,9 @@ func (s *Server) Stop() error {
 // ─── Routes ────────────────────────────────────────────────────────────────────
 
 func (s *Server) setupRoutes() {
-	s.router.HandleFunc("/api/v1/health", s.healthHandler).Methods("GET")
+	// health 也纳入 Web 防护：避免未认证探测拿到 200 响应形成指纹
+	// （运维监控请携带 X-API-Key 或 Basic 凭据）
+	s.router.Handle("/api/v1/health", s.webGate(http.HandlerFunc(s.healthHandler))).Methods("GET")
 
 	implant := s.router.PathPrefix("/api/v1/implant").Subrouter()
 	implant.HandleFunc("/register", s.implantRegisterHandler).Methods("POST")
@@ -347,6 +349,10 @@ func (s *Server) setupRoutes() {
 	implant.HandleFunc("/uac/{token}", s.uacPayloadHandler).Methods("GET")
 
 	api := s.router.PathPrefix("/api/v1").Subrouter()
+
+	// Web 防护（防测绘）先于认证：未带任何凭据的探测请求直接 404/401，
+	// 不会进入后续逻辑；持有 API Key/JWT 的自动化客户端照常放行。
+	api.Use(s.webGate)
 
 	if s.auth != nil {
 		api.Use(s.auth.Middleware())
@@ -469,8 +475,56 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/sessions/{id}/workflow", s.executeWorkflowHandler).Methods("POST")
 	api.HandleFunc("/workflows/{id}", s.getWorkflowStatusHandler).Methods("GET")
 
-	// SPA 前端 — 嵌入在二进制中，非 API 路径回退到 index.html
-	s.router.PathPrefix("/").Handler(s.serveSPA())
+	// robots.txt：避免被搜索引擎收录（测绘引擎不遵守，但成本为零）
+	s.router.HandleFunc("/robots.txt", s.robotsHandler).Methods("GET")
+
+	// SPA 前端 — 嵌入在二进制中，非 API 路径回退到 index.html。
+	// 同样经过 Web 防护：未认证访问 / 与 /assets/* 只会得到 404/401，不返回任何前端内容
+	// （否则测绘引擎可通过 index.html 标题与静态资源指纹收录本资产）。
+	s.router.PathPrefix("/").Handler(s.webGate(s.serveSPA()))
+}
+
+// implantExemptPrefixes Web 防护豁免前缀：植入端协议与免认证载荷下载。
+// 这些路径由植入端在不具备浏览器认证凭据的情况下访问，一旦被拦住会话会直接失联。
+var implantExemptPrefixes = []string{
+	"/api/v1/implant/",
+}
+
+// webConfig Web 防护配置：**每次请求读取**实时配置（config.Get()），
+// 使设置页保存后立即生效（不能缓存 s.cfg —— 它是启动时的快照）。
+func (s *Server) webConfig() auth.WebGateConfig {
+	cfg := config.Get()
+	if cfg == nil {
+		cfg = s.cfg
+	}
+	if cfg == nil {
+		return auth.WebGateConfig{}
+	}
+	return auth.WebGateConfig{
+		Enabled:           cfg.Web.BasicAuthEnabled,
+		User:              cfg.Web.BasicAuthUser,
+		PasswordHash:      cfg.Web.BasicAuthPassword,
+		Disguise:          strings.ToLower(strings.TrimSpace(cfg.Web.UnauthMode)) != "basic",
+		AllowCIDRs:        cfg.Web.AllowCIDRs,
+		TrustProxyHeaders: cfg.Server.TrustProxyHeaders,
+	}
+}
+
+// webGate 给任意 handler 套上 Web 防护（配置在每次请求时解析，支持热生效）。
+func (s *Server) webGate(next http.Handler) http.Handler {
+	if s.auth == nil {
+		return next
+	}
+	exempt := implantExemptPrefixes
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.auth.WebGate(s.webConfig(), exempt, next).ServeHTTP(w, r)
+	})
+}
+
+// robotsHandler 返回禁止收录的 robots.txt（对测绘引擎无约束力，但可避免被搜索引擎收录）。
+func (s *Server) robotsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Write([]byte("User-agent: *\nDisallow: /\n"))
 }
 
 // ─── Utilities ─────────────────────────────────────────────────────────────────

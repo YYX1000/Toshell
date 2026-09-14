@@ -72,24 +72,29 @@ jobs:
 
       - name: Package zip
         run: |
-          mkdir -p pkg
-          cp "toserver${{ matrix.ext }}" "pkg/toserver${{ matrix.ext }}"
+          # 暂存目录必须用仓库里不存在的名字：以前用 pkg/，而仓库本身有 pkg/goroutine、
+          # pkg/rate 两个源码目录，导致它们被一起打进发布 zip。
+          STAGE="pkgstage"
+          rm -rf "$STAGE"
+          mkdir -p "$STAGE"
+          cp "toserver${{ matrix.ext }}" "$STAGE/toserver${{ matrix.ext }}"
           # 完整可运行包：植入端模板 + 配置样例 + 依赖目录
-          cp -r release/implant pkg/implant
-          cp -r release/implant_c pkg/implant_c
+          cp -r release/implant "$STAGE/implant"
+          cp -r release/implant_c "$STAGE/implant_c"
           # 配置：与 release/configs 布局一致（deploy.sh/bat 从 configs/ 读取）
-          mkdir -p pkg/configs
-          cp configs/server.yaml.example pkg/configs/server.yaml.example
-          cp README.md pkg/README.md
-          cp USAGE.md pkg/USAGE.md
-          cp "${{ matrix.deploy }}" pkg/
+          mkdir -p "$STAGE/configs"
+          cp configs/server.yaml.example "$STAGE/configs/server.yaml.example"
+          cp README.md "$STAGE/README.md"
+          cp USAGE.md "$STAGE/USAGE.md"
+          cp "${{ matrix.deploy }}" "$STAGE/"
           # 运行时数据预设：data 目录 + 杀软指纹库（服务端必需，db 由首次启动自动创建）
-          mkdir -p pkg/data
-          cp data/av_fingerprints.json pkg/data/av_fingerprints.json
+          mkdir -p "$STAGE/data"
+          cp data/av_fingerprints.json "$STAGE/data/av_fingerprints.json"
           # upx/drivers/plugins 若存在于仓库则一并打包（可选依赖）
-          for d in upx drivers plugins; do if [ -d "release/$d" ]; then cp -r "release/$d" "pkg/$d"; fi; done
-          if [ "${{ matrix.goos }}" != "windows" ]; then chmod +x pkg/deploy.sh; fi
-          (cd pkg && zip -q -r "../${{ matrix.zip }}" .)
+          for d in upx drivers plugins; do if [ -d "release/$d" ]; then cp -r "release/$d" "$STAGE/$d"; fi; done
+          if [ "${{ matrix.goos }}" != "windows" ]; then chmod +x "$STAGE/deploy.sh"; fi
+          (cd "$STAGE" && zip -q -r "../${{ matrix.zip }}" .)
+          rm -rf "$STAGE"
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2

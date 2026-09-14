@@ -223,6 +223,8 @@ curl -X POST http://<IP>:18081/api/v1/builders/download \
 
 ## 五、云端部署注意事项
 
+> **域名 + CDN / 反向代理 / 域前置上线**：完整操作说明（C2 端点清单、CDN 回源配置、Nginx 反代示例、域前置的正确用法与限制、排错 FAQ）见 **[docs/DEPLOY-DOMAIN-CDN.md](docs/DEPLOY-DOMAIN-CDN.md)**。
+
 1. **安全组/防火墙**:放行 C2 端口(默认 8080)与 API 端口(默认 18081);
 2. **域名与证书**:建议使用 HTTPS 访问控制台(`server.tls_cert` / `server.tls_key`),C2 可启用 TLS(`listener.tls_enabled` + `cert_file` / `key_file`);
 3. **密钥管理**:`encryption_key`、`jwt_key` 留空可自动生成;更换后需重新生成所有植入端;

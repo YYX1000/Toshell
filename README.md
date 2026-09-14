@@ -123,6 +123,8 @@ cd release && chmod +x deploy.sh && ./deploy.sh   # Linux / macOS
 
 > 首次运行会基于 `server.yaml.example` 自动生成配置，请先修改敏感项。完整部署说明见 [USAGE.md](USAGE.md)。
 
+> **想用域名 + CDN 上线？** 见 [docs/DEPLOY-DOMAIN-CDN.md](docs/DEPLOY-DOMAIN-CDN.md)：CDN 回源、Nginx 反代、域前置（Domain Fronting）三种方式与排错 FAQ。
+
 ### 默认启动方式
 
 服务端是一个**单一可执行文件**，无需安装任何服务，直接运行即可：

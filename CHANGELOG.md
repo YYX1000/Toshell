@@ -1,9 +1,9 @@
 # 更新日志 / Changelog
 
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
-后续优化方向（含会话抖动、屏幕流/截图跨平台、远程工具加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
+后续优化方向（含驱动能力分档、内存执行加固、屏幕流跨平台、平台工具库与远程加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
-## [v1.3.3] - 2026-09（待发布，等待实测确认）
+## [v1.3.3] - 2026-09（已完成开发，等待操作员实测后打 tag）
 
 重点：ROADMAP P0 两项（会话掉线抖动、屏幕流/截图可控）、内存模块 EXE 带参执行、平台工具库、BYOVD 驱动可插拔、issue #6 / #7。
 
@@ -23,9 +23,6 @@
 - **能力变化（如实说明）**：kgameprotect 只提供进程终止、**没有任意内核读写**，因此"用驱动改 EPROCESS.Protection"的 PPL 清除路线**已移除**；`ppl_kill` 只保留**句柄窃取**路线，对 PPL 保护进程（如 Defender 的 MsMpEng）无效时会有明确提示。
 - 前端文案与排版一并整理：BYOVD 区块改为「驱动说明 + 内置驱动一键加载/卸载 + 驱动击杀 + 自定义 .sys 上传」四段式，去掉原先那段与实现不再匹配的 RTCore64 长文与挤在一行的排版；About/USAGE 同步更新。
 
-
-### 🔢 版本
-- 全量版本号更新为 **1.3.3**（服务端 `-version`、Web、About、README、USAGE、部署脚本、打包脚本、CDN 指南），CI 的 `main.version` 改为跟随 tag（`${GITHUB_REF_NAME#v}`），避免每次发版手改 workflow。
 
 ### 📡 会话稳定性：不再「离线几秒又在线」（ROADMAP P0-1）
 - **判活阈值强制留余量**：实际超时 = `max(listener.heartbeat_timeout, 3 × 实测心跳间隔)`，并在启动日志里写明「margin 3x」。此前 `heartbeat_timeout=60s` 与心跳间隔 60s 几乎零余量，任何一次心跳迟到（调度抖动/网络排队/休眠唤醒）都会被判离线，下一个心跳又恢复，前端表现为闪断。
@@ -50,6 +47,28 @@
 ### 🧰 C 植入端工具链探测（issue #6）
 - mingw gcc 探测改为「配置 → 环境变量 → 服务端同目录便携工具链 → 常见安装目录 → PATH → **Windows 注册表 PATH**」逐级查找，并用 `gcc -dumpmachine` 校验目标架构；解决「gcc 已加入系统环境变量但服务端仍显示无 gcc」（进程环境是旧快照）与「32 位 gcc 静默编译 amd64」两个问题。
 - 新增配置项 `builder.mingw_gcc_path`；garble 可用性改为一次极小真实构建探测（此前只查 PATH，会出现「显示可用但构建必失败」）。
+
+### 🎛 前端可读性
+- 屏幕流参数面板在中文名后标出接口字段名（`fps` / `quality` / `max_kbps` / `monitor` / `max_width`），并补范围与悬浮说明，避免"只有一个中文名不知道对应哪个参数"。
+- 杀软对抗页 BYOVD 区块重排为「驱动说明 / 内置驱动一键加载与卸载 / 驱动击杀 / 自定义 .sys 上传」四段式，驱动信息（设备、服务名、IOCTL、SHA-256、签名者）来自 `/drivers` 接口，不再把长说明挤在一行。
+
+### 🔢 版本
+- 全量版本号更新为 **1.3.3**（服务端 `-version`、Web、About、README、USAGE、部署脚本、打包脚本、CDN 指南），CI 的 `main.version` 改为跟随 tag（`${GITHUB_REF_NAME#v}`），避免每次发版手改 workflow。
+
+### ✅ 实测验收（本轮已跑过的真实验证）
+- **会话抖动**：60s 心跳（jitter 5s）的植入端连续运行 220s → 状态**零抖动**；杀掉植入端后按 3m1s（3 倍间隔）判死并只广播一次 `session_offline`；启动日志可见 `Session heartbeat timeout: 3m0s (implant interval 1m0s, margin 3x)`。
+- **屏幕流/截图**：`max_width=640` → 640×360 JPEG 约 21KB（原始 2560×1440 约 343KB）；`monitor=1` 单选显示器生效；屏幕流回执确认 `fps=5 quality=60 max_kbps=1200` 已下发且 WS 侧可见真实 JPEG 帧。
+- **内存执行 EXE 带参**：反射执行测试 PE 后其 `argv` 为 `["tool.exe","mem-hello","42"]`（`argc=3`）——参数注入生效；32 位 PE 注入 64 位植入体被明确拒绝。
+- **webhook**：真植入端上线触发通知，假飞书收到 `{"msg_type":"text","content":{...}}` 返回 `code=0`；同一地址强发旧通用 JSON 时被正确判为失败并显示 `19002` 原因。
+- **驱动**：`kgameprotect.sys` 本地复算 SHA-256 与 LOLDrivers PR #428 记录一致、`Get-AuthenticodeSignature` 为 **Valid**（Microsoft Windows Hardware Compatibility Publisher / WHQL）；`/api/v1/drivers` 返回 `purpose=kill, device=\\.\kgameprotect, ioctl=0x222048`。
+- **模板构建矩阵**：变更后 windows/amd64 full、windows/amd64 light、linux/amd64 full 三档均构建成功；`internal/server/builder/implant` 与 `release/implant` 全量模板 MD5 一致。
+
+### ⚠️ 本轮已知边界（未修，已列入 ROADMAP P0）
+- `exe_mem` 下**载荷自行退出会带走植入体**（载荷 CRT 内部调用 `ExitProcess` 拦不住）；**Go 编译的载荷不能这样跑**（双 runtime 冲突）；内存执行不重定向 stdout。
+- BYOVD 换成 kgameprotect 后**失去任意内核读写**，**PPL 保护进程杀不掉**（`ppl_kill` 仅剩句柄窃取路线）。
+- 本机 AV 会拦截新编译的 **386 位 Go 载荷**（换文件名亦然），32 位链路未能本机实测。
+- garble 与 Go 版本不兼容（garble v0.16 要求 Go ≥ 1.26，本机 go1.25.0），混淆选项在升级 Go 前不可用（界面已如实提示）。
+- **未在本机加载内核驱动**：驱动加载与真实击杀由操作员在授权环境实测。
 
 ## [v1.3.2] - 2026-09-14
 

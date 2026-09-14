@@ -199,11 +199,12 @@ type WebhookConfig struct {
 	URL        string `mapstructure:"url" json:"url"`                 // 通知目标 URL（企业微信/钉钉/飞书/Slack 等机器人 webhook）
 	Content    string `mapstructure:"content" json:"content"`         // 内容模板，支持 {session_id} {hostname} {username} {os} {arch} {remote_addr} {time}
 	OnlyOnline bool   `mapstructure:"only_online" json:"only_online"` // 仅上线通知（true 时只在会话上线时发送）
-	// Format 消息格式：auto（按 URL 自动识别，钉钉用钉钉 markdown，其它通用 JSON）/
-	// dingtalk（强制钉钉 markdown）/ generic（通用 JSON）。空 = auto。
+	// Format 消息格式：auto（按 URL 自动识别平台）/ dingtalk（钉钉 markdown）/
+	// feishu（飞书、Lark）/ wecom（企业微信）/ slack / discord /
+	// generic（通用 JSON，自建接收端）。空 = auto。
 	Format string `mapstructure:"format" json:"format"`
-	// Secret 钉钉加签密钥（安全设置里的"加签"Secret）。仅在钉钉格式且非空时启用
-	// timestamp+sign 加签；使用关键字模式留空即可。
+	// Secret 机器人加签密钥。钉钉：timestamp+sign 查询参数；
+	// 飞书：body 内 timestamp+sign（HMAC-SHA256）。使用关键字模式可留空。
 	Secret string `mapstructure:"secret" json:"secret"`
 }
 

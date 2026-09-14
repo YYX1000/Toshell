@@ -337,11 +337,13 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		if n.Format != nil {
 			f := strings.ToLower(strings.TrimSpace(*n.Format))
-			if f != "" && f != "auto" && f != "dingtalk" && f != "generic" {
-				http.Error(w, `{"error":"format 仅支持 auto/dingtalk/generic"}`, http.StatusBadRequest)
+			switch f {
+			case "", "auto", "dingtalk", "feishu", "wecom", "slack", "discord", "generic":
+				updates["webhook.format"] = f
+			default:
+				http.Error(w, `{"error":"format 仅支持 auto/dingtalk/feishu/wecom/slack/discord/generic"}`, http.StatusBadRequest)
 				return
 			}
-			updates["webhook.format"] = f
 		}
 		if n.Secret != nil {
 			updates["webhook.secret"] = *n.Secret
@@ -665,20 +667,17 @@ func (s *Server) testWebhookHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	status, respBody, err := webhook.SendTest(req.URL, req.Content, req.Format, req.Secret)
+	result, err := webhook.SendTest(req.URL, req.Content, req.Format, req.Secret)
 	if err != nil {
 		http.Error(w, fmt.Sprintf(`{"error":"发送失败: %v"}`, err), http.StatusBadGateway)
 		return
 	}
-	ok := status < 300
-	// 钉钉业务错误（HTTP 200 但 errcode 非 0）
-	if strings.Contains(respBody, `"errcode"`) && !strings.Contains(respBody, `"errcode":0`) {
-		ok = false
-	}
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"ok":          ok,
-		"status_code": status,
-		"response":    truncateStr(respBody, 300),
+		"ok":          result.OK,
+		"platform":    result.Platform,
+		"status_code": result.StatusCode,
+		"response":    result.Response,
+		"error":       result.Error,
 	})
 }
 

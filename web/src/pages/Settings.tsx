@@ -17,6 +17,16 @@ interface SettingsData {
 
 type SettingsGroup = 'general' | 'listener' | 'implant' | 'notifications' | 'security' | 'ai' | 'web'
 
+/** 通知平台显示名（后端按 URL 自动识别后回传 platform 字段） */
+const PLATFORM_LABEL: Record<string, string> = {
+  feishu: '飞书',
+  dingtalk: '钉钉',
+  wecom: '企业微信',
+  slack: 'Slack',
+  discord: 'Discord',
+  generic: '通用 JSON',
+}
+
 const EMPTY: SettingsData = {
   general: {},
   listener: {},
@@ -33,7 +43,7 @@ export function Settings() {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
-  const [testResult, setTestResult] = useState<{ ok: boolean; status_code: number; response: string } | null>(null)
+  const [testResult, setTestResult] = useState<{ ok: boolean; platform?: string; status_code: number; response: string; error?: string } | null>(null)
 
   // 表单草稿
   const [draft, setDraft] = useState<SettingsData>(EMPTY)
@@ -516,12 +526,16 @@ export function Settings() {
                   <div className="setting-item">
                     <div className="setting-info">
                       <label>消息格式</label>
-                      <span className="setting-desc">钉钉自动用 markdown；其它平台通用 JSON（加签 Secret 请在 server.yaml 的 webhook.secret 配置）</span>
+                      <span className="setting-desc">auto 会按 URL 自动识别飞书/钉钉/企业微信/Slack/Discord 并发送对应消息结构；加签 Secret 请在 server.yaml 的 webhook.secret 配置（钉钉走 URL 签名，飞书走 body 内 sign）</span>
                     </div>
                     <select className="setting-input" value={draft.notifications.format || 'auto'} onChange={(e) => setField('notifications', 'format', e.target.value)}>
                       <option value="auto">auto（按 URL 自动识别）</option>
                       <option value="dingtalk">dingtalk（钉钉 markdown）</option>
-                      <option value="generic">generic（通用 JSON）</option>
+                      <option value="feishu">feishu（飞书 / Lark 文本卡片）</option>
+                      <option value="wecom">wecom（企业微信文本）</option>
+                      <option value="slack">slack（Slack Incoming Webhook）</option>
+                      <option value="discord">discord（Discord Webhook）</option>
+                      <option value="generic">generic（通用 JSON，自建接收端）</option>
                     </select>
                   </div>
                 </div>
@@ -535,7 +549,9 @@ export function Settings() {
                 </div>
                 {testResult && (
                   <div className={`settings-msg ${testResult.ok ? 'ok' : 'err'}`}>
-                    测试结果: HTTP {testResult.status_code} — {testResult.response}
+                    测试结果: {PLATFORM_LABEL[testResult.platform || ''] || testResult.platform || '未知平台'} — HTTP {testResult.status_code}
+                    {testResult.ok ? ' ✅ 发送成功' : ` ❌ ${testResult.error || '发送失败'}`}
+                    {testResult.response ? ` — ${testResult.response}` : ''}
                     <button className="settings-msg-close" onClick={() => setTestResult(null)}>×</button>
                   </div>
                 )}

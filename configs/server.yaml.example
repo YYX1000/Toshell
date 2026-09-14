@@ -1,21 +1,21 @@
 # =====================================================================
 # ToShell Team Server 配置文件模板（开源示例）
-# 复制为 server.yaml 后按需修改；部署前请务必更改所有敏感项。
+# 复制�?server.yaml 后按需修改；部署前请务必更改所有敏感项�?
 #   Linux/macOS:  cp configs/server.yaml.example configs/server.yaml
 #   Windows:      copy configs\server.yaml.example configs\server.yaml
 # =====================================================================
 
 auth:
-    # 管理员密码：可填 bcrypt 哈希($2a$...)或明文，明文会被自动哈希。默认 toshell，部署后请立即修改。
+    # 管理员密码：可填 bcrypt 哈希($2a$...)或明文，明文会被自动哈希。默�?toshell，部署后请立即修改�?
     admin_password: toshell
     admin_username: admin
     api_key_enabled: true
-    # API Key：调用 API 时用 X-API-Key 请求头传递；务必改为你自己的随机串。
+    # API Key：调�?API 时用 X-API-Key 请求头传递；务必改为你自己的随机串�?
     api_keys: change-me-api-key
     enabled: true
     jwt_enabled: true
     jwt_expire: 24
-    # JWT 签名密钥：留空首次启动会自动生成并写回；也可手动填 32 字节随机串。
+    # JWT 签名密钥：留空首次启动会自动生成并写回；也可手动�?32 字节随机串�?
     jwt_key: ""
 
 database:
@@ -36,22 +36,22 @@ implant:
     retry_count: 3
     retry_wait: 5
     working_hours: ""
-    # 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行为"检测（0 关闭）
+    # 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行�?检测（0 关闭�?
     startup_delay_min: 2
     startup_delay_max: 10
 
 builder:
-    # C 植入端（约 50KB）编译所需的 mingw-w64 gcc。留空时自动探测：
-    # 环境变量 TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX →
-    # 服务端同目录便携工具链（如 ./mingw64/bin/gcc.exe）→ 常见安装目录
-    # （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH 与 Windows 注册表 PATH。
-    # 可填 gcc 可执行文件路径、所在目录，或 PATH 中的命令名。
+    # C 植入端（�?50KB）编译所需�?mingw-w64 gcc。留空时自动探测�?
+    # 环境变量 TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX �?
+    # 服务端同目录便携工具链（�?./mingw64/bin/gcc.exe）→ 常见安装目录
+    # （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH �?Windows 注册�?PATH�?
+    # 可填 gcc 可执行文件路径、所在目录，�?PATH 中的命令名�?
     mingw_gcc_path: ""
 
 listener:
     cert_file: ""
     enabled: true
-    # 植入端加密密钥（AES-256）：留空首次启动自动生成；更换后需重新生成所有植入端。
+    # 植入端加密密钥（AES-256）：留空首次启动自动生成；更换后需重新生成所有植入端�?
     encryption_key: ""
     front_domain: ""
     heartbeat_timeout: 60s
@@ -61,7 +61,7 @@ listener:
     mimicry_site: ""
     port: 8080
     protocol: tcp
-    # 公网地址（服务器公网 IP/域名），生成的植入端连接它。
+    # 公网地址（服务器公网 IP/域名），生成的植入端连接它�?
     public_host: 127.0.0.1
     tls_enabled: false
     write_queue_size: 8192
@@ -92,6 +92,9 @@ server:
     write_timeout: 30s
 
 webhook:
+    # �Զ�ʶ��ƽ̨������/����(open.feishu.cn)/��ҵ΢��(qyapi.weixin.qq.com)/Slack/Discord��
+    # Ҳ����ʽָ�� auto|dingtalk|feishu|wecom|slack|discord|generic��
+    # secret Ϊ�����˼�ǩ��Կ�������� URL ������������ body �� timestamp+sign��
     content: "new session online: {hostname} ({username}@{os}/{arch}) from {remote_addr}"
     enabled: false
     format: auto
@@ -101,49 +104,49 @@ webhook:
 
 ai:
     enabled: false
-    # OpenAI 兼容的 chat/completions 端点（如 https://api.deepseek.com/v1）
+    # OpenAI 兼容�?chat/completions 端点（如 https://api.deepseek.com/v1�?
     base_url: ""
     api_key: ""
     model: deepseek-chat
     timeout: 60
     max_turns: 20
-    # 异步自主 Agent 并发上限（同时进行的任务数，默认 2；1-8）。每个任务后台 goroutine，超出则排队。
+    # 异步自主 Agent 并发上限（同时进行的任务数，默认 2�?-8）。每个任务后�?goroutine，超出则排队�?
     agent_concurrency: 2
-    # 工具下载域名白名单（远程下载 remote_download 只能从这些域名拉取；空=允许任意公网域名，但始终拒绝内网/回环地址防 SSRF）
+    # 工具下载域名白名单（远程下载 remote_download 只能从这些域名拉取；�?允许任意公网域名，但始终拒绝内网/回环地址�?SSRF�?
     download_allowlist: []
-    # 权限模式：auto=全自动(默认,工具直接执行)；normal=影响会话的操作(下发/文件/进程/凭据/截屏/隧道/插件等)
-    # 执行前需用户同意(副驾驶会拦截并请求确认)；任务流(delegate/剧本)除外。
+    # 权限模式：auto=全自�?默认,工具直接执行)；normal=影响会话的操�?下发/文件/进程/凭据/截屏/隧道/插件�?
+    # 执行前需用户同意(副驾驶会拦截并请求确�?；任务流(delegate/剧本)除外�?
     consent_mode: auto
 
-# ── Web 控制台防护（防资产测绘 / 防未授权访问）────────────────────────
-# 在控制台与全部管理 API 前加一道认证门槛，阻止 Fofa/Quake/Hunter 等资产测绘
-# 引擎抓取并收录本资产。仅作用于控制台端口；植入端回连 /api/v1/implant/* 与
-# C2 监听器端口完全不受影响，已持有 API Key / JWT 的脚本与 AI 调用照常放行。
+# ── Web 控制台防护（防资产测�?/ 防未授权访问）────────────────────────
+# 在控制台与全部管�?API 前加一道认证门槛，阻止 Fofa/Quake/Hunter 等资产测�?
+# 引擎抓取并收录本资产。仅作用于控制台端口；植入端回连 /api/v1/implant/* �?
+# C2 监听器端口完全不受影响，已持�?API Key / JWT 的脚本与 AI 调用照常放行�?
 web:
-    # 是否启用基础认证。默认 false（不影响升级）；开启前请先填好用户名与密码。
+    # 是否启用基础认证。默�?false（不影响升级）；开启前请先填好用户名与密码�?
     basic_auth_enabled: false
     basic_auth_user: toshell
-    # 密码：保存时自动 bcrypt 哈希（也可直接填 $2a$ 开头的哈希）。
-    # 建议在「设置 → 安全 → 防资产测绘」里填写，避免明文落在文件里。
+    # 密码：保存时自动 bcrypt 哈希（也可直接填 $2a$ 开头的哈希）�?
+    # 建议在「设�?�?安全 �?防资产测绘」里填写，避免明文落在文件里�?
     basic_auth_password: ""
     # 未认证响应方式：
     #   basic    = 401 + WWW-Authenticate（浏览器弹出认证框，前端照常可用，默认）
-    #   disguise = 纯 404 伪装（不留任何 C2 特征，测绘引擎看到"无此服务"）
-    # disguise 模式下浏览器不会弹认证框，请配合下面的 stealth_key 或在入口路径输入凭据。
+    #   disguise = �?404 伪装（不留任�?C2 特征，测绘引擎看�?无此服务"�?
+    # disguise 模式下浏览器不会弹认证框，请配合下面�?stealth_key 或在入口路径输入凭据�?
     unauth_mode: basic
-    # 可选：替换控制台首页标题，避免默认标题暴露用途。
+    # 可选：替换控制台首页标题，避免默认标题暴露用途�?
     decoy_title: ""
     # 可选：控制台来源白名单（CIDR）。非空时仅这些网段可访问，可在公网部署时把控制台
-    # 限制在运维网段（需自行确保不会把自己挡在外面）。
+    # 限制在运维网段（需自行确保不会把自己挡在外面）�?
     allow_cidrs: []
-    # 隐蔽入口密钥（disguise 模式必填，否则浏览器无法进入控制台）：
-    #   浏览器访问 http://<host>:18081/__gate?k=<stealth_key> 即种下入口 Cookie（30 天），
-    #   之后前端与 API 凭 Cookie 通行；/ 及其他路径对未持凭据者仍是 404。
-    #   也可直接访问 /__gate，由浏览器弹框输入上面的用户名/密码进入。
-    #   可在设置页「生成」按钮随机生成（hex，URL 安全）。
+    # 隐蔽入口密钥（disguise 模式必填，否则浏览器无法进入控制台）�?
+    #   浏览器访�?http://<host>:18081/__gate?k=<stealth_key> 即种下入�?Cookie�?0 天）�?
+    #   之后前端�?API �?Cookie 通行�? 及其他路径对未持凭据者仍�?404�?
+    #   也可直接访问 /__gate，由浏览器弹框输入上面的用户�?密码进入�?
+    #   可在设置页「生成」按钮随机生成（hex，URL 安全）�?
     stealth_key: ""
-    # 入口 Cookie 名（一般无需修改）。
+    # 入口 Cookie 名（一般无需修改）�?
     stealth_cookie: tsh_gate
-    # 入口路径 /__gate 是否返回 401 挑战（便于浏览器弹框）。设为 false 则只能用密钥链接进入，
-    # 线上不会出现任何 401 响应。
+    # 入口路径 /__gate 是否返回 401 挑战（便于浏览器弹框）。设�?false 则只能用密钥链接进入�?
+    # 线上不会出现任何 401 响应�?
     entry_challenge: true

@@ -363,7 +363,7 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 
 ### 3. 设置与运维
 - **运行时设置热更新**:设置页真实读写配置(监听器/拟态模板/通知/账户),webhook、流量拟态模板、认证信息保存即热生效,无需重启进程;配置文件被外部修改自动重载。
-- **钉钉等 webhook 通知**:自动识别钉钉机器人(markdown 格式,支持加签;加签 Secret 在 `server.yaml` 的 `webhook.secret` 配置),并支持企业微信/飞书/Slack/通用 JSON;设置页通知页可一键「发送测试通知」验证。
+- **各平台 webhook 通知**:按 URL 自动识别目标平台并发送**各自要求的消息结构**——钉钉(markdown,加签走 URL 参数)、飞书/Lark(`msg_type`+`content.text`,加签走 body 内 `timestamp`+`sign`)、企业微信(`msgtype`+`text.content`)、Slack(`text`)、Discord(`content`),其它地址回退通用 JSON;也可在设置页手动指定格式。加签 Secret 配 `server.yaml` 的 `webhook.secret`。**判定结果同时看响应体**:飞书 `code≠0`、钉钉/企业微信 `errcode≠0` 都算失败并显示平台原话(HTTP 200 不代表成功),设置页「发送测试通知」会显示识别到的平台与失败原因。
 - **内置 BYOVD 驱动下载**:服务端内置 RTCore64.sys(原厂签名),杀软对抗页一键加载,无需手动准备驱动文件。
 
 ### 4. 注意

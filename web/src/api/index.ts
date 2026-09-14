@@ -163,7 +163,10 @@ export const settingsApi = {
   save: (updates: Record<string, unknown>) =>
     api.put<{ message: string; hot: boolean }>('/settings', updates),
   testWebhook: (payload: { url: string; content?: string; format?: string; secret?: string }) =>
-    api.post<{ ok: boolean; status_code: number; response: string }>('/settings/webhook/test', payload),
+    api.post<{ ok: boolean; platform?: string; status_code: number; response: string; error?: string }>(
+      '/settings/webhook/test',
+      payload,
+    ),
 }
 
 export interface SOCKS5ServerInfo {

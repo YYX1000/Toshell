@@ -208,7 +208,7 @@ server {
 | --- | --- |
 | `listener.protocol` | 通道类型：`http`（轮询）/ `tcp` / `websocket` / `mqtt` |
 | `listener.port` / `host` | 监听地址（CDN 回源目标） |
-| `listener.public_host` | 生成载荷时展示/使用的对外地址（填 CDN 域名或真实域名） |
+| `listener.public_host` | 生成载荷时展示/使用的对外地址（填 CDN 域名或真实域名）；**「一条命令上线」的载荷下载地址也取这里**，因此跨 CDN/反代取件时务必填写完整地址（如 `https://cdn.example.com`） |
 | `listener.tls_enabled` + `cert_file`/`key_file` | 源站是否启用 HTTPS（配合 CDN「HTTPS 回源」） |
 | `listener.mimicry_profile` | 非 C2 路径的拟态模板：`cdn` / `api` / `stream` |
 | `listener.mimicry_site` | 非 C2 路径反向代理到真实站点（更真实） |

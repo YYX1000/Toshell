@@ -100,4 +100,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: ${{ matrix.zip }}
-          generate_release_notes: true
+          # 版本号跟随 tag（v1.3.x）；标题也用 tag 名
+          name: ${{ github.ref_name }}
+          # 固定正文：不要用 generate_release_notes —— 它会在每次重跑（多平台矩阵 / 重打 tag）
+          # 时重复追加一行 "Full Changelog: ..."，导致正文被刷屏。
+          body: |
+            Toshell ${{ github.ref_name }}
+
+            使用前请修改配置文件，安装go和相关go类库。
+
+            更新日志：[更新日志](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+
+            项目介绍：[项目介绍](https://github.com/${{ github.repository }}/blob/main/README.md)
+
+            使用说明：[使用说明](https://github.com/${{ github.repository }}/blob/main/USAGE.md)
+
+            Bug或者建议请提交issue。

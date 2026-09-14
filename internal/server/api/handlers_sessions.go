@@ -92,6 +92,8 @@ func (s *Server) deleteSessionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
+	// 清理上下线广播去抖状态
+	s.ForgetSessionBroadcast(id)
 
 	json.NewEncoder(w).Encode(map[string]string{"message": "Session deleted"})
 }

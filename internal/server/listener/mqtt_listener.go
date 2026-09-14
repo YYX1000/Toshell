@@ -36,19 +36,19 @@ import (
 // 由心跳帧驱动（植入端仍发自研心跳帧，broker 断连也触发 onSessionDead）。
 
 type MQTTListener struct {
-	cfg          *config.ListenerConfig
-	sessionMgr   *session.Manager
-	taskMgr      TaskManager
-	encryptor    *crypto.Encryptor
-	encKey       []byte
-	client       mqtt.Client
-	brokerURL    string
-	topicPrefix  string
-	downTopic    string // 通配订阅模板（含 %s = sessionID）
-	stopChan     chan struct{}
-	stopOnce     sync.Once
+	cfg              *config.ListenerConfig
+	sessionMgr       *session.Manager
+	taskMgr          TaskManager
+	encryptor        *crypto.Encryptor
+	encKey           []byte
+	client           mqtt.Client
+	brokerURL        string
+	topicPrefix      string
+	downTopic        string // 通配订阅模板（含 %s = sessionID）
+	stopChan         chan struct{}
+	stopOnce         sync.Once
 	heartbeatTimeout time.Duration
-	onTaskResult TaskEventCallback
+	onTaskResult     TaskEventCallback
 	onSessionDead    func(sessionID string)
 	onSessionOnline  func(info *types.SessionInfo)
 	onScreenFrame    func(sessionID string, payload []byte)
@@ -461,7 +461,7 @@ func (l *MQTTListener) sendControl(sid string, typ byte, payload []byte) error {
 // ─── 心跳判死 ────────────────────────────────────────────────────────
 
 func (l *MQTTListener) heartbeatChecker() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -475,13 +475,17 @@ func (l *MQTTListener) heartbeatChecker() {
 
 func (l *MQTTListener) checkHeartbeats() {
 	sessions := l.sessionMgr.List()
-	now := time.Now()
 	for _, sess := range sessions {
-		if sess == nil || sess.Info == nil || sess.Info.Status == "dead" {
+		if sess == nil || sess.Info == nil {
 			continue
 		}
-		if now.Sub(sess.LastSeen) > l.heartbeatTimeout {
-			logging.Info("listener", "mqtt: session %s timed out", sess.Info.ID)
+		sess.ObserveHeartbeat()
+		if sess.Info.Status == "dead" {
+			continue
+		}
+		// 判活统一走 Session.IsAlive（P0-1：阈值含 3 倍心跳间隔余量）
+		if !sess.IsAlive() {
+			logging.Info("listener", "mqtt: session %s timed out (timeout %v)", sess.Info.ID, sess.EffectiveTimeout())
 			sess.Info.Status = "dead"
 			l.sessionMgr.ClearConnection(sess.Info.ID)
 			if l.onSessionDead != nil {

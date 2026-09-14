@@ -237,7 +237,7 @@ func (l *TCPListener) Stop() {
 // ─── 心跳检查 ─────────────────────────────────────────────────────────────────────
 
 func (l *TCPListener) heartbeatChecker() {
-	ticker := time.NewTicker(10 * time.Second)
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
@@ -253,12 +253,16 @@ func (l *TCPListener) checkHeartbeats() {
 	sessions := l.sessionMgr.List()
 	now := time.Now()
 	for _, sess := range sessions {
+		// 采样实测心跳间隔，供自适应判活阈值使用（P0-1）
+		sess.ObserveHeartbeat()
 		if sess.Info.Status == "dead" {
 			continue
 		}
-		if now.Sub(sess.LastSeen) > l.heartbeatTimeout {
-			fmt.Printf("[INFO] [tcp-listener] Session %s timed out (last seen: %v ago)\n",
-				sess.Info.ID, now.Sub(sess.LastSeen).Round(time.Second))
+		// 判活统一走 Session.IsAlive：阈值 = max(heartbeat_timeout, 3×实测心跳间隔)，
+		// 忙期再放宽 BusyGrace 倍。避免心跳间隔与超时几乎零余量时反复"掉线又上线"。
+		if !sess.IsAlive() {
+			fmt.Printf("[INFO] [tcp-listener] Session %s timed out (last seen: %v ago, timeout: %v)\n",
+				sess.Info.ID, now.Sub(sess.LastSeen).Round(time.Second), sess.EffectiveTimeout().Round(time.Second))
 			sess.Info.Status = "dead"
 			// 中继节点失联：从可选中继列表中移除
 			l.relayMu.Lock()

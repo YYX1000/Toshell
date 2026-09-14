@@ -3,6 +3,34 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含会话抖动、屏幕流/截图跨平台、远程工具加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
+## [未发布] - 下一步
+
+重点：ROADMAP P0 两项（会话掉线抖动、屏幕流/截图可控）、issue #7（飞书通知）、多平台 webhook 与一键上线命令。
+
+### 📡 会话稳定性：不再「离线几秒又在线」（ROADMAP P0-1）
+- **判活阈值强制留余量**：实际超时 = `max(listener.heartbeat_timeout, 3 × 实测心跳间隔)`，并在启动日志里写明「margin 3x」。此前 `heartbeat_timeout=60s` 与心跳间隔 60s 几乎零余量，任何一次心跳迟到（调度抖动/网络排队/休眠唤醒）都会被判离线，下一个心跳又恢复，前端表现为闪断。
+- **按会话自适应**：会话运行中采样实测心跳间隔（只向上立即生效、向下缓慢回收），因此构建时可自定义 `interval` 的载荷也按自己的节奏判活，不再依赖全局配置猜。
+- **首周期保护**：会话刚上线、还没采样到节奏时阈值放宽到 2 倍基准，避免第一个心跳刚好踩线被判死。
+- **判定统一**：TCP / HTTP 轮询 / MQTT 三个监听器的判活都改为走 `Session.IsAlive()`（此前各自用 10s ticker + 固定阈值，且窗口误差达 10s），扫描周期调整为 5s。
+- **广播去抖**：`session_offline` 延迟 15s 观察窗广播，期间会话重连则**不发任何事件**（消除「离线→在线」闪烁），只有持续失联才广播离线；重复注册不再重复广播 `session_online`，上线 webhook 也随之不再重复推送。
+- 实测验收：60s 心跳（jitter 5s）的植入端连续运行 220s，**零次状态抖动**；杀掉植入端后按 3 倍间隔（3m1s）判死并广播一次 `session_offline`。
+
+### 🖥 屏幕流 / 截图参数化与限速（ROADMAP P0-2 部分）
+- **参数化**：屏幕流与截图支持 `fps`(1-10) / `quality`(20-95) / `max_kbps`(带宽上限) / `monitor`(多显示器单选) / `max_width`(缩放宽度)，服务端校验钳制后透传植入端；`POST /sessions/{id}/screen-stream` 与 `POST /sessions/{id}/screenshot` 均接受这些参数。
+- **带宽自适应**：植入端按秒统计实际发送量，超过 `max_kbps` 时先降 JPEG 画质、再降帧率并限宽，带宽有余量时逐级恢复；默认帧率由固定 1.25fps 提升到可选 1-10fps，屏幕流默认 JPEG。
+- **服务端限速/帧合并**：新增帧限速器，超过会话期望帧率的帧直接丢弃（前端只需要最新帧），硬上限 10fps，并在丢弃累计时输出诊断日志。
+- **明确的失败提示**：捕获失败时立即回传带原因的 error 帧（锁屏/无交互桌面/Headless），前端展示原因而不是一直「等待画面」；收到正常帧后自动清除错误提示。
+- **前端**：屏幕流面板新增「画质参数」面板（帧率/画质/带宽/显示器/缩放宽度）与分辨率显示。
+- 实测验收：真实植入端截图 `max_width=640` → 640×360 JPEG 约 21KB（原始 2560×1440 约 343KB，体积降到 1/16）；`monitor=1` 单选显示器生效；屏幕流任务回执确认 `fps=5 quality=60 max_kbps=1200` 已下发，WS 侧可见真实 JPEG 帧。
+
+### 🔔 通知与一键上线
+- **飞书通知修复（issue #7）**：各平台按自己的消息结构推送——飞书 `msg_type`+`content.text`、企业微信 `msgtype`+`text.content`、Slack `text`、Discord `content`、钉钉 markdown、其它通用 JSON；新增飞书 body 内 `timestamp`+`sign` 加签。判定结果同时解析响应体业务码（飞书 `code≠0`、钉钉/企业微信 `errcode≠0` 均判失败并给出平台原话），不再出现「HTTP 200 显示成功但消息没发出去」。
+- **一键上线命令**：下载地址改为服务端按配置解析（`public_host` 优先，其次控制台访问地址 / 载荷 `server_url` 主机 / 本机内网 IP，不可达时显式告警），不再取控制台自身的 `localhost`；新增 Windows 6 种 / Linux 6 种免杀上线命令变体（PowerShell -enc、BITS、HttpClient、certutil、bitsadmin、curl.exe / curl-wget、wget、busybox、python3、规避 noexec、setsid）。
+
+### 🧰 C 植入端工具链探测（issue #6）
+- mingw gcc 探测改为「配置 → 环境变量 → 服务端同目录便携工具链 → 常见安装目录 → PATH → **Windows 注册表 PATH**」逐级查找，并用 `gcc -dumpmachine` 校验目标架构；解决「gcc 已加入系统环境变量但服务端仍显示无 gcc」（进程环境是旧快照）与「32 位 gcc 静默编译 amd64」两个问题。
+- 新增配置项 `builder.mingw_gcc_path`；garble 可用性改为一次极小真实构建探测（此前只查 PATH，会出现「显示可用但构建必失败」）。
+
 ## [v1.3.2] - 2026-09-14
 
 重点：Web 控制台防资产测绘、配置写入可靠性、跨平台载荷构建修复（对应 issue #1 / #2）。

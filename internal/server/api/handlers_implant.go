@@ -59,20 +59,8 @@ func (s *Server) implantRegisterHandler(w http.ResponseWriter, r *http.Request) 
 
 		fmt.Printf("[INFO] [implant] Session registered: %s (%s@%s)\n", sessionID, reg.Username, reg.Hostname)
 
-		// Broadcast session_online event
-		if s.wsHub != nil {
-			s.wsHub.Broadcast(WSEvent{
-				Type: "session_online",
-				Payload: map[string]interface{}{
-					"id":       sessionID,
-					"hostname": reg.Hostname,
-					"username": reg.Username,
-					"os":       reg.OS,
-					"arch":     reg.Arch,
-					"status":   "active",
-				},
-			})
-		}
+		// 广播上线事件（统一走去抖入口，重复注册不会重复广播）
+		s.BroadcastSessionOnline(sessInfo)
 	}
 
 	w.WriteHeader(http.StatusOK)
@@ -167,11 +155,11 @@ func (s *Server) implantResultHandler(w http.ResponseWriter, r *http.Request) {
 					s.wsHub.Broadcast(WSEvent{
 						Type: "task_completed",
 						Payload: map[string]interface{}{
-							"task_id":   result.TaskID,
-							"task_type": taskType,
+							"task_id":    result.TaskID,
+							"task_type":  taskType,
 							"session_id": sessionID,
-							"exit_code": result.ExitCode,
-							"output":    outputSummary,
+							"exit_code":  result.ExitCode,
+							"output":     outputSummary,
 						},
 					})
 				}

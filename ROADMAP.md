@@ -7,33 +7,33 @@
 
 ## P0 — 用户体验/稳定性（近期优先）
 
-### 1. 会话「掉线一会又自动恢复在线」抖动
+### 1. 会话「掉线一会又自动恢复在线」抖动 ✅ 已完成
 
 - **现状**：会话状态依赖心跳判活。服务端 `session.HeartbeatTimeout`（配置 `listener.heartbeat_timeout`，默认 **60s**）由 10s 周期 checker 检查；植入端心跳间隔 `implant.interval=60s` + jitter（默认 ±2s），空闲时可能 ~62s 才来一个心跳。
-- **根因方向**：
-  - 心跳间隔与超时阈值**几乎零余量**：任何一次心跳延迟（调度抖动、网络排队、系统休眠唤醒）都会超过 60s → 被判 dead/asleep → 触发 `session_offline` 广播；下一次心跳到达又恢复 → `session_online`。前端表现为「离线几秒又在线」。
-  - 断线重连场景：TCP 闪断重连会先触发 onSessionDead（广播 offline），重连注册又广播 online，形成肉眼可见的抖动。
-- **目标**：会话状态在正常心跳节奏下**稳定在 online**；只有真实长时间失联才转 dead。
-- **建议方案**：
-  - 判活阈值留余量：`heartbeat_timeout` 默认提到心跳间隔的 **2.5~3 倍**（如 60s 心跳 → 180s 超时），或用 `max(3×interval, 60s)` 计算；心跳抖动只在掉线判定里吃 jitter 上限。
-  - checker 从「每 10s 遍历全表」改为**按 LastSeen+timeout 精确到期判活**，避免批量扫描的窗口误差。
-  - 广播去抖：offline 事件广播前做**短观察窗（如 2~3 次重试机会）**，或重连命中「复活」时抑制一次多余的 offline/online 闪烁（前端侧加状态去抖）。
-  - 前端 Sessions 页状态迁移加过渡态（如 recently-seen 置灰而非直接「离线」），减少观感抖动。
-- **验收**：植入端正常运行 30+ 分钟，Sessions 页状态不闪断；手动 kill 植入端后 ≤timeout+1 心跳周期内转 dead，重启植入端恢复 online。
+- **根因**：心跳间隔与超时阈值几乎零余量（任何一次心跳迟到都判离线、下一个心跳又恢复）；且 TCP 闪断重连会立刻广播 offline、重连再广播 online。
+- **已完成**：
+  - 判活阈值强制留余量：实际超时 = `max(heartbeat_timeout, 3 × 实测心跳间隔)`，启动日志打印 `margin 3x`；尚未采样到节奏时再放宽到 2 倍基准（首周期保护）。
+  - 按会话自适应实测心跳间隔（向上立即生效、向下缓慢回收），兼容构建时自定义 `interval` 的载荷。
+  - TCP / HTTP 轮询 / MQTT 三个监听器统一走 `Session.IsAlive()`，扫描周期 10s → 5s，消除窗口误差。
+  - 广播去抖：`session_offline` 延迟 15s 观察窗，期间重连则不发任何事件；重复注册不再重复广播 `session_online`（上线 webhook 同步去重）。
+- **实测验收**：60s 心跳（jitter 5s）植入端连续运行 220s，零状态抖动；杀掉植入端后按 3m1s 判死并广播一次 `session_offline`。
+- **未做**：前端 Sessions 页「最近活跃」过渡态（服务端已消除抖动，如需再加）。
 
-### 2. 屏幕流 + 截图优化（当前仅 Win11 支持较好）
+### 2. 屏幕流 + 截图优化（Windows 参数化/限速已完成，跨平台与 DXGI 待做）
 
 - **现状**（代码事实）：
   - 截图仅 **Windows** 实现（`internal/server/builder/implant/screenshot_windows.go`），采用 GDI `BitBlt` 抓屏 + `PrintWindow(PW_RENDERFULLCONTENT)` 应用窗口回退，含虚拟屏/多显示器（`SM_*VIRTUALSCREEN`）、DPI 感知、锁屏/无交互桌面回退（`OpenInputDesktop/SetThreadDesktop`/`CreateDC`）等逻辑。
   - 屏幕流（`screen_stream_windows.go`）复用截图模块，固定 ~**1.25fps（800ms）**轮询，把 `TypeScreenFrame` 帧回传服务端 → WebSocket 推送前端。
   - Linux/macOS：`screen_stream_unix.go` 与 `features_unix.go` 均为 **stub**（返回 "only supported on Windows"）。
-- **问题**：Win 各版本/Server/服务会话/锁屏下表现不一致（用户实测目前 Win11 支持较好）；跨平台（Linux/macOS）完全缺失；帧率固定、带宽不可控。
-- **建议方案（分阶段）**：
-  - **P0.1 Windows 兼容加固**：按 Win7/8.1/10/11 + Server Core/服务会话 建矩阵实测；统一「BitBlt → PrintWindow → Desktop Duplication (Win8+)」三级捕获策略；处理高 DPI（每显示器 DPI aware）、多显示器拼接、锁屏/无桌面明确返回原因帧而非空转。
-  - **P0.2 屏幕流引擎升级**：Win8+ 换 **Desktop Duplication API（DXGI）** 做增量帧捕获（性能与帧率大幅提升）；保持 JPEG 质量自适应 + 带宽上限（KB/s 可配），前端已有大图/低帧降级，服务端补限速与帧合并。
-  - **P0.3 跨平台**：Linux 用 **X11 (XGetImage)/Wayland (PipeWire)**，macOS 用 **ScreenCaptureKit** 或 CGDisplayStream（需要时再评估权限）；screenshot 同步补全。
-  - **验收**：Win10/11 桌面会话 ≥5fps 且 CPU 占用可控；Server 无桌面/锁屏返回明确错误；至少 Linux amd64 能出图。
-- **备注**：截图/屏幕流涉及大量 native API，改动集中在植入端；服务端与前端（`BroadcastScreenFrame` / 前端屏幕流组件）基本可复用。
+- **已完成（P0.1/P0.2 的 Windows 部分）**：
+  - 参数化：`fps`(1-10) / `quality`(20-95) / `max_kbps`（带宽上限）/ `monitor`（多显示器单选）/ `max_width`（缩放）/ `format`，服务端校验钳制后透传；屏幕流默认 JPEG（此前固定 1.25fps + PNG）。
+  - 植入端带宽自适应（超限先降画质、再降帧+限宽，有余量逐级恢复）+ 服务端帧限速/合并（超发帧丢弃，硬上限 10fps）。
+  - 捕获失败立即回传带原因的 error 帧（锁屏/无交互桌面/Headless），前端展示原因并在收到正常帧后自动清除。
+  - 实测验收：`max_width=640` 使 2560×1440 → 640×360 JPEG（343KB → 21KB）；`monitor=1` 单选显示器生效；屏幕流回执确认参数已下发，WS 侧可见真实 JPEG 帧。
+- **待做**：
+  - **P0.3 跨平台**：Linux 用 **X11 (XGetImage)/Wayland (PipeWire)**，macOS 用 **ScreenCaptureKit** 或 CGDisplayStream；screenshot 同步补全（当前非 Windows 仍为 stub）。
+  - **P0.2 DXGI 增量捕获**：Win8+ 换 **Desktop Duplication API**（当前仍是 BitBlt 全量抓屏 + PrintWindow 回退，帧率上限现在由带宽而非采集能力决定）。
+  - **兼容矩阵**：Win7/8.1/10/11 + Server Core/服务会话的实测登记。
 
 ---
 

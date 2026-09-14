@@ -28,13 +28,13 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 	osList := []string{"windows", "linux", "darwin"}
 	archList := []string{"amd64", "386", "arm64"}
 
-	garbleAvail := false
+	garbleAvail, garbleMsg := false, ""
 	upxAvail := false
-	cAvail := false
+	cAvail, cMessage := false, ""
 	if s.builder != nil {
-		garbleAvail = s.builder.GarbleAvailable()
+		garbleAvail, garbleMsg = s.builder.GarbleStatus()
 		upxAvail = s.builder.UPXAvailable()
-		cAvail = s.builder.CLanguageAvailable()
+		cAvail, cMessage = s.builder.CStatus()
 	}
 
 	// Return real listeners from the database so the frontend can pick one
@@ -58,7 +58,7 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 		"languages": map[string]interface{}{
 			"go":        true,   // Go 植入端：全功能
 			"c":         cAvail, // C 植入端：体积极小（~50KB），仅 Windows exe，基础功能
-			"c_message": "C 植入端需服务端安装 mingw-w64 gcc（MSYS2），支持 Windows x86/x64",
+			"c_message": cMessage,
 		},
 		"options": map[string]interface{}{
 			"interval":    map[string]uint32{"min": 1, "max": 300, "default": 60},
@@ -66,8 +66,9 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"retry_count": map[string]uint32{"min": 0, "max": 10, "default": 3},
 			"retry_wait":  map[string]uint32{"min": 1, "max": 60, "default": 5},
 		},
-		"evasion": map[string]bool{
+		"evasion": map[string]interface{}{
 			"garble_available": garbleAvail,
+			"garble_message":   garbleMsg,
 			"upx_available":    upxAvail,
 		},
 	})

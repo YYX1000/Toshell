@@ -286,7 +286,9 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 | 载荷体积与页面显示不符 / 体积翻倍 | **shellcode(.txt)格式保存的是 hex 文本,体积是原始字节的 2 倍属正常**。需要更小的请生成 `bin`(原始二进制)或 `raw` 格式;页面显示已按实际下载文件大小修正 |
 | Windows 7 / Server 2008 R2 上 exe 无法启动 | 该问题已修复:服务端生成 Windows 载荷时自动使用 Go 1.20.14 工具链编译(见上文"老系统兼容")。若仍失败,确认使用的是最新版 `toserver` |
 | 大文件下载失败 | 确认 `data/transfers/` 可写;大文件走流式下载通道 |
-| garble/UPX 选项不可用 | 服务端未安装对应工具,按上文安装后重启服务端 |
+| garble/UPX 选项不可用 | 服务端未安装对应工具,按上文安装后重启服务端。**garble 还要求 Go 版本足够新**(如 garble v0.16 需 Go ≥ 1.26),版本不匹配时界面会直接显示"不可用"并给出原因,不会再出现"显示可用但构建必失败" |
+| 页面显示未检测到 mingw gcc(C 植入端不可用) | 按以下顺序排查:<br>① 在**设置页刷新**即可——服务端每次打开生成载荷页都会重新探测(30 秒缓存),装好工具链无需重启服务端;<br>② 已装 MSYS2 但没有 64 位 gcc:执行 `pacman -S mingw-w64-x86_64-gcc`(32 位用 `mingw-w64-i686-gcc`);<br>③ 只装了 32 位 gcc 也能用,但界面会明确提示"产物是 32 位 PE";<br>④ 便携版 MinGW 可直接解压到服务端目录(如 `release/mingw64/bin/gcc.exe`)即被自动识别;<br>⑤ 也可设置环境变量 `TOSHELL_MINGW_GCC`/`CC`(或 `MINGW_HOME`/`MSYS2_ROOT`),或在 `configs/server.yaml` 配置 `builder.mingw_gcc_path`。服务端会同时读 **Windows 注册表 PATH**,因此"刚把 gcc 加进系统环境变量"这种情况不用重启进程也能识别 |
+| 载荷体积过大(3~7MB) | 体积取决于通道与选项:**TCP 通道全量约 3.4MB**,**HTTP(S) 轮询通道约 7MB**(HTTP 传输自带 `net/http` + `crypto/tls` + uTLS 指纹库)。要小体积可选:① 开 **UPX 压缩**(约 1.1~2.2MB);② 选 **light 精简档案**(TCP 约 2.9MB / HTTP 约 5.3MB);③ 选 **C 植入端**(仅 Windows exe,约 60KB) |
 | 登录日志不显示图标 | 旧版本日志级别为大写格式,升级后新日志统一为小写,图标全部正常 |
 | 后台 401 | 登录后 Token 有效期 24h;使用 `X-API-Key` 时需在 `auth.api_keys` 配置 |
 | 清空数据库后 Web 仍显示旧任务 | **服务端内存缓存了任务,需重启服务端进程**。任务列表/统计优先读内存,清空数据库只清磁盘,重启后才会同步为空 |

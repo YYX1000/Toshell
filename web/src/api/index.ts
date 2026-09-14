@@ -340,6 +340,8 @@ export interface BuilderInfo {
   }
   evasion?: {
     garble_available: boolean
+    /** garble 不可用的原因（或可用时的路径说明） */
+    garble_message?: string
     upx_available: boolean
   }
 }

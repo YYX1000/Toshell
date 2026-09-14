@@ -40,6 +40,14 @@ implant:
     startup_delay_min: 2
     startup_delay_max: 10
 
+builder:
+    # C 植入端（约 50KB）编译所需的 mingw-w64 gcc。留空时自动探测：
+    # 环境变量 TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX →
+    # 服务端同目录便携工具链（如 ./mingw64/bin/gcc.exe）→ 常见安装目录
+    # （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH 与 Windows 注册表 PATH。
+    # 可填 gcc 可执行文件路径、所在目录，或 PATH 中的命令名。
+    mingw_gcc_path: ""
+
 listener:
     cert_file: ""
     enabled: true

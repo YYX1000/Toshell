@@ -95,10 +95,13 @@ func NewWithConfig(cfg *config.Config) *Builder {
 }
 
 func newBuilder(implantCfg *config.ImplantConfig) *Builder {
+	// garble 只做 LookPath 快速判定；是否**真的能编译**由 GarbleStatus 用一次
+	// 极小真实构建探测（garble 大版本对 Go 版本有硬要求，版本不符时
+	// `garble version` 正常但任何 `garble build` 立即失败）。
 	garbleAvailable := false
 	if _, err := exec.LookPath("garble"); err == nil {
 		garbleAvailable = true
-		logging.Info("builder", "garble detected, obfuscation available")
+		logging.Info("builder", "garble detected, checking toolchain compatibility in background")
 	} else {
 		logging.Info("builder", "garble not found, obfuscation disabled (install: go install mvdan.cc/garble@latest)")
 	}
@@ -111,13 +114,23 @@ func newBuilder(implantCfg *config.ImplantConfig) *Builder {
 		logging.Info("builder", "UPX not found, compression disabled (bundled: upx/win64/upx.exe or upx/linux-amd64/upx next to server binary, or install: https://upx.github.io)")
 	}
 
-	return &Builder{
+	b := &Builder{
 		config:     implantCfg,
 		implantDir: resolveImplantTemplateDir(implantCfg),
 		useGarble:  garbleAvailable,
 		useUPX:     upxAvailable,
 		upxPath:    upxPath,
 	}
+	// 后台预热 garble 兼容性探测，避免用户首次打开生成载荷页时同步等待。
+	if garbleAvailable {
+		go func() {
+			ok, msg := b.GarbleStatus()
+			if !ok {
+				logging.Warn("builder", "garble 不可用，已停用混淆选项：%s", msg)
+			}
+		}()
+	}
+	return b
 }
 
 // resolveUPXPath 解析 UPX 可执行文件路径，按以下顺序回退：
@@ -904,9 +917,11 @@ func (b *Builder) GetSupportedArch() []string {
 	return []string{"amd64", "386", "arm64"}
 }
 
-// GarbleAvailable returns whether garble obfuscation tool is installed.
+// GarbleAvailable returns whether garble obfuscation tool is installed and usable.
+// 兼容旧调用；需要原因说明时用 GarbleStatus。
 func (b *Builder) GarbleAvailable() bool {
-	return b.useGarble
+	ok, _ := b.GarbleStatus()
+	return ok
 }
 
 // UPXAvailable returns whether UPX compression tool is installed.
@@ -1223,47 +1238,10 @@ func (b *Builder) buildShellcodeBin(opts BuildOptions) (*BuildResult, error) {
 // 占位符替换与 Go 模板一致（{{SERVER_URL}}/{{ENCRYPTION_KEY}}/{{INTERVAL}}/{{RETRY_WAIT}}）。
 // 配置块（TOSHELL_CFG_V1）由 appendConfigBlock 统一追加，C 端启动时解析。
 
-// resolveCGCCPath 探测 mingw gcc：优先按目标架构选 x86_64/i686 前缀，
-// 其次探测 PATH 中的 gcc（clang 兼容性差，仅接受 mingw）。
-func resolveCGCCPath(arch string) string {
-	binName := "gcc"
-	if runtime.GOOS == "windows" {
-		binName = "gcc.exe"
-	}
-	candidates := []string{}
-	if arch == "386" || arch == "x86" {
-		candidates = append(candidates, "i686-w64-mingw32-gcc"+extIfWindows(binName))
-	} else {
-		candidates = append(candidates, "x86_64-w64-mingw32-gcc"+extIfWindows(binName))
-	}
-	// 常见 msys2 安装路径
-	for _, base := range []string{`C:\msys64`, `C:\msys2`, `C:\mingw64`, `C:\mingw32`} {
-		if arch == "386" || arch == "x86" {
-			candidates = append(candidates,
-				filepath.Join(base, "mingw32", "bin", binName),
-				filepath.Join(base, "ucrt32", "bin", binName),
-			)
-		} else {
-			candidates = append(candidates,
-				filepath.Join(base, "mingw64", "bin", binName),
-				filepath.Join(base, "ucrt64", "bin", binName),
-			)
-		}
-	}
-	for _, c := range candidates {
-		if c == "" {
-			continue
-		}
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c
-		}
-	}
-	// PATH 兜底（仅接受 mingw 风格的 gcc）
-	if p, err := exec.LookPath(binName); err == nil {
-		return p
-	}
-	return ""
-}
+// resolveCGCCPath 已由 toolchain.go 的 resolveGCC 取代：
+// 新版按配置/环境变量/便携目录/常见安装目录/PATH/注册表 PATH 逐级探测，
+// 并用 `gcc -dumpmachine` 校验目标架构（旧版只看少量硬编码目录 + 进程 PATH，
+// 且会把 32 位 gcc 静默用于 amd64 构建）。
 
 func extIfWindows(binName string) string {
 	if strings.Contains(binName, ".exe") {
@@ -1293,10 +1271,14 @@ func (b *Builder) buildCExecutable(opts BuildOptions) (*BuildResult, error) {
 		}
 	}
 
-	gccPath := resolveCGCCPath(opts.Arch)
-	if gccPath == "" {
-		return nil, fmt.Errorf("mingw-w64 gcc not found; install MSYS2 (x86_64-w64-mingw32-gcc) or put gcc in PATH")
+	gcc, gccWarning, err := resolveGCC(opts.Arch)
+	if err != nil {
+		return nil, err
 	}
+	if gccWarning != "" {
+		logging.Warn("builder", "C 植入端：%s", gccWarning)
+	}
+	gccPath := gcc.Path
 
 	// 生成临时源文件（替换占位符）
 	tmpDir, err := os.MkdirTemp("", "toshell-cbuild-*")
@@ -1365,24 +1347,10 @@ func (b *Builder) buildCExecutable(opts BuildOptions) (*BuildResult, error) {
 }
 
 // CLanguageAvailable 返回 C 植入端是否可用（mingw gcc 存在且模板齐全）。
+// 兼容旧调用；需要原因说明时用 CStatus。
 func (b *Builder) CLanguageAvailable() bool {
-	// 模板存在性
-	srcDir := filepath.Join(b.implantDir, "..", "implant_c")
-	ok := false
-	if info, err := os.Stat(filepath.Join(srcDir, "main.c")); err == nil && !info.IsDir() {
-		ok = true
-	}
-	if !ok {
-		if exePath, err := os.Executable(); err == nil {
-			if info, err2 := os.Stat(filepath.Join(filepath.Dir(exePath), "implant_c", "main.c")); err2 == nil && !info.IsDir() {
-				ok = true
-			}
-		}
-	}
-	if !ok {
-		return false
-	}
-	return resolveCGCCPath("amd64") != ""
+	ok, _ := b.CStatus()
+	return ok
 }
 
 // cQuote 转义字符串以安全嵌入 C 字符串字面量（模板形如 "{{SERVER_URL}}" 自带引号）：

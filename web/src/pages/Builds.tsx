@@ -398,7 +398,11 @@ export function Builds() {
       toast.success(`载荷构建成功！名称: ${result.name}, 大小: ${(result.size / 1024).toFixed(2)} KB`)
     } catch (error) {
       console.error('Failed to build payload:', error)
-      toast.error('构建失败，请检查配置')
+      // 服务端把真实失败原因放在 error 字段（例如「未找到可用的 mingw-w64 gcc…」
+      // 或「garble 与当前 Go 版本不兼容…」），原样透出，别让用户只看到「请检查配置」。
+      const serverMsg =
+        (error as { response?: { data?: { error?: string } } })?.response?.data?.error || ''
+      toast.error(serverMsg || '构建失败，请检查配置')
     } finally {
       setBuilding(false)
     }
@@ -747,7 +751,7 @@ export function Builds() {
                   <select name="language" value={formData.language || 'go'} onChange={handleInputChange}>
                     <option value="go">Go（全功能）</option>
                     <option value="c" disabled={!builderInfo?.languages?.c}>
-                      C（超小体积 ~50KB）{!builderInfo?.languages?.c ? ' — 服务端无 mingw gcc' : ''}
+                      C（超小体积 ~50KB）{!builderInfo?.languages?.c ? ' — 未检测到 mingw gcc' : ''}
                     </option>
                   </select>
                   {formData.language === 'c' ? (
@@ -756,6 +760,15 @@ export function Builds() {
                     </p>
                   ) : (
                     <p className="form-hint">Go 植入端全功能；C 植入端体积极小但功能受限</p>
+                  )}
+                  {/* 服务端给出的探测结论：找到哪个 gcc / 为什么没找到 / 怎么修 */}
+                  {builderInfo?.languages?.c_message && (
+                    <p
+                      className="form-hint"
+                      style={{ color: builderInfo?.languages?.c ? 'var(--color-text-muted)' : 'var(--color-warning, #d97706)', lineHeight: 1.6 }}
+                    >
+                      {builderInfo.languages.c_message}
+                    </p>
                   )}
                 </div>
               </div>
@@ -1002,13 +1015,14 @@ export function Builds() {
                       {builderInfo?.evasion?.garble_available ? (
                         <span className="status-badge available">可用</span>
                       ) : (
-                        <span className="status-badge unavailable">未安装</span>
+                        <span className="status-badge unavailable">不可用</span>
                       )}
                     </label>
                     <p className="form-hint">
                       {builderInfo?.evasion?.garble_available
                         ? '编译时混淆字符串、移除调试信息'
-                        : 'Garble 混淆需要安装 garble (go install mvdan.cc/garble@latest)'}
+                        : builderInfo?.evasion?.garble_message ||
+                          'Garble 混淆需要安装 garble (go install mvdan.cc/garble@latest)'}
                     </p>
                   </div>
                 </div>

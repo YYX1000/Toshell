@@ -17,12 +17,23 @@ type Config struct {
 	Server   ServerConfig   `mapstructure:"server" json:"server"`
 	Listener ListenerConfig `mapstructure:"listener" json:"listener"`
 	Implant  ImplantConfig  `mapstructure:"implant" json:"implant"`
+	Builder  BuilderConfig  `mapstructure:"builder" json:"builder"`
 	Database DatabaseConfig `mapstructure:"database" json:"database"`
 	Logging  LoggingConfig  `mapstructure:"logging" json:"logging"`
 	Auth     AuthConfig     `mapstructure:"auth" json:"auth"`
 	Webhook  WebhookConfig  `mapstructure:"webhook" json:"webhook"`
 	AI       AIConfig       `mapstructure:"ai" json:"ai"`
 	Web      WebConfig      `mapstructure:"web" json:"web"`
+}
+
+// BuilderConfig 构建工具链配置（C 植入端编译所需的 mingw gcc 等）。
+type BuilderConfig struct {
+	// MingwGCCPath 指定 mingw-w64 gcc 可执行文件路径（C 植入端编译用），
+	// 也可填 gcc 所在目录或用 PATH 中的名字。留空时自动探测：环境变量
+	// TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX →
+	// 服务端同目录的便携工具链（如 ./mingw64/bin/gcc.exe）→ 常见安装目录
+	// （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH 与 Windows 注册表 PATH。
+	MingwGCCPath string `mapstructure:"mingw_gcc_path" json:"mingw_gcc_path"`
 }
 
 // WebConfig Web 控制台防护配置（防资产测绘引擎收录、防未授权访问）。

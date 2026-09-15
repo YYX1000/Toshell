@@ -403,6 +403,15 @@ func closeReadDone(e *connEntry) {
 func (p *connPool) readLoop(e *connEntry) {
 	defer func() {
 		if r := recover(); r != nil {
+			// ⚠️ 这里**不能**只是吞掉 panic 就返回：readLoop 是这条隧道唯一的下行产出者，
+			// 它一死，writeLoop 还在傻等 `<-e.readDone`，隧道既不出数据也永不收尾 ——
+			// 服务端那边看到的就是"隧道 active、bytes_out 冻结"，浏览器则无限挂住。
+			// 因此按"读侧结束"处理：幂等关闭 readDone（writeLoop 会排空并 finishClose），
+			// 同时关掉目标连接，避免目标侧连接泄漏。
+			closeReadDone(e)
+			if e.c != nil {
+				_ = e.c.Close()
+			}
 		}
 	}()
 
@@ -414,9 +423,15 @@ func (p *connPool) readLoop(e *connEntry) {
 		fb := tunnelBufPool.Get().([]byte)
 
 		e.c.SetReadDeadline(time.Now().Add(5 * time.Second))
-		// 按 cap 读满底层数组：即使池中不慎混入子切片，也恢复为整块读，
-		// 避免缓冲被切碎成 ~1 字节/帧导致 TLS 握手超时（ERR_SSL_PROTOCOL_ERROR）。
-		n, err := e.c.Read(fb[envOff+envHdrLen : cap(fb)])
+		// 读入数据区。**上限必须是 maxRead，绝不能按 cap(fb) 读**：
+		// 池缓冲的容量公式是 frameHdrLen+nonceLen+envHdrLen+maxRead+tagLen，cap 里那 16B
+		// 是留给 SM4-GCM tag 的；按 cap 读会让单次 Read 最多返回 maxRead+16 字节，于是
+		//   ① sm4GCMSeal 的 append(tag) 越过 cap → 重新分配新数组，而返回值被 `_ =` 丢弃，
+		//      留在 fb 里的是"没有 tag 的密文"；
+		//   ② fb[:frameHdrLen+nonceLen+envHdrLen+n+tagLen] 越界 → panic，
+		//      被本函数的 recover 吞掉（旧代码）→ 该隧道下行永久停摆，上行不受影响。
+		// 2026-09-15 实测现象即"代理下载传 ~200–330KB 后卡死、上传正常"。
+		n, err := e.c.Read(fb[envOff+envHdrLen : frameHdrLen+nonceLen+envHdrLen+maxRead])
 
 		if n > 0 {
 			idleTimeouts = 0 // 有数据即重置空闲计数
@@ -427,6 +442,11 @@ func (p *connPool) readLoop(e *connEntry) {
 			fb[envOff] = OpWrite
 			binary.BigEndian.PutUint32(fb[envOff+1:envOff+5], e.id)
 			binary.BigEndian.PutUint32(fb[envOff+5:envOff+9], uint32(n))
+			// 休眠掩码（sleep mask）可能正把 tunnelKey XOR 着：上行解密走 sm4DecryptTunnel，
+			// 里面已有 ensureUnmasked() 这道门；而下行这条热路径是**直接**调 sm4GCMSeal，
+			// 此前没有门 —— 一旦掩码生效就会拿被 XOR 的密钥去加密 → 服务端 SM4 认证失败、
+			// 静默丢帧 → 下行卡死（上行因为门在反而正常）。这里补齐，保持两个方向口径一致。
+			ensureUnmasked()
 			// SM4-GCM 加密信封头 + 数据（CTR 原地 + 追加 16B 认证标签，零拷贝）。
 			sealed, _ := sm4GCMSeal(fb[envOff:envOff+envHdrLen+n], tunnelKey, fb[frameHdrLen:envOff])
 			_ = sealed
@@ -482,6 +502,8 @@ func (p *connPool) readLoop(e *connEntry) {
 // 缓冲取自 tunnelBufPool（信封布局与 readLoop 一致），由 tunnelFrameWriter 统一归还。
 func (p *connPool) sendCloseAsync(sid uint32) {
 	fb := tunnelBufPool.Get().([]byte)
+	// 同 readLoop：close 帧也要走 tunnelKey，若此时掩码生效必须先用明文密钥。
+	ensureUnmasked()
 	sm4RandomNonce(fb[frameHdrLen:envOff])
 	fb[envOff] = OpClose
 	binary.BigEndian.PutUint32(fb[envOff+1:envOff+5], sid)

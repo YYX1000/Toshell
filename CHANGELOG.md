@@ -110,6 +110,17 @@
 - 接入点：Go exe 与 DLL 两条编译路径（都在 UPX 之前），**实测**默认载荷 `Go buildinf=0`、`Go build ID:=0`。
 - 单测 `harden_test.go` 覆盖擦除/幂等/边界（窗口外版本串不动/非 Go 文件字节不变）。已知边界：函数**不能**用于服务端自身产物（服务端含 `pecheck.go` 的同类常量）。
 
+### 🩹 修复：SOCKS5 代理「下载传几百 KB 后永久卡死」（上行正常）
+- **现象（实测）**：经代理下载 1 MB/5 MB 分别只到 302 KB/335 KB 就**彻底停住**，10 MB 在 120 s 内只到 172 KB；同一时刻 `tunnel.bytes_out` **零增长**、植入端 CPU 几乎不动、会话仍显示 active，而**上传完全正常**（5 MB / 485 KB/s）。表现为测速"延迟正常、下载 0 Mbps、上传正常"。
+- **根因**：`release/implant/tunnel.go` 的 `readLoop` 把"读入数据区"的上界写成了 `cap(fb)`。池缓冲容量公式是 `frameHdrLen+nonceLen+envHdrLen+maxRead+tagLen`，**cap 里那 16B 是留给 SM4-GCM tag 的**；按 cap 读会让单次 `Read` 最多返回 `maxRead+16` 字节，于是 ① `sm4GCMSeal` 的 `append(tag)` 越过 cap → 重新分配新数组而返回值被 `_ =` 丢弃（fb 里留下没有 tag 的密文）、② `fb[:frameHdrLen+nonceLen+envHdrLen+n+tagLen]` 越界 **panic**，被 `readLoop` 里**空的 `recover()` 静默吞掉** → 该隧道**唯一的下行产出 goroutine 直接消失**（`writeLoop` 还在等 `<-e.readDone`，隧道既不产出数据也永不收尾）。
+- **年龄**：该行自 **v1.2.0 首次开源导入（2026-08-27）** 就存在，属长期潜伏缺陷（触发条件是单次 Read 拿到 >64 KB，取决于目标侧内核缓冲被填满，与目标是谁无关），**不是本次改动引入**。
+- **修复**：
+  1. 读上界收紧为 `frameHdrLen+nonceLen+envHdrLen+maxRead`，tag 余量不再被数据吃掉；
+  2. `readLoop` 的 panic 兜底改为按"读侧结束"收尾（幂等 `closeReadDone` + 关目标连接），杜绝"看着 active、实际再不出数据"的僵尸隧道；任何未来的 panic 都会让隧道干净结束而不是无限挂住；
+  3. 补上**方向不对称**：下行热路径（`readLoop` 的 `sm4GCMSeal`、`sendCloseAsync`）此前直接使用 `tunnelKey`，而上行解密走 `sm4DecryptTunnel` 里已有 `ensureUnmasked()` —— 一旦休眠掩码生效，下行会用被 XOR 的密钥加密 → 服务端认证失败丢帧。现两处均补 `ensureUnmasked()`。
+- **实测（A/B，同机）**：修复前 1 MB/5 MB 下载卡在 302 KB/335 KB、10 MB 不可用；修复后 **10 MB 下载 8.7 s 完成（1.14 MB/s）**、连续 3×3 MB 全部完成、5 MB 上传 3.2 MB/s 正常。
+- 定位与验证过程完整记录在 **`docs/PROXY-DOWNLOAD-STALL-ANALYSIS.md`**（含 `TOSHELL_TUNNEL_DEBUG=1` 现场日志与逐条排除）。
+
 ### 🩹 其它
 - **修掉 `retry_wait` 的口径不一致**：构建侧归一化原来是硬编码 `retry_wait == 0 → 5`，**没读** `implant.retry_wait` —— 也就是设置页把重试间隔配成 5 以外的值时根本不生效（而 `interval`/`jitter` 早就改成"先读配置再回退"了）。现改为同一套逻辑，`implant_defaults` 报给生成载荷页的 placeholder 与实际烘焙进载荷的值同源。
 - **发布包补上 `docs/`**：CI（`.github/workflows/release.yml`）与本地打包脚本（`scripts/package_release.ps1`）此前都不把 `docs/` 打进 zip，而包里 README/USAGE 大量链接指向 `docs/EVASION.md`、`docs/LOADERS.md`、`docs/DEPLOY-DOMAIN-CDN.md`（README 的截图也在 `docs/screenshots/`）—— 等于**包内一堆死链**。现在两条打包路径都带上 `docs/`，并把 `docs/EVASION.md`、`docs/LOADERS.md` 加进"包内容校验"清单。

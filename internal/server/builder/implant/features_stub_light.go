@@ -30,7 +30,7 @@ func startRelayListener(listenAddr string) error {
 func handleRelayDown(payload []byte) {}
 
 // BOF / 插件（BOF 与 EXE/DLL/shellcode 插件在精简构建中裁剪；
-// fileless_exec 入口与 DLL 反射加载由 main.go / memload 保留，此处不重复定义）
+// fileless_exec 入口与 DLL 反射加载由 main.go / blob 保留，此处不重复定义）
 func loadBOF(data string, args string) (string, int32, string) {
 	return "", -1, "BOF 未包含在精简构建中"
 }
@@ -43,17 +43,17 @@ func loadDLL(data string) (string, int32, string) {
 	return "", -1, "插件未包含在精简构建中"
 }
 
-// loadEXEMem 反射式内存执行 EXE（含参数）：精简构建裁剪（见 memexe_windows.go）
-func loadEXEMem(dataB64, args, imageName string, waitMs int) (string, int32, string) {
+// runMappedImage 反射式内存执行 EXE（含参数）：精简构建裁剪（见 imgexec_windows.go）
+func runMappedImage(dataB64, args, imageName string, waitMs int) (string, int32, string) {
 	return "", -1, "内存执行 EXE 未包含在精简构建中"
 }
 
-func loadShellcode(data string) (string, int32, string) {
+func runBlob(data string) (string, int32, string) {
 	return "", -1, "插件未包含在精简构建中"
 }
 
 // 模块伪造（内存隐匿 2.0）
-func stompShellcode(data string) (string, int32, string) {
+func carveRun(data string) (string, int32, string) {
 	return "", -1, "模块伪造未包含在精简构建中"
 }
 

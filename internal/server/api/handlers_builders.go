@@ -61,8 +61,9 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"c_message": cMessage,
 		},
 		"options": map[string]interface{}{
-			"interval":    map[string]uint32{"min": 1, "max": 300, "default": 60},
-			"jitter":      map[string]uint32{"min": 0, "max": 100, "default": 10},
+			"interval": map[string]uint32{"min": 1, "max": 300, "default": 60},
+			// 抖动默认 20%：心跳间隔随机化，避免"固定周期轮询"这种典型 C2 指纹
+			"jitter":      map[string]uint32{"min": 0, "max": 100, "default": 20},
 			"retry_count": map[string]uint32{"min": 0, "max": 10, "default": 3},
 			"retry_wait":  map[string]uint32{"min": 1, "max": 60, "default": 5},
 		},

@@ -3,9 +3,9 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含驱动能力分档、内存执行加固、屏幕流跨平台、平台工具库与远程加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
-## [v1.3.4] - 未发布
+## [v1.3.4] - 2026-09-15
 
-重点：**动态（行为）查杀**排查与本机实测反差、植入端默认行为收敛（不再自动枚举进程查杀软）、启动/心跳节奏参数与服务端配置真正生效、驱动加载失败给出可定位的 Win32 错误码。
+重点：**动态（行为）查杀**排查与本机实测反差、植入端默认行为收敛（不再自动枚举进程查杀软）、pclntab 高信号标识符中性化、启动/心跳节奏参数与服务端配置真正生效、驱动加载前自检、内存执行载荷预检、发版端到端冒烟门禁。
 
 ### 🧪 动态查杀排查：先把"到底是什么在拦"钉死
 - 本机（装有 **360 安全卫士 + 腾讯电脑管家 + 无边界安全系统**）实测结论：**任何新生成/未签名的 PE 一执行就被拒并删文件**，与载荷里有什么代码无关 ——
@@ -16,18 +16,65 @@
 - 结论（写进本文件以免重复踩）：**本机的"动态查杀"实验环境不具备判别力**。要么在干净 VM（仅 Defender）里跑行为验证，要么先解决"未签名 PE 被策略拒绝执行"这个前置问题（代码签名 / 白加黑加载器 / 由已签名宿主内存加载）。
 
 ### 🥷 植入端默认行为收敛：不再自动"枚举进程找杀软"
-- **问题**：`evasion_windows.go` 的 `evasionInit()` 在**每次启动**都用 `CreateToolhelp32Snapshot` 遍历全系统进程，并与 38 个安全软件/分析工具进程名（含 `360tray`/`huorong`/`qhactivedefense`/`QQPCTray` 等）做 `strings.Contains` 比对。这正是国产杀软主动防御**明确拦截的"对抗安全软件"行为**；它还必须静态导入 toolhelp32 API 并携带这批进程名字符串，绕开 apihash"零 API 明文"的免杀路径 —— 属于"用强行为特征换弱反沙箱能力"。
-- **修复**：该逻辑移入 `implant/evasion_scan_windows.go`，用构建标签 `evasionscan` 门控；默认编译 `evasion_scan_off_windows.go`（空实现）。生成载荷页新增「主动反沙箱进程检测」开关（默认关闭，并在 UI 上写明代价），服务端请求字段 `evasion_scan`。
+- **问题**：`gate_windows.go` 的 `evasionInit()` 在**每次启动**都用 `CreateToolhelp32Snapshot` 遍历全系统进程，并与 38 个安全软件/分析工具进程名（含 `360tray`/`huorong`/`qhactivedefense`/`QQPCTray` 等）做 `strings.Contains` 比对。这正是国产杀软主动防御**明确拦截的"对抗安全软件"行为**；它还必须静态导入 toolhelp32 API 并携带这批进程名字符串，绕开 apihash"零 API 明文"的免杀路径 —— 属于"用强行为特征换弱反沙箱能力"。
+- **修复**：该逻辑移入 `implant/gate_scan_windows.go`，用构建标签 `evasionscan` 门控；默认编译 `gate_scan_off_windows.go`（空实现）。生成载荷页新增「主动反沙箱进程检测」开关（默认关闭，并在 UI 上写明代价），服务端请求字段 `evasion_scan`。
 - **实测（只编译不执行，规避本机拦截）**：默认构建与 `-tags evasionscan` 构建在 windows/386、windows/amd64、`light` 三种档位下均编译通过；二进制里 `360tray`/`huorong`/`qihoo`/`zhudongfangyu`/`vboxservice` 命中数由 0 变为 1~2，体积差约 2~5 KB（即默认载荷**完全不含**这些字符串与逻辑）。
 
 ### ⏱ 启动随机延迟与心跳节奏：三个"配置了却无效"的真实缺陷
 - **启动随机延迟无法按载荷配置**：Web/API 侧 `BuildRequest` 从来没有 `startup_delay_min/max` 字段（前端 TS 类型里却有），请求里带了也被服务端**静默丢弃**，只能吃服务端全局配置。现已补齐 `startup_delay_min/max` 请求字段并透传到模板渲染；生成载荷页新增「启动随机延迟 (秒)」最小/最大输入框（0 = 用服务端配置）。
 - **心跳间隔/抖动被硬编码覆盖**：`createBuilderHandler` 里 `interval==0 → 5s`、`jitter==0 → 2%`，把设置页里配的 60s 心跳悄悄改回 **5s 固定轮询**（最典型的 C2 行为特征）。现改为**优先取服务端配置**（`implant.interval` / `implant.jitter`），配置也没有才回退 60s / 20%。
 - **驱动加载失败只说"可能被 HVCI/黑名单拦截"**：`drv_windows.go` 现在捕获 `GetLastError` 并翻译成可定位的结论（`1275` 被内核代码完整性策略/易受攻击驱动黑名单拦截、`577` 证书吊销、`1053` 加载即崩、`1058` 服务被禁用、`1073`/`1056` 服务已存在、`5` 权限不足、`2` 文件缺失……），并说明"1275 这类拦截不会有杀软弹窗，属内核静默拒绝"。
-- **可回归**：新增 `internal/server/builder/evasion_scan_test.go`（构建标签矩阵、启动延迟渲染、默认模板不得含进程枚举/杀软进程名）——**本机因安全软件拦截新编译的测试二进制无法执行**，需在干净环境或 CI 上跑。
+- **可回归**：新增 `internal/server/builder/gate_scan_test.go`（构建标签矩阵、启动延迟渲染、默认模板不得含进程枚举/杀软进程名）——**本机因安全软件拦截新编译的测试二进制无法执行**，需在干净环境或 CI 上跑。
 
-### 🔩 其它
+### 🔩 驱动体系：加载前自检（ROADMAP P0-1）
+- **`GET /api/v1/drivers` 与 `/drivers/{name}` 现在带自检结论**（新增 `verify` 字段，既有字段全部不动）：`sha256 / manifest_sha256 / hash_ok / signed / signature_checked / signer / blocklisted / blocklist_reason / warnings / errors`。
+- **sha256 一致性是硬拦**：`manifest.json` 新增 `sha256` 字段声明期望哈希；上传/加载的驱动与之不一致 → `byovd_load` **直接 400 拒绝下发**，错误里写明"可能被替换/损坏"。这是这条链路上唯一能可靠拦住"文件被换过"的检查（WinVerifyTrust 只能校验磁盘文件，校验不了内存里上传的字节；同名同哈希才复用签名结论）。
+- **Authenticode 签名状态**：`WinVerifyTrust(WTD_CHOICE_FILE + WTD_REVOKE_NONE + WTD_STATEACTION_VERIFY→CLOSE + WTD_CACHE_ONLY_URL_RETRIEVAL)` 判签名有效与是否被篡改；签名者走 `CryptQueryObject → CryptMsgGetParam(CMSG_SIGNER_INFO) → CertFindCertificateInStore → CertGetNameString`。目录签名(catalog)的 `.sys` 取不到签名者，只给"签名有效/未签名"结论并如实提示（不伪造结论）。4 秒软超时，超时只警告不拦截、不缓存；结构体大小在 `init()` 断言（x86 52/88、x64 88/32 不一致时立即失败，而不是给一个莫名的 `ERROR_INVALID_PARAMETER`）。
+- **易受攻击驱动黑名单提示**：只读本机 `HKLM\SYSTEM\CurrentControlSet\Control\CI\Config\VulnerableDriverBlocklistEnable` + 探测 `%windir%\System32\CodeIntegrity\driversipolicy.p7b`（含 Sysnative，规避 WOW64 重定向）。**不下载、不内置任何名单数据、代码里不写死任何驱动名**，只告诉操作员"策略已启用，名单内驱动会被内核静默拒绝（植入端 `StartServiceW` 报 1275）"。
+- **警告 vs 硬错误分流**：未签名/黑名单可能拦截 → 允许下发 + `logging.Warn` + 响应带 `warnings`；只有 sha256 不一致这类硬错误才拒发。新增 `GET /api/v1/drivers/{name}/verify` 单独查询；`List()` 复用同一次读取的字节与已解析的 manifest（不做二次全文件读取），签名结论按 `path+sha256` 缓存（超时结论不缓存，下次重试）。
+- **测试**：`internal/server/drivers/verify_test.go` 覆盖哈希一致/不一致/未声明、警告合并、签名者比对、JSON 字段名、`List()` 携带自检结论；签名校验通过可替换的 `signatureCheck` 桩函数完成，**不依赖本机证书链与联网吊销检查**。
+
+### 🧠 内存执行：下发前 PE 预检（ROADMAP P0-2）
+- **问题**：`exe_mem`/`dll` 是植入端**同进程内**反射映射，命中硬边界会直接崩宿主（实测：Go 编译的 EXE 因双 Go runtime 必崩；架构不符、.NET 载荷也起不来），而失败信息只有"目标机掉线了"。
+- **方案**：服务端新增 `internal/server/builder/pecheck.go`，在 `fileless-exec` 下发前**手写解析 PE 头**（DOS/PE/可选头/节表 + COM 描述符目录 14 = CLR、TLS 目录、重定位表），并用 `.gopclntab` / `\xff Go buildinf:` 特征识别 Go 载荷，然后按宿主会话架构给出 `reject / warn / ok` 三种判定：
+  - **reject**（不下发，HTTP 400 + `reasons` + `suggestion` + 精简 `pe_info`）：Go 载荷走 `exe_mem`、架构与宿主不一致（`exe_mem`）、带 CLR 目录（.NET）；
+  - **warn**（照常下发 + `warnings`）：有 TLS 回调、无重定位表、donut 转换路径；
+  - 高危逃生门：请求带 `force: true` 时 reject 降级为警告，但**日志明确记录"操作员强制下发"**并附带原拒绝原因，便于事后追溯。
+- **测试**：`pecheck_test.go` 用代码构造最小 PE 覆盖主要分支（合法 amd64、i386 对 amd64 宿主、带 `.gopclntab`、带 CLR 目录、坏数据），不依赖外部样本文件。
+
+### 🚦 发版门禁：端到端冒烟 + 产物校验（ROADMAP P0-4 / P3）
+- **新增 `scripts/e2e_smoke.ps1`**（一条命令、幂等、非 0 退出即阻断发版）：临时端口起一个自建服务端 → `/health`（含 401/404/5xx 的中文区分）→ **鉴权必须生效**（无 Key 访问会话列表必须 401）→ C2 监听端口可连接 → `GET /builders` → **构建三档载荷**（windows/amd64 full、windows/amd64 light、linux/amd64 full，校验 `size`/`sha256` 并下载回来再核对大小与哈希）→ 关键路由存在性（`/drivers`、`fileless-exec`、`screen-stream`；404 = 路由缺失判失败，400/401/403/409 = 存在）→ （可选）真实 Windows 载荷上线 + 下发 `whoami` 拿回执 → 清理进程/临时目录，输出 ✅/⚠️/❌ 摘要。
+  - 参数：`-Port` / `-WorkDir` / `-SkipImplant` / `-RequireImplant` / `-KeepArtifacts` / `-ServerExe` / `-ApiKey`。
+  - **在装有国产安全软件的机器上会自动降级**：识别"载荷被拒绝执行/文件被删"后只把该环节记为 ⚠️ 并明确打印原因，不死循环、不假装成功；需要严格阻断时加 `-RequireImplant`。
+  - 用法与 CI 片段见 `scripts/README.md`。
+- **CI（`.github/workflows/release.yml`）**：新增 `e2e-smoke` job（windows runner，`-SkipImplant`）并让打包 job `needs: [web, e2e-smoke]` —— **冒烟不过就不出包**；打包 job 内新增 **`toserver -version` 与 tag 一致性校验**、**发布包内容清单校验**（`toserver`/`implant/main.go`/配置样例/README/USAGE/LICENSE）；新增 `checksums` job 生成 **`checksums.txt`（sha256）** 随 Release 发布（本地 `scripts/package_release.ps1` 同步生成同样的清单）。
+- **顺便修掉两处**：① `configs/server.yaml.example`（根目录与 release 两份）里 133 个 **U+FFFD 损坏字符**（早期转码丢字）已重写为干净中文注释，`api_keys` 从标量改为标准列表；② `scripts/package_release.ps1` 补上 **UTF-8 BOM**（含中文注释，PowerShell 5.1 无 BOM 会按 ANSI 解析乱码）。
+
+### 🏷 pclntab 高信号标识符中性化（免杀）
+- Go 的 `-s -w` 只去掉符号表与 DWARF，**函数名/文件路径仍在 pclntab 里**。实测默认载荷里可直接搜到 `loadShellcode`、`loadEXEMem`、`reflectLoadPE`、`injectShellcodeHost`、`memexe_windows.go`、`memload_windows.go`、`stomp_windows.go`、`evasionInit`、`gate_windows.go` 等"一看就是 C2 组件"的名字。
+- 全部改为中性名（**能力零变化**，两份模板副本同步）：
+  `stompShellcode→carveRun`、`moduleStomp→carveModule`、`loadShellcode→runBlob`、`injectShellcodeHost→runBlobInHost`、`loadEXEMem→runMappedImage`、`reflectLoadPE→mapImagePE`、`evasionInit→initGate`、`evasionSuspectDelay→hostDelay`；文件 `stomp_*→carve_*`、`memexe_windows.go→imgexec_windows.go`、`memload_*→blob_*`、`evasion_*→gate_*`。
+- 实测（渲染模板后只编译、`-s -w` 关闭以便体检）：上述标识符命中数**全部归零**；`-tags evasionscan` 与默认构建在 windows/386、windows/amd64 下均编译通过。
+- 实测（**服务端真实构建 + 字符串体检**，windows/amd64/tcp）：
+
+  | 载荷 | 体积 | `beacon*` | `loadShellcode`/`loadEXEMem`/`reflectLoadPE` | `memexe_windows.go` 等文件路径 | `kgameprotect`/`byovd`/`HVCI`/杀软进程名 |
+  |---|---|---|---|---|---|
+  | `full` | 3,655,412 | 22（BOF ABI，保留） | 0 | 0 | 0 |
+  | `light` | **2,984,692** | **0** | 0 | 0 | 0 |
+  | `full` + `evasion_scan` | 3,661,044 | 22 | 0 | 0 | 0 |
+
+  即：对名字敏感的场景用 `light`（体积同时小 18%），全功能档只剩 BOF API 这一项不可去除的 ABI 名字。
+- **保留且如实说明**：`BeaconDataParse`/`BeaconOutput` 等 **Cobalt Strike BOF API 名字不能改**（BOF 二进制靠这些名字解析符号，是 ABI 契约），因此 full 档案仍会有 `beacon*` 命中；对名字敏感的场景请用 `light` 档案（`bof_windows.go` 带 `!light`，不参与编译）。
+
+### 🧪 构建可观测：载荷参数写进服务端日志
+- 新增两行日志，且**只在这里能看到"真正烘焙进载荷的值"**（前端请求 / 服务端配置 / 默认值三层，任一层都可能覆盖）：
+  - `rendering implant: url=… interval=60s jitter=20% startup_delay=2~10s evasion_scan=false profile=full`
+  - `compiling implant: os=windows arch=amd64 tags="evasionscan" garble=false go=go1.20.14`
+- 排查"配了没生效/载荷里怎么还有这个特征"时，先看这两行，实测已用它确认 `evasion_scan`/`startup_delay` 的请求值确实生效。
+
+### 🔧 其它
 - 驱动诊断文案全部写成**不含转义的简单双引号字面量**（用 `" + "` 拼接代替 `\n`），以保证植入端字符串混淆器会把它们编译成 `xd("hex")`，避免 `HVCI`/`ERROR_ACCESS_DISABLED_BY_POLICY` 明文留在载荷里（混淆器对含转义的字面量不做处理）。
+- **默认心跳节奏收敛**：`configs/server.yaml.example`（根目录与 release 两份）从 `interval: 5 / jitter: 2` 改为 **`interval: 60 / jitter: 20`** 并写明理由 —— 5 秒固定轮询是最典型的 C2 行为特征；`GET /api/v1/builders` 里的 `jitter` 默认值同步改为 20。
 
 ## [v1.3.3] - 2026-09-15
 

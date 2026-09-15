@@ -35,6 +35,8 @@ export function AVDetectTab({ session }: { session: Session }) {
   const [lastScanAt, setLastScanAt] = useState<number>(0)
   const [edrBusy, setEdrBusy] = useState(false)
   const [edrMsg, setEdrMsg] = useState('')
+  // 驱动加载前自检（服务端 WinVerifyTrust + manifest sha256 + 黑名单策略）回传的警告
+  const [driverWarnings, setDriverWarnings] = useState<string[]>([])
   const [edrProcesses, setEdrProcesses] = useState('')
   const [byovdB64, setByovdB64] = useState('')
   const [byovdSvc, setByovdSvc] = useState('')
@@ -219,6 +221,8 @@ export function AVDetectTab({ session }: { session: Session }) {
       device_name: byovdDev.trim() || undefined,
       kill_ioctl: byovdIoctl.trim() || undefined,
     })
+    // 服务端加载前自检的警告（未签名 / 可能被黑名单拦截 / shasum 未声明）原样展示
+    setDriverWarnings((r.data as { warnings?: string[] } | undefined)?.warnings || [])
     return r.data?.task_id
   })
 
@@ -237,6 +241,7 @@ export function AVDetectTab({ session }: { session: Session }) {
         device_name: d.device ? d.device.replace(/^\\\\\.\\/, '') : undefined,
         kill_ioctl: d.ioctl ? '0x' + d.ioctl.toString(16).toUpperCase() : undefined,
       })
+      setDriverWarnings((r.data as { warnings?: string[] } | undefined)?.warnings || [])
       return r.data?.task_id
     } finally {
       setBuiltinLoading('')
@@ -422,19 +427,36 @@ export function AVDetectTab({ session }: { session: Session }) {
               目录为空（把 .sys 放进去并刷新，或在下方直接上传）
             </span>
           )}
-          {builtinDrivers.map(d => (
-            <button
-              key={d.name}
-              className="btn-small"
-              onClick={() => loadBuiltinDriver(d)}
-              disabled={edrBusy || builtinLoading !== ''}
-              title={`${d.description || '（manifest 未写 description）'}\n设备: ${d.device || '（未声明）'}  服务名: ${d.service || '（未声明）'}\n用途: ${d.purpose || '（未声明）'}\nIOCTL: ${d.ioctl ? '0x' + d.ioctl.toString(16).toUpperCase() : '（未声明）'}\nSHA256: ${d.sha256}`}
-              style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
-            >
-              <Skull size={13} />
-              {builtinLoading === d.name ? '加载中...' : d.name}
-            </button>
-          ))}
+          {builtinDrivers.map(d => {
+            const v = d.verify
+            // 自检结论：哈希一致性（硬错误，加载会被服务端 400 拒绝）、签名、黑名单策略
+            const hashBad = v ? v.hash_ok === false : false
+            const signText = !v ? '未自检' : (v.signature_checked ? (v.signed ? `已签名${v.signer ? `（${v.signer}）` : ''}` : '未签名或验证失败') : '签名未校验')
+            return (
+              <button
+                key={d.name}
+                className="btn-small"
+                onClick={() => loadBuiltinDriver(d)}
+                disabled={edrBusy || builtinLoading !== '' || hashBad}
+                title={[
+                  `${d.description || '（manifest 未写 description）'}`,
+                  `设备: ${d.device || '（未声明）'}  服务名: ${d.service || '（未声明）'}`,
+                  `用途: ${d.purpose || '（未声明）'}`,
+                  `IOCTL: ${d.ioctl ? '0x' + d.ioctl.toString(16).toUpperCase() : '（未声明）'}`,
+                  `SHA256: ${d.sha256}`,
+                  `加载前自检: ${v ? (v.summary || signText) : '无结论'}`,
+                  ...(v?.warnings || []).map(x => '⚠ ' + x),
+                  ...(v?.errors || []).map(x => '✖ ' + x),
+                ].join('\n')}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: 6, ...(hashBad ? { opacity: 0.55 } : {}) }}
+              >
+                <Skull size={13} />
+                {builtinLoading === d.name ? '加载中...' : d.name}
+                {hashBad && <span style={{ color: '#ff6b6b' }}>哈希不符</span>}
+                {!hashBad && v && v.signature_checked && !v.signed && <span style={{ color: '#f0a020' }}>未签名</span>}
+              </button>
+            )
+          })}
           <button className="btn-small" onClick={unloadDriver} disabled={edrBusy} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             卸载驱动
           </button>
@@ -502,6 +524,16 @@ export function AVDetectTab({ session }: { session: Session }) {
         <div style={{ fontSize: 11, color: 'var(--text-dim, #9a9aab)', marginTop: 6 }}>
           设备名与终止 IOCTL 只在「驱动击杀」时使用；填了就会被登记为本次会话的驱动档案（也可留空，届时击杀请求需自带 device/ioctl）。
         </div>
+
+        {/* 加载前自检警告（服务端返回：未签名 / 可能被黑名单拦截 / manifest 未声明哈希等） */}
+        {driverWarnings.length > 0 && (
+          <div style={{ marginTop: 8, padding: '8px 10px', border: '1px solid #7a5a1a', borderRadius: 6, background: 'rgba(240,160,32,0.08)', fontSize: 12, color: '#f0c060', lineHeight: 1.7 }}>
+            <div style={{ fontWeight: 600, marginBottom: 4 }}>驱动加载前自检警告（已放行，请自行判断风险）</div>
+            {driverWarnings.map((w, i) => (
+              <div key={i}>⚠ {w}</div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   )

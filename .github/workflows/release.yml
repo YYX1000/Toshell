@@ -34,10 +34,46 @@ jobs:
           name: webdist
           path: cmd/server/webdist
 
+  # ── 发版门禁：端到端冒烟（打包发布前必须通过）──────────────────────────
+  # 覆盖历史事故：改动后忘重编服务端、模板档位构建失败、接口路由/鉴权失效。
+  # 托管 runner 上不跑真实植入端（未签名载荷会被托管杀软拦），故固定 -SkipImplant。
+  e2e-smoke:
+    runs-on: windows-latest
+    needs: web
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: webdist
+          path: cmd/server/webdist
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          check-latest: true
+      - name: Prefetch implant toolchain (Go 1.20.14)
+        shell: powershell
+        run: |
+          $env:GOTOOLCHAIN = 'go1.20.14'
+          go version
+      - name: E2E smoke (server build + 3 payload flavors + auth + routes)
+        # 用 Windows PowerShell 5.1 跑：脚本是按 5.1 语义编写与静态校验的
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipImplant -KeepArtifacts
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: ${{ runner.temp }}\toshell-e2e-*
+          if-no-files-found: ignore
+          retention-days: 7
+
   # 多平台交叉编译 + 打包 + 上传 GitHub Release
   build:
     runs-on: ubuntu-latest
-    needs: web
+    needs: [ web, e2e-smoke ]
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +139,30 @@ jobs:
           (cd "$STAGE" && zip -q -r "../${{ matrix.zip }}" .)
           rm -rf "$STAGE"
 
+      - name: Verify version matches tag (linux/amd64 only)
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: |
+          chmod +x toserver
+          out=$(./toserver -version 2>&1 || true)
+          echo "$out"
+          want="${GITHUB_REF_NAME#v}"
+          echo "$out" | grep -q "$want" || { echo "::error::built binary reports a version that does not match tag $GITHUB_REF_NAME (want $want)"; exit 1; }
+
+      - name: Verify package layout
+        run: |
+          # 包里必须带上"能直接跑起来"的最小集合（历史事故：漏了 implant 模板或配置样例）
+          unzip -l "${{ matrix.zip }}" > /tmp/ziplist.txt
+          cat /tmp/ziplist.txt
+          for f in "toserver${{ matrix.ext }}" "implant/main.go" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE"; do
+            grep -q "$f" /tmp/ziplist.txt || { echo "::error::package is missing $f"; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.zip }}
+          path: ${{ matrix.zip }}
+          if-no-files-found: error
+
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
@@ -123,3 +183,31 @@ jobs:
             使用说明：[使用说明](https://github.com/${{ github.repository }}/blob/main/USAGE.md)
 
             Bug或者建议请提交issue。
+
+  # 全部 zip 汇总后生成校验清单（sha256），随 Release 一起发布。
+  # 单独一个 job 是因为矩阵里每个 job 只知道自己那一个 zip。
+  checksums:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums.txt
+        run: |
+          cd dist
+          # 只对发布 zip 求哈希，顺序固定便于比对
+          ls -1 *.zip | sort | xargs sha256sum > checksums.txt
+          cat checksums.txt
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          # 只补发 checksums.txt + 许可与声明（不传 name/body，避免覆盖已写好的 Release 标题与正文）。
+          # 这三个文件由单个 job 上传（矩阵里每个 job 都传会并发冲突）。
+          files: |
+            dist/checksums.txt
+            LICENSE
+            DISCLAIMER.md
+            THIRD-PARTY-NOTICES.md

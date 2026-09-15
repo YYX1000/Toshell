@@ -1,12 +1,12 @@
-# =====================================================================
-#  ToShell v1.3.3 local packaging: mirrors .github/workflows/release.yml
+﻿# =====================================================================
+#  ToShell v1.3.4 local packaging: mirrors .github/workflows/release.yml
 #  Output: release/release-zips/toshell-server-<os>-<arch>.zip (6 targets)
 # =====================================================================
 $ErrorActionPreference = 'Stop'
 $base = Split-Path -Parent $PSScriptRoot
 Set-Location $base
 
-$version = '1.3.3'
+$version = '1.3.4'
 $commit = (git rev-parse --short HEAD)
 $buildTime = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
 $ldflags = "-s -w -X main.version=$version -X main.commit=$commit -X main.buildTime=$buildTime"
@@ -84,4 +84,16 @@ foreach ($m in $matrix) {
 
 Remove-Item -Recurse -Force $pkg -ErrorAction SilentlyContinue
 Remove-Item Env:GOOS, Env:GOARCH, Env:CGO_ENABLED -ErrorAction SilentlyContinue
+
+# 与 CI 一致的校验清单：只对发布 zip 求 sha256，顺序固定便于比对。
+# （CI 的 checksums job 产物名同为 checksums.txt，两处逻辑保持镜像）
+$sums = Join-Path $zipDir 'checksums.txt'
+$lines = Get-ChildItem -File (Join-Path $zipDir '*.zip') | Sort-Object Name | ForEach-Object {
+  $h = (Get-FileHash -Algorithm SHA256 $_.FullName).Hash.ToLower()
+  "$h  $($_.Name)"
+}
+Set-Content -Path $sums -Value $lines -Encoding ASCII
+Write-Host "checksums: $sums" -ForegroundColor Green
+Get-Content $sums | ForEach-Object { Write-Host "  $_" }
+
 Write-Host "All 6 packages done in $zipDir" -ForegroundColor Green

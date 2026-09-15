@@ -3,7 +3,7 @@
 > 自托管的 C2（命令与控制）远程管理平台，用于**授权红队演练、渗透测试与安全研究**。
 > **仅限获得授权后使用。** 严禁未授权的入侵 / 攻击 / 数据窃取。
 
-**v1.3.3** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
+**v1.3.4** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
 
 ---
 
@@ -30,7 +30,9 @@ ToShell 是一个轻量 C2 框架，由 **服务端（Team Server）+ Web 控制
 - **自主 Agent**：异步自主执行（不阻塞对话）、SSE 流式思考可见、连续上下文记忆、自主提权/横向闭环、失败自动恢复、只输出结论与建议。
 
 **免杀与隐蔽**
-- 每构建随机化（配置块魔数/密钥、字符串密钥、API 哈希种子）、编译期字符串混淆、apihash/PEB 动态解析、**反沙箱 + 启动随机延迟**、进程注入随机良性宿主。
+- 每构建随机化（配置块魔数/密钥、字符串密钥、API 哈希种子）、编译期字符串混淆、apihash/PEB 动态解析、**启动随机延迟（可按载荷配置）+ 心跳抖动**。
+- **默认不做任何"枚举进程找杀软"的动作**（这类行为会被 360/火绒/电脑管家主动防御直接拦截）：需要时在生成载荷页显式勾选「主动反沙箱进程检测」。
+- 内存模块/驱动模块的**高信号函数名与文件名已中性化**（pclntab 里不再出现 `loadShellcode`/`memexe_windows.go` 这类明文），`light` 档案进一步裁剪全部重量级模块。
 
 **加密通信**
 - 控制帧 AES-256-GCM 认证加密 + 隧道数据 SM4-GCM（国密自研），密钥域分离；配置热更新。
@@ -154,11 +156,31 @@ go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
 
 登录 Web 控制台 →「生成载荷」→ 选平台 / 通道 / 免杀配置 → 构建 → 目标机运行即回连。
 
-> 生成载荷时可用「启动随机延迟」等默认参数（在「设置 → 植入端」配置，构建时取全局默认）。
+### 构建档位与免杀边界（v1.3.4）
+
+| 选项 | 默认 | 说明 |
+|---|---|---|
+| 构建档案 `profile` | `full` | `full` = 全功能；`light` = 裁剪截图/屏幕流/中继/BOF/凭据/持久化/EDR/BYOVD/UAC/注入/插件（体积小、特征少，`beacon*` 等 BOF API 名字也不进二进制） |
+| 启动随机延迟 | 服务端配置（默认 2~10s） | 载荷启动后随机休眠 [最小,最大] 秒再首次回连；**生成载荷页可直接覆盖**（0 = 用服务端配置） |
+| 心跳间隔 / 抖动 | 服务端配置（`implant.interval/jitter`） | 请求里不填就跟随「设置 → 植入端」，不再被硬编码的 5s/2% 覆盖 |
+| 主动反沙箱进程检测 | **关** | 开启（`evasion_scan`）会枚举全系统进程并与一批杀软/分析工具进程名比对后延迟执行 —— **这正是 360/火绒/电脑管家主动防御拦截的对抗行为**，只在明确需要时开 |
+| Garble 混淆 / UPX | 关 | 未安装对应工具时界面上如实显示"不可用 + 原因" |
+
+> **如何确认参数真的生效**：服务端日志有 `rendering implant: … interval=… jitter=… startup_delay=… evasion_scan=… profile=…` 与 `compiling implant: … tags="…"`，这是唯一可信的"真正烘焙进载荷的值"。
+
+> ⚠️ **一个必须知道的边界**：在装有 360/电脑管家等国产安全软件的主机上，**未签名的 PE 会在进程创建阶段被直接拒绝执行并删除文件**（实测：连一个只有 `time.Sleep` 的 Hello-World Go 程序也被拒，而微软签名的 `notepad.exe` 副本可正常执行）。这属于"策略/信誉"拦截，**改载荷代码无用**。此类环境请走：**代码签名（计划中）**、由已签名宿主加载（白加黑 / 计划任务拉签名进程内存加载）、或先加白名单。详见 [ROADMAP.md](ROADMAP.md) 的 P0-5。
 
 ## 配置
 
 复制 `configs/server.yaml.example` → 修改 `public_host / api_keys / jwt_key / encryption_key / admin_password`；更多字段说明见 [USAGE.md](USAGE.md)。设置页可热更新多数配置（无需重启）。
+
+## 发版前自检
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/e2e_smoke.ps1
+```
+
+起临时服务端 → 校验鉴权/关键接口 → 构建 windows full / light / linux 三档载荷 → （可选）真植入端上线并下发一条任务 → 输出 ✅/⚠️/❌ 摘要，**有 ❌ 即非 0 退出**，可直接进 CI 作为发版门禁。
 
 ## 联系方式 / Contact
 
@@ -180,12 +202,12 @@ go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
 ## 开源与授权
 
 - 使用说明：[USAGE.md](USAGE.md)
-- 后续优化路线：[ROADMAP.md](ROADMAP.md)（会话抖动、屏幕流/截图跨平台、Agent 记忆、横向移动等规划）
+- 后续优化路线：[ROADMAP.md](ROADMAP.md)（驱动能力分档与加载前自检、内存执行加固、屏幕流跨平台、动态查杀收敛、平台工具库与远程加载）
 - 安全披露：[SECURITY.md](SECURITY.md)
 - 一键部署：[release/install.ps1](release/install.ps1) / [release/install.sh](release/install.sh)（发布包内自带，环境检测 + 按需在线安装 + 直接启动）
 - License：**[MIT](LICENSE)**（Copyright © 2026 iQingshan 与 ToShell 贡献者）
 - 使用声明：**[DISCLAIMER.md](DISCLAIMER.md)** —— 仅限**授权**安全测试/红队演练/自建实验环境，禁止任何未授权用途；使用者须自行确保授权充分并承担全部责任。
-- 第三方组件声明：**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** —— 发布包内捆绑的 **UPX（GPL-2.0-or-later + 特殊例外）**、内置 BYOVD 驱动 `kgameprotect.sys`（第三方签名二进制，版权归其权利人）以及 Go 模块依赖的许可清单；这些组件**不受 MIT 覆盖**，各自遵循原许可。
+- 第三方组件声明：**[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)** —— 发布包内捆绑的 **UPX（GPL-2.0-or-later + 特殊例外）**以及 Go 模块依赖的许可清单；发布包与二进制**不含任何内核驱动**（BYOVD 驱动由使用者自备并自负合规责任），第三方组件**不受 MIT 覆盖**，各自遵循原许可。
 - **免责声明**：仅用于授权测试与学习研究，禁止任何未授权的入侵、攻击或数据窃取行为；使用者后果自负。
 
 ---

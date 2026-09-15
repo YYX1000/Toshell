@@ -21,7 +21,8 @@
 //	      "ioctl": "0x222048",             // 终止进程的 IOCTL（支持十六进制字符串或数字）
 //	      "kill_pid_size": 4,              // IOCTL 入参 PID 字段字节数
 //	      "description": "用途备注",
-//	      "signed": "签名者（人工核对用）"
+//	      "signed": "签名者（人工核对用）",
+//	      "sha256": "…"                    // 可选：期望哈希，加载前自检会比对（见 verify.go）
 //	    }
 //	  ]
 //	}
@@ -29,12 +30,14 @@
 // 没有 manifest 时 List() 仍会列出目录里的 .sys（元数据留空，UI 会提示补全）；
 // sha256 一律实时计算，便于操作员加载前自行核对。
 //
+// 每个驱动还会带上加载前自检结果（Verify 字段）：sha256 与 manifest 声明是否一致、
+// Authenticode 签名是否有效、本机易受攻击驱动黑名单是否启用。自检复用的是上面那次
+// 读取结果，不会为了算哈希把同一个文件读两遍。
+//
 // ⚠️ 仅供授权红队/渗透测试使用；加载驱动前请自行确认签名与来源合法。
 package drivers
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -60,23 +63,32 @@ type Driver struct {
 	Size        int64  `json:"size"`
 	SHA256      string `json:"sha256"`
 	Signed      string `json:"signed"`
+	// Verify 加载前自检结果（sha256 一致性 / 签名状态 / 易受攻击驱动黑名单提示）。
+	// 与上面的 Signed（manifest 里人工标注的签名者）不同，Verify.Signed 是本机实测结论；
+	// 非 Windows 平台只有一个「不做自检」的警告，其余字段为零值。
+	Verify *VerifyResult `json:"verify,omitempty"`
 	// Path 磁盘绝对路径（供下载/加载任务使用）。
 	Path string `json:"-"`
 }
 
+// manifestEntry 是 manifest.json 里的单条驱动声明。
+type manifestEntry struct {
+	File        string      `json:"file"`
+	Name        string      `json:"name"`
+	Description string      `json:"description"`
+	Purpose     string      `json:"purpose"`
+	Device      string      `json:"device"`
+	Service     string      `json:"service"`
+	IOCTL       interface{} `json:"ioctl"`
+	KillPIDSize uint32      `json:"kill_pid_size"`
+	Signed      string      `json:"signed"`
+	// SHA256 可选：期望的 sha256（十六进制小写/大写均可），加载前自检据此判断文件是否被替换/损坏。
+	SHA256 string `json:"sha256"`
+}
+
 // manifestFile manifest.json 结构。
 type manifestFile struct {
-	Drivers []struct {
-		File        string      `json:"file"`
-		Name        string      `json:"name"`
-		Description string      `json:"description"`
-		Purpose     string      `json:"purpose"`
-		Device      string      `json:"device"`
-		Service     string      `json:"service"`
-		IOCTL       interface{} `json:"ioctl"`
-		KillPIDSize uint32      `json:"kill_pid_size"`
-		Signed      string      `json:"signed"`
-	} `json:"drivers"`
+	Drivers []manifestEntry `json:"drivers"`
 }
 
 // SearchDirs 返回扫描驱动的目录（按优先级）：
@@ -127,10 +139,16 @@ func List() []Driver {
 			if info, err := e.Info(); err == nil {
 				d.Size = info.Size()
 			}
-			if raw, err := os.ReadFile(path); err == nil {
-				sum := sha256.Sum256(raw)
-				d.SHA256 = hex.EncodeToString(sum[:])
+			// 只读一次盘：sha256 与实际内容都来自这一份 raw，加载前自检复用同一份字节。
+			var raw []byte
+			if b, err := os.ReadFile(path); err == nil {
+				raw = b
+				d.SHA256 = sha256Hex(b)
 			}
+			var (
+				expectedSHA    string
+				declaredSigner string
+			)
 			for _, m := range meta.Drivers {
 				if strings.EqualFold(m.File, e.Name()) || (m.Name != "" && strings.EqualFold(m.Name, d.Name)) {
 					if m.Name != "" {
@@ -143,17 +161,34 @@ func List() []Driver {
 					d.IOCTL = parseIOCTL(m.IOCTL)
 					d.KillPIDSize = m.KillPIDSize
 					d.Signed = m.Signed
+					expectedSHA = m.SHA256
+					declaredSigner = m.Signed
 					break
 				}
 			}
 			if d.KillPIDSize == 0 {
 				d.KillPIDSize = 4
 			}
+			// 加载前自检（复用上面已读入内存的字节与已解析的 manifest，不重复读盘）。
+			res := verifyWithRaw(path, raw, expectedSHA, declaredSigner)
+			d.Verify = &res
 			out = append(out, d)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
+}
+
+// Find 按名称或文件名取驱动元数据（含加载前自检结果，不返回文件字节）。
+// 与 Get 的区别：Get 会额外把 .sys 读进内存，仅需要元数据/自检结论时用 Find 更省 IO。
+func Find(name string) (Driver, error) {
+	for _, d := range List() {
+		if d.Name == name || d.File == name {
+			return d, nil
+		}
+	}
+	return Driver{}, fmt.Errorf("未找到驱动 %q：请把 .sys 放到 %s（可选配 manifest.json 声明设备名/服务名/IOCTL）",
+		name, strings.Join(SearchDirs(), " 或 "))
 }
 
 // Get 按名称或文件名取驱动与其字节内容。

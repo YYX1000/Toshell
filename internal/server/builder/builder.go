@@ -69,7 +69,7 @@ type BuildOptions struct {
 	// 主动反沙箱进程检测（枚举进程并与安全软件/分析工具进程名比对后延迟执行）。
 	// **默认关闭**：该行为是国产杀软主动防御明确拦截的对抗动作，且需要静态导入
 	// toolhelp32 API + 携带安全软件进程名字符串。开启时服务端加 -tags evasionscan，
-	// 只有勾选才把 evasion_scan_windows.go 编进载荷。
+	// 只有勾选才把 gate_scan_windows.go 编进载荷。
 	EvasionScan bool `json:"evasion_scan"`
 }
 
@@ -751,7 +751,7 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 	//   transport=mqtt       → transport_mqtt（MQTT pub/sub 通道）
 	//   profile=light        → light（裁剪截图/中继/注入/EDR 等重量级模块）
 	//   evasion_scan=on      → evasionscan（主动反沙箱进程检测；默认不编译，
-	//                          见 implant/evasion_scan_windows.go 的说明）
+	//                          见 implant/gate_scan_windows.go 的说明）
 	buildTags := buildTagList(transport, profile, evasionScan)
 
 	// TLS 客户端实现文件按通道裁剪：

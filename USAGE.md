@@ -1,6 +1,6 @@
 # ToShell Team Server 使用说明
 
-> **当前版本: v1.3.3(2026-09)** · 更新日志见文末「附」章节。
+> **当前版本: v1.3.4(2026-09)** · 更新日志见文末「附」章节。
 
 > ToShell 是一个自托管的 C2(命令与控制)框架,用于授权红队演练、渗透测试与安全研究。请仅在获得授权的前提下使用。
 
@@ -160,11 +160,17 @@ ToShell 由三部分组成:
 |---|---|
 | **编译期字符串混淆** | 服务端在编译前自动扫描植入端源码,将敏感字符串(C2 回连地址、API 函数名、配置块标识、安全软件特征等)加密为运行时解码调用,二进制中不残留明文 |
 | **配置块加密** | 植入端的回连地址/加密密钥等配置以 **XOR 加密块**形式附加在二进制尾部,通过加密后的标识常量定位,二进制中无明文 magic 与明文 URL |
-| **反沙箱/反调试** | 植入端启动时检测调试器(`IsDebuggerPresent`)与常见沙箱/分析环境进程(VMware、VirtualBox、Sandboxie、Wireshark 等),CPU < 2 核或内存 < 2GB 时延迟执行 |
+| **启动随机延迟** | 载荷启动后随机休眠 `[启动延迟最小, 最大]` 秒再首次回连(默认取服务端配置,生成载荷页可直接覆盖),打乱"启动即行为"的检测节奏 |
+| **心跳抖动** | 心跳间隔在 `base ± jitter%` 内随机,打破固定周期轮询的流量指纹;不填则跟随「设置 → 植入端」 |
+| **pclntab 中性化** | 内存执行/驱动等模块的函数名与文件名已改成中性名,Go 的 pclntab 里不再出现 `loadShellcode`、`memexe_windows.go` 这类"一看就是 C2 组件"的明文 |
+| **反调试** | 启动时检测调试器(`IsDebuggerPresent`),CPU < 2 核或内存 < 2GB 时延迟执行(不做任何进程枚举) |
 | **老系统兼容** | Windows 载荷自动使用 Go 1.20.14 工具链编译,兼容 Windows 7 / Server 2008 R2 |
 
-> 验证方式:生成的 exe 中搜索 `TOSHELL_CFG_V1`、回连 IP/域名、`VirtualAllocEx` 等字符串应均无明文。
+> 验证方式:生成的 exe 中搜索 `TOSHELL_CFG_V1`、回连 IP/域名、`VirtualAllocEx`、`loadShellcode` 等字符串应均无明文。
 > 注意:混淆不改变载荷功能,但极个别杀软仍可能因行为特征报毒,建议结合 garble + UPX 使用。
+> **行为变化(v1.3.4 起)**:不再默认"枚举进程找杀软"。原实现在启动时遍历全系统进程并与一批安全软件进程名比对 —— 这是 360/火绒/电脑管家主动防御**明确拦截**的对抗行为,现在必须显式勾选「主动反沙箱进程检测」(`evasion_scan`)才会编译进载荷。
+> **如何确认参数真的生效**:服务端日志会打印 `rendering implant: … interval=… jitter=… startup_delay=… evasion_scan=… profile=…` 与 `compiling implant: … tags="…"`,这是唯一可信的"真正烘焙进载荷的值"。
+> **一个必须知道的边界**:装有 360/电脑管家等国产安全软件的主机上,**未签名的新 PE 常在创建进程阶段就被拒绝执行并删除**(实测连 Hello-World Go 程序也一样,而微软签名的 `notepad.exe` 副本可正常执行)。这类拦截与载荷代码无关,需要代码签名或改由已签名宿主加载,见 [ROADMAP.md](ROADMAP.md) 的 P0-5。
 
 ### 4. 支持的目标平台
 
@@ -180,7 +186,7 @@ ToShell 由三部分组成:
 
 1. 打开「生成载荷 / Implants」页面;
 2. 选择:目标系统、架构、格式、回连服务器地址(`listener.public_host` + 端口)、回连间隔;
-3. 按需开启:garble 混淆、UPX 压缩、XOR 加密;
+3. 按需开启:garble 混淆、UPX 压缩、XOR 加密、**主动反沙箱进程检测**(默认关)、**启动随机延迟**(0 = 用服务端配置);
 4. 点击「生成」,等待构建完成(首次构建需拉取依赖/工具链,耗时较长);
 5. 在列表中点击「下载」获取载荷。**已生成的载荷再次下载会直接从磁盘返回,不会重新编译**,速度极快。
 
@@ -270,6 +276,30 @@ curl -X POST http://<IP>:18081/api/v1/builders/download \
 - 截图:PNG 快速编码;超大截图(>2MB)自动切换 JPEG(体积更小、回传更快);
 - BOF:系统 DLL 句柄缓存,符号解析无需反复加载 DLL,加载速度显著提升。
 
+### 驱动(BYOVD)加载前自检
+
+下发驱动加载任务前,服务端先做三项检查,结论随驱动列表(`GET /api/v1/drivers`)与加载响应一起返回(字段 `verify`/`warnings`/`selfcheck`):
+
+1. **sha256 一致性(硬拦)**:`manifest.json` 可写 `sha256` 声明期望哈希,与实际哈希不一致即判定「可能被替换/损坏」并**拒绝下发**(HTTP 400);未声明时只提示建议补全。
+2. **签名状态**:用 `WinVerifyTrust` 校验 Authenticode 签名与文件是否被篡改,有效时尽量取签名者显示名(目录签名/catalog 的 `.sys` 取不到签名者,只给"签名有效"结论);首次校验可能因证书链/吊销检查变慢,带 4 秒软超时,超时只提示不拦截。
+3. **易受攻击驱动黑名单提示**:读注册表 `HKLM\SYSTEM\CurrentControlSet\Control\CI\Config\VulnerableDriverBlocklistEnable` 判断策略是否启用,并探测本机微软黑名单数据 `%windir%\System32\CodeIntegrity\driversipolicy.p7b` 是否存在。若启用,内核会**静默拒绝**名单内驱动(植入端 `StartServiceW` 会报 `1275 ERROR_ACCESS_DISABLED_BY_POLICY`);服务端只提示,**不下载也不内置任何名单数据**。
+
+未签名、可能被黑名单拦截等只算**警告**:允许下发但记日志并回传;只有 sha256 不一致这类硬错误才拒发。也可用 `GET /api/v1/drivers/{name}/verify` 单独查某个驱动的自检结论(未找到驱动返回 404 + 中文原因)。自检仅 Windows 生效,其他平台返回「非 Windows 平台不做驱动自检」。
+
+### 内存执行载荷预检(下发前)
+
+`fileless-exec` 下发前,**服务端先读 PE 头**判断这条载荷能不能内存执行,避免"目标机崩了才知道":
+
+| 判定 | 情况 | 结论 |
+|---|---|---|
+| **拒绝** | Go 编译的 PE + `kind=exe_mem` | 宿主植入端也是 Go runtime,反射执行会崩宿主 → 改用落地执行 |
+| **拒绝** | 架构与植入端不一致 | `exe_mem` 无法跨架构;`kind=exe`(donut) 只给警告 |
+| **拒绝** | 带 CLR 目录(.NET) | `exe_mem` 没有 CLR 宿主环境 → 落地执行或 donut |
+| **警告** | 有 TLS 目录 / 无重定位表 / donut 转换 | 允许下发,但提示可能初始化不全或映射失败 |
+| 通过 | 其余原生 PE | 正常下发 |
+
+响应里同时带 `reasons`(为什么)、`suggestion`(怎么办)与精简 `pe_info`(machine/是否 64 位/是否 DLL/是否 Go/是否有 TLS 或 CLR);确需强行下发可带 `force: true`,此时拒绝降级为警告并在日志里留痕。
+
 ---
 
 ## 五、云端部署注意事项
@@ -351,6 +381,16 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 ---
 
 ## 附、更新日志与新增功能
+
+### v1.3.4(2026-09)
+- **动态查杀排查(重要结论)**:本机(装有 360 安全卫士 + 腾讯电脑管家 + 无边界安全系统)实测——**任何新生成或未签名的 PE 一执行就被拒绝并删除文件**,与载荷里有什么代码无关:一个只有 `time.Sleep` 的 Hello-World Go 程序同样被拒(`Access is denied` + 文件被删除),`release/implants/` 历史产物被清空;对照微软签名的 `notepad.exe` 副本可正常执行。→ 拦截依据是"未签名/未知 PE + 主动防御策略",**改载荷代码无用**;这类环境请走代码签名或由已签名宿主加载(见 `ROADMAP.md` P0-5)。
+- **植入端默认行为收敛**:不再默认"枚举进程找杀软"。原实现启动时遍历全系统进程并与 38 个安全软件/分析工具进程名比对,这是国产杀软主动防御**明确拦截**的对抗行为,还必须静态导入 toolhelp32 并携带这批字符串;现改为构建标签 `evasionscan` 门控,生成载荷页勾选「主动反沙箱进程检测」才编译进来(默认关)。
+- **pclntab 高信号标识符中性化**:`loadShellcode`/`loadEXEMem`/`reflectLoadPE`/`injectShellcodeHost`/`stompShellcode`/`evasionInit` 等函数名与 `memexe_windows.go`/`memload_windows.go`/`stomp_windows.go` 等文件名全部改为中性名(实测命中数归零,能力不变);`light` 档案进一步裁剪 BOF,连 `beacon*` 也为 0。BOF API(`BeaconDataParse` 等)是 ABI 契约不能改名,已在文档写明。
+- **三个"配置了却无效"的缺陷**:① 请求里的 `startup_delay_min/max` 此前被服务端**静默丢弃**(结构体没这两个字段),现已透传,生成载荷页新增启动随机延迟输入框;② `interval==0 → 5s`、`jitter==0 → 2%` 的硬编码会把设置页的 60s 心跳改回 5s 固定轮询,现改为优先跟服务端配置(示例配置默认 60s / 20%);③ 驱动加载失败只报"可能被 HVCI 拦截",现回传具体 Win32 错误码(1275/577/1053/1058/1073/1056/5/2)与排查结论。
+- **构建参数可核对**:服务端日志新增 `rendering implant: … interval=… jitter=… startup_delay=… evasion_scan=… profile=…` 与 `compiling implant: … tags="…"`,这是唯一可信的"真正烘焙进载荷的值"。
+- **BYOVD 驱动加载前自检**:sha256 与 `manifest.json` 声明不一致 → 拒绝下发(400);`WinVerifyTrust` 校验签名与篡改并尽量取签名者;读本机策略提示"易受攻击驱动黑名单/HVCI 会静默拒绝(1275)"。列表与加载响应带 `verify`/`warnings`,也可 `GET /api/v1/drivers/{name}/verify` 单查;前端驱动按钮直接标出"哈希不符/未签名"。
+- **内存执行下发前 PE 预检**:`fileless-exec` 之前先解析 PE 头并识别 Go 载荷,Go+`exe_mem`、架构不符、.NET 直接拒绝并给出原因与建议(可用 `force: true` 强制,日志留痕);TLS 回调/无重定位表/donut 路径给警告。
+- **发版门禁**:新增 `scripts/e2e_smoke.ps1`(临时服务端 + 鉴权与关键路由校验 + windows full/light + linux 三档载荷构建 + 可选真植入端上线与任务回执,输出 ✅/⚠️/❌ 摘要,有 ❌ 非 0 退出);CI 增加 tag 与 `toserver -version` 一致性校验、发布包内容清单校验,并生成 `checksums.txt`(sha256)随 Release 发布。
 
 ### v1.3.3(2026-09)
 - **Web 控制台防资产测绘**:新增 `web.*` 配置(基础认证/未认证响应模式/来源白名单),在控制台与管理 API 前加认证门槛,阻止 Fofa/Quake/Hunter 等测绘引擎收录;设置页「安全 → 防资产测绘」可视化配置,保存即热生效。

@@ -73,11 +73,11 @@ func TestProcessTemplatesRendersStartupDelay(t *testing.T) {
 }
 
 // 默认植入端模板必须**不含**主动反沙箱进程检测（进程枚举 + 杀软进程名），
-// 该逻辑只能在 -tags evasionscan 时编译进来（evasion_scan_windows.go）。
+// 该逻辑只能在 -tags evasionscan 时编译进来（gate_scan_windows.go）。
 func TestDefaultTemplateHasNoProcessScan(t *testing.T) {
 	dir := "implant"
-	scanFile := filepath.Join(dir, "evasion_scan_windows.go")
-	offFile := filepath.Join(dir, "evasion_scan_off_windows.go")
+	scanFile := filepath.Join(dir, "gate_scan_windows.go")
+	offFile := filepath.Join(dir, "gate_scan_off_windows.go")
 	for _, f := range []string{scanFile, offFile} {
 		if _, err := os.Stat(f); err != nil {
 			t.Fatalf("missing %s: %v", f, err)
@@ -88,30 +88,30 @@ func TestDefaultTemplateHasNoProcessScan(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(scanSrc), "//go:build windows && evasionscan") {
-		t.Error("evasion_scan_windows.go must be gated behind the evasionscan tag")
+		t.Error("gate_scan_windows.go must be gated behind the evasionscan tag")
 	}
 	offSrc, err := os.ReadFile(offFile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(offSrc), "//go:build windows && !evasionscan") {
-		t.Error("evasion_scan_off_windows.go must be the default (no evasionscan) implementation")
+		t.Error("gate_scan_off_windows.go must be the default (no evasionscan) implementation")
 	}
 	// 默认实现里不允许出现进程枚举/杀软进程名。
 	for _, bad := range []string{"CreateToolhelp32Snapshot", "360tray", "huorong", "Process32First"} {
 		if strings.Contains(string(offSrc), bad) {
-			t.Errorf("default evasion stub must not contain %q", bad)
+			t.Errorf("default gate stub must not contain %q", bad)
 		}
 	}
-	// 主 evasion 文件也不应再包含枚举逻辑（已移入带标签的文件）。
+	// 主 gate 文件也不应再包含枚举逻辑（已移入带标签的文件）。
 	// 注释里会提到这些名字（说明为什么默认关闭），因此只看去掉注释后的代码。
-	mainSrc, err := os.ReadFile(filepath.Join(dir, "evasion_windows.go"))
+	mainSrc, err := os.ReadFile(filepath.Join(dir, "gate_windows.go"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, bad := range []string{"CreateToolhelp32Snapshot", "Process32First", "360tray", "huorong", "strings.Contains"} {
 		if strings.Contains(stripLineComments(string(mainSrc)), bad) {
-			t.Errorf("evasion_windows.go must no longer call %q (moved to evasion_scan_windows.go)", bad)
+			t.Errorf("gate_windows.go must no longer call %q (moved to gate_scan_windows.go)", bad)
 		}
 	}
 }

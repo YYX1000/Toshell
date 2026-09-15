@@ -79,6 +79,6 @@ func loadDLL(data string) (string, int32, string) {
 	return "", -1, "DLL loading is only supported on Windows"
 }
 
-func loadShellcode(data string) (string, int32, string) {
+func runBlob(data string) (string, int32, string) {
 	return "", -1, "Shellcode loading is only supported on Windows"
 }

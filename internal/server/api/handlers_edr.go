@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -226,6 +227,33 @@ func (s *Server) byovdLoadHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// —— 加载前自检（ROADMAP P0-1）——
+	// 有 Errors（典型场景：上传的 .sys 与 manifest 声明的 sha256 不一致，说明被替换/损坏）→ 拒绝下发；
+	// 有 Warnings（未签名、本机易受攻击驱动黑名单可能拦截等）→ 允许下发，但回传警告并记日志。
+	// 说明：WinVerifyTrust 只能校验磁盘文件，因此上传内容靠 manifest 的期望 sha256 做硬校验，
+	// 签名结论则在服务端存在同名同哈希驱动时复用（详见 drivers.VerifyBytes 注释）。
+	var verify *drivers.VerifyResult
+	if raw, decErr := base64.StdEncoding.DecodeString(strings.TrimSpace(req.DriverB64)); decErr != nil {
+		logging.Warn("api", "byovd_load 自检跳过：driver_b64 解码失败（%v）", decErr)
+	} else {
+		res := drivers.VerifyBytes(req.Name, raw)
+		verify = &res
+	}
+	if verify != nil && len(verify.Errors) > 0 {
+		logging.Warn("api", "byovd_load 自检未通过，拒绝下发（driver=%q）：%s", req.Name, strings.Join(verify.Errors, "；"))
+		body, _ := json.Marshal(map[string]interface{}{
+			"error":    "驱动自检未通过，已拒绝下发：" + strings.Join(verify.Errors, "；"),
+			"verify":   verify,
+			"warnings": verify.Warnings,
+		})
+		w.WriteHeader(http.StatusBadRequest)
+		w.Write(body)
+		return
+	}
+	if verify != nil && len(verify.Warnings) > 0 {
+		logging.Warn("api", "byovd_load 自检警告（driver=%q）：%s", req.Name, strings.Join(verify.Warnings, "；"))
+	}
+
 	// 登记驱动档案（设备名统一补上 \\.\ 前缀，便于后续击杀直接使用）
 	ioctl := parseIOCTLValue(req.KillIOCTL)
 	if ioctl != 0 || req.DeviceName != "" {
@@ -249,11 +277,17 @@ func (s *Server) byovdLoadHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
 		return
 	}
-	json.NewEncoder(w).Encode(map[string]interface{}{
+	resp := map[string]interface{}{
 		"task_id":   taskInfo.ID,
 		"task_type": taskInfo.TaskType,
 		"message":   "BYOVD load task pushed",
-	})
+	}
+	if verify != nil {
+		resp["verify"] = verify
+		resp["warnings"] = verify.Warnings
+		resp["selfcheck"] = verify.Summary()
+	}
+	json.NewEncoder(w).Encode(resp)
 }
 
 // byovdUnloadHandler 下发 BYOVD 驱动卸载任务。

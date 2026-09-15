@@ -24,6 +24,45 @@ func (s *Server) listDriversHandler(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// verifyDriverHandler 对**操作员自备**的驱动做加载前自检（ROADMAP P0-1）：
+// sha256 与 manifest 声明是否一致、本机 Authenticode 签名是否有效、本机易受攻击驱动
+// 黑名单是否启用（以及黑名单数据文件是否存在）。
+//
+// 路由：GET /drivers/{name}/verify —— 需在 api.go 注册（见交付说明）。未找到驱动返回 404 + 中文原因。
+func (s *Server) verifyDriverHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	name := mux.Vars(r)["name"]
+	d, err := drivers.Find(name)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": err.Error(),
+			"name":  name,
+		})
+		return
+	}
+	// List() 已经算过 sha256 并复用同一份读取结果做过自检，这里直接用，不再读盘。
+	res := drivers.VerifyResult{}
+	if d.Verify != nil {
+		res = *d.Verify
+	}
+	json.NewEncoder(w).Encode(struct {
+		Driver  string `json:"driver"`
+		File    string `json:"file"`
+		Path    string `json:"path"`
+		OK      bool   `json:"ok"`
+		Summary string `json:"summary"`
+		drivers.VerifyResult
+	}{
+		Driver:       d.Name,
+		File:         d.File,
+		Path:         d.Path,
+		OK:           len(res.Errors) == 0,
+		Summary:      res.Summary(),
+		VerifyResult: res,
+	})
+}
+
 // downloadDriverHandler 返回内置驱动原始二进制（仅允许目录内名称，防路径穿越）。
 func (s *Server) downloadDriverHandler(w http.ResponseWriter, r *http.Request) {
 	name := mux.Vars(r)["name"]

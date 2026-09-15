@@ -1,23 +1,24 @@
 # ToShell 后续优化路线（ROADMAP）
 
-> 记录 v1.3.3 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
+> 记录 v1.3.4 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
 > 已完成的项归档在本文件底部「已完成」章节；更新日志见 `CHANGELOG.md`。
 > **本文只聚焦「下一步要做什么、为什么」**，不重复发版说明。
 
 ---
 
-## 当前版本状态（v1.3.3）
+## 当前版本状态（v1.3.4）
 
 | 能力 | 状态 |
 |---|---|
 | 会话判活 | ✅ 不再抖动（阈值含 3 倍心跳余量 + 广播去抖） |
 | 屏幕流/截图（Windows） | ✅ 参数化（fps/quality/max_kbps/monitor/max_width）+ 带宽自适应 + 服务端限速 |
-| 屏幕流/截图（Linux/macOS） | ❌ 仍为 stub |
-| 内存执行 | ✅ shellcode / BOF / DLL / **EXE（反射映射 + 参数注入）** |
-| BYOVD 驱动 | ✅ **不内置任何驱动**（操作员自备 .sys + manifest 档案）；✅ 驱动击杀/档案登记/会话级记忆 |
+| 屏幕流/截图（Linux/macOS） | ❌ 仍为 stub（P0-3，下一版） |
+| 内存执行 | ✅ shellcode / BOF / DLL / **EXE（反射映射 + 参数注入）**；✅ **下发前 PE 预检**（Go 载荷/架构不符/.NET 直接拒绝，TLS 无重定位给出警告，可 `force` 强制） |
+| BYOVD 驱动 | ✅ **不内置任何驱动**（操作员自备 .sys + manifest 档案）；✅ 驱动击杀/档案登记/会话级记忆；✅ **加载前自检**（sha256 一致性硬拦 + Authenticode 签名者 + 易受攻击驱动黑名单提示） |
 | C 植入端工具链 | ✅ 探测鲁棒（配置/环境变量/便携目录/注册表 PATH）+ 架构校验 |
 | 通知 | ✅ 飞书/钉钉/企业微信/Slack/Discord 各自结构 + 业务码判定 |
-| 运行时行为足迹 | ⚠️ 启动自动"枚举进程找杀软"已默认关闭（`evasion_scan` 需显式开启）；启动延迟/心跳节奏可按载荷配置 ✅；**未解决：未签名 PE 被国产杀软主动防御直接拒绝执行**（见 P0-5） |
+| 运行时行为足迹 | ⚠️ 启动自动"枚举进程找杀软"已默认关闭（`evasion_scan` 需显式开启）✅；pclntab 高信号名已中性化（`light` 档案 `beacon*` 也为 0）✅；启动延迟/心跳节奏可按载荷配置 ✅；**未解决：未签名 PE 被国产杀软主动防御直接拒绝执行**（见 P0-5） |
+| 发版门禁 | ✅ `scripts/e2e_smoke.ps1`（临时服务端 + 三档载荷 + 关键接口 + 可选真植入端上线）+ CI 侧版本号与包内容校验 + `checksums.txt` |
 | 平台工具库 `data/tools/` | ❌ 未建设（P2 前置项） |
 
 ---
@@ -26,55 +27,43 @@
 
 ### 1. 驱动体系：操作员自备 + 多档能力 + 加载前自检（PPL 回归）
 
-- **现状**：v1.3.3 用 `kgameprotect.sys` 替换了 `RTCore64.sys`（前者只暴露进程终止 IOCTL `0x222048`）。好处是落地特征面小、能杀普通杀软/EDR；代价是**失去任意内核虚拟地址读写**，因此 `ppl_kill` 只能走句柄窃取，**PPL 保护进程（Defender MsMpEng 等）清不掉**。
-- **目标**：驱动能力**分档可插拔**，不同用途用不同驱动，而不是"一个驱动包打天下"：
-  - 驱动档案增加 `purpose`：`kill`（进程终止）/ `rw`（任意内核读写，用于 PPL）/ `both`；
-  - 支持**多驱动内置**（`internal/server/drivers/` 目录 + 每驱动元数据：设备名、服务名、IOCTL、入参布局、能力档、SHA-256、签名者、来源出处）；
-  - `ppl_kill` 自动挑选具备 `rw` 档的驱动；没有则明确提示"当前无 rw 档驱动，PPL 清除不可用（走句柄窃取）"。
-- **附带加固**（同批做）：
-  - 加载前自检：签名（`signtool verify /pa` 语义）+ SHA-256 与档案一致 + 是否命中微软易受攻击驱动黑名单（`CiValidateFileObject`/注册表 `VulnerableDriverBlocklist`）→ 命中就直接拒绝加载并说明原因；
-  - 卸载兜底：进程重启后残留的驱动服务自动清理（当前依赖操作员手点「卸载驱动」）；
-  - 驱动档案 manifest 化（`release/drivers/manifest.json`），支持操作员自行放入 .sys + 填元数据（不改代码即可扩展）。
-- **验收**：放入一个 `rw` 档驱动后，`ppl_kill` 能打印命中的 EPROCESS 地址与 Protection 原值/新值；放入 `kill` 档驱动后 `byovd_kill` 能杀掉普通杀软进程；黑名单里的驱动（如 dbutil_2_3）加载时被明确拒绝。
+- **v1.3.4 已完成**：**加载前自检**（`internal/server/drivers/verify*.go`）——manifest `sha256` 一致性不一致直接拒绝下发；Authenticode 用 `WinVerifyTrust` 判签名与篡改、尽力取签名者；易受攻击驱动黑名单只读本机策略与名单文件、给出"1275 静默拒绝"提示；新增 `GET /api/v1/drivers/{name}/verify`，前端驱动按钮直接标出"哈希不符/未签名"并展示警告。
+- **现状**：不再内置任何驱动（v1.3.3 起），`ppl_kill` 只能走句柄窃取，**PPL 保护进程（Defender MsMpEng 等）清不掉** —— 因为没有具备内核读写的 `rw` 档驱动。
+- **待做**：
+  - 驱动档案的 `purpose` 分档（`kill` / `rw` / `both`）真正驱动选路：`ppl_kill` 自动挑 `rw` 档；没有就明确提示"当前无 rw 档驱动，PPL 清除不可用（走句柄窃取）"；
+  - **卸载兜底**：进程重启后残留的驱动服务自动清理（当前依赖操作员手点「卸载驱动」；可按服务名前缀 + 驱动目录清单做一次"清场"任务）；
+  - 目录签名（catalog）驱动：目前只能给"未内嵌签名"，可补 `CryptCATAdminCalcHashFromFileHandle` 路线。
+- **验收**：放入 `rw` 档驱动后 `ppl_kill` 能打印命中的 EPROCESS 与 Protection 原值/新值；`kill` 档驱动能杀普通杀软进程；manifest 哈希不符的驱动在加载时被 400 拒绝。
 
 ### 2. 内存执行加固（`exe_mem` 的可用边界收窄）
 
-- **现状**：`exe_mem`（反射映射 + PEB 命令行注入）已验证参数可用；但有三条硬边界：
-  1. 载荷若自行退出，其 CRT（msvcrt）内部调用的 `ExitProcess` 会**带走宿主植入体**（已对镜像自身 IAT 的 ExitProcess/TerminateProcess 做 ExitThread 重定向，拦不住 CRT 内部调用）→ 需运行时 hook；
-  2. Go 编译的载荷不能这样跑（宿主也是 Go，两个 runtime 冲突）；
-  3. 未处理 TLS 回调与 .NET/CLR 载荷；无 stdout 捕获。
-- **方案**：
-  - **hook `ExitProcess`/`RtlExitUserProcess`**（IAT + 运行时 inline hook 双保险），把载荷的退出改成只退线程；
-  - **按载荷类型自动选路**：native PE（无 TLS 依赖）→ `exe_mem`；带 TLS 回调/复杂 CRT/.NET → donut（`kind=exe`，Thread=1 + ExitOpt=1）；Go 载荷 → 直接拒绝并提示走落地执行；
-  - 可选 **stdout/stderr 重定向捕获**（管道 + 读取线程），让"跑完即退"的工具也能在 `exe_mem` 下拿到输出；
-  - 面板把"这条载荷能不能内存执行"的判断前置（读 PE 头：架构、TLS 目录、是否 .NET、是否 Go 特征），而不是失败后才知道。
-- **验收**：`attrib.exe`/`cmd.exe` 这类原生工具在 `exe_mem` 下执行完，植入体**不掉线**；带参数的输出类工具能拿到返回内容；Go 载荷被明确拒绝。
+- **v1.3.4 已完成**：**下发前 PE 预检**（`internal/server/builder/pecheck.go` + `handlers_fileless.go`）——手写解析 PE 头（架构/DLL/TLS/CLR/重定位）+ Go 载荷识别（`.gopclntab`、`\xff Go buildinf:`），`exe_mem`/`dll` 命中硬边界直接 400 拒绝并给出 `reasons`/`suggestion`/`pe_info`，`warn` 类照常下发但回传 warnings，`force:true` 可强制（留痕）；前端展示原因并支持强制下发。
+- **待做**：
+  - **hook `ExitProcess`/`RtlExitUserProcess`**（IAT + 运行时 inline hook 双保险），把载荷的退出改成只退线程 —— 当前"跑完即退"的载荷仍会带走宿主；
+  - **stdout/stderr 重定向捕获**（管道 + 读取线程），让 `exe_mem` 跑出来的工具能给回输出；
+  - donut 路径的 `warn` 项细化（TLS/复杂 CRT/.NET 各自给更明确的结论）。
+- **验收**：`attrib.exe`/`cmd.exe` 这类原生工具在 `exe_mem` 下执行完，植入体**不掉线**；带输出的工具能拿到返回内容；Go 载荷被明确拒绝（已达成）。
 
-### 3. 屏幕流 / 截图：跨平台 + 增量捕获
+### 3. 屏幕流 / 截图：跨平台 + 增量捕获（**v1.3.4 未动**）
 
 - **现状**：只有 Windows 实现（GDI BitBlt + PrintWindow 回退，参数化后帧率上限由带宽而非采集能力决定）；Linux/macOS 全是 stub。
 - **P0.3 跨平台**：Linux 用 **X11 (XGetImage)** 起步（Wayland 走 PipeWire 需 portal 授权，作为后续）；macOS 用 **ScreenCaptureKit**（需屏幕录制权限，明确提示授权路径）；screenshot 同步补全。
 - **P0.2 DXGI**：Win8+ 换 **Desktop Duplication API** 做增量帧捕获（当前每帧全量 BitBlt，1080p 下 CPU 占用偏高），保留 GDI 作为回退。
-- **兼容矩阵**：Win7/8.1/10/11 + Server Core/服务会话/锁屏 各场景登记行为；无桌面时明确返回原因帧（已实现，补矩阵记录）。
+- **为什么没做**：这三项都**必须在真机（Linux 桌面 / macOS 授权 / Win10+ GPU）上验证**，本机连新生成的载荷都无法执行（见第 5 条），写了只能交付未验证代码；放到下一版在有验证条件时做。
 - **验收**：Linux amd64 能出图；Win10/11 桌面会话 ≥5fps 且 CPU 占用可控；Server 无桌面返回明确错误。
 
 ### 4. 发版门禁：一条命令的端到端冒烟
 
-- **现状**：发版靠人工点测；本会话中出现过"改动后忘重编服务端导致验证用旧二进制""模板构建档位失败未被发现"这类事故（都已通过人工构建三档规避）。
-- **方案**：`scripts/e2e_smoke.ps1`（幂等、可本地跑、也进 CI）：
-  1. 起临时服务端（独立端口 + 临时配置/DB）→ 校验 `/health`、`/builders`、鉴权；
-  2. 用 API 构建 **windows full/light + linux full** 三档载荷（验证模板与工具链）；
-  3. 本地跑一个真植入端（TCP）→ 校验注册/心跳/任务下发链路（含一条 `whoami` 类任务返回）；
-  4. 校验关键新接口存在且鉴权正常（`/drivers`、`byovd-kill`、`fileless-exec`、`screen-stream`）；
-  5. 清理临时进程/文件，输出成败摘要（非 0 退出即阻断发版）。
-- **验收**：CI 在 tag 前跑该脚本；本地 `scripts/e2e_smoke.ps1` 一条命令可复现。
+- **v1.3.4 已完成**：`scripts/e2e_smoke.ps1`（临时服务端 + 鉴权/关键路由校验 + windows full/light + linux 三档载荷构建 + 可选真植入端上线与任务下发 + ✅/⚠️/❌ 摘要，有 ❌ 即非 0 退出）；CI 侧补了 **tag 与 `toserver -version` 一致性校验**、**zip 内容清单校验**（`implant/main.go`、配置样例、许可证等）与 **`checksums.txt`**（sha256 清单随 Release 发布，本地 `scripts/package_release.ps1` 同步生成）。
+- **待做**：把该脚本接进 CI（tag 前 workflow）；补"发布包内 `toserver -version` == tag"的本地校验（CI 已有）。
+- **验收**：CI 在 tag 前跑该脚本；本地 `powershell -File scripts/e2e_smoke.ps1` 一条命令可复现。
 
 ### 5. 动态（行为）查杀：先解决"起不来"，再谈"藏得深"
 
 - **现状（本机实测，2026-09）**：
   - 装有 360 安全卫士 + 腾讯电脑管家 + 无边界安全系统的主机上，**任何新生成/未签名的 PE 一执行就被拒并删文件**：一个只有 `time.Sleep` 的 Hello-World Go 程序同样被拒（`Access is denied` + 文件被删除），`release/implants/` 历史产物已被清空；对照 MS 签名的 `notepad.exe` 副本可正常执行。
   - 所以本机看到的"动态被查杀"**判别不出载荷特征**：拦截依据是"未签名/未知 PE + 主动防御策略"。Defender 日志里唯一的 C2 类记录是历史样本的 `Behavior:Win32/CommandAndControl.A!ml`（行为判定，非本项目）。
-- **已做（v1.3.4）**：启动阶段的"枚举全系统进程 + 比对 38 个杀软/分析工具进程名"默认关闭（`-tags evasionscan` 才编译）；启动随机延迟、心跳间隔/抖动可按载荷配置且服务端配置真正生效；驱动加载失败回传具体 Win32 错误码。
+- **已做（v1.3.4）**：启动阶段的"枚举全系统进程 + 比对 38 个杀软/分析工具进程名"默认关闭（`-tags evasionscan` 才编译）；启动随机延迟、心跳间隔/抖动可按载荷配置且服务端配置真正生效（示例配置默认改为 60s/20%）；pclntab 高信号标识符中性化（`light` 档案 `beacon*` 也为 0）；驱动加载失败回传具体 Win32 错误码；构建参数写入服务端日志便于核对。
 - **待做（按收益排序）**：
   1. **加载器优先**：README/USAGE 明确"未签名 PE 在国产杀软环境下会被直接拒绝执行"，主推**白加黑（签名宿主 + 恶意 DLL）/ 计划任务拉签名进程内存加载 / 已签名安装包投放**三条落地链，而不是继续在裸 PE 上打磨；
   2. **代码签名**：支持给生成的 exe 做**签名**（自带证书 / 用户提供 pfx），服务端在构建后调用 `signtool`（不可用时明确提示），并给出"自签名证书需导入受信任根"的完整说明；
@@ -114,14 +103,27 @@
 ## P3 — 平台 / 工程
 
 - **多通道一致性**：MQTT/relay/HTTP-polling 与 TCP 的判活、忙期、任务重放语义对齐（TCP 最完整；本会话已统一判活入口 `Session.IsAlive`，其余语义仍待对齐）。
-- **Release/打包**：产物校验（zip 内 `toserver -version` 与 tag 一致）+ `checksums.txt`（sha256）+ 打包清单；本地 `scripts/package_release.ps1` 与 CI 逻辑继续保持镜像。
+- **Release/打包**：✅ **v1.3.4 已完成**：CI 增加 `toserver -version` == tag 校验、zip 内容清单校验、`checksums.txt`（sha256，随 Release 发布；本地 `scripts/package_release.ps1` 同步生成）。待做：tag 前接 `e2e_smoke.ps1`。
 - **配置热更新边界**：心跳超时等会话参数改动后对存量会话的生效时机文档化（本会话改成自适应阈值后，需说明"改动后新会话立即生效、存量会话按采样自适应"）。
-- **前端**：任务列表虚拟滚动（大量任务不卡）；Sessions/仪表盘 WS 事件统一订阅组件（现在多处重复实现）；杀软对抗页信息架构继续收敛（本会话已重排 BYOVD 区块）。
-- **可观测性**：屏幕流帧限速丢弃数、广播去抖抑制次数等运行指标暴露到界面/日志汇总（当前只在日志里）。
+- **前端**：任务列表虚拟滚动（大量任务不卡）；Sessions/仪表盘 WS 事件统一订阅组件（现在多处重复实现）；杀软对抗页信息架构继续收敛（本会话已重排 BYOVD 区块，并把驱动加载前自检结论（哈希不符/未签名/警告）直接标在按钮与提示区）。
+- **可观测性**：屏幕流帧限速丢弃数、广播去抖抑制次数等运行指标暴露到界面/日志汇总（当前只在日志里；v1.3.4 已把"真正烘焙进载荷的参数"写进构建日志）。
 
 ---
 
 ## 已完成（归档，见 `CHANGELOG.md` 对应版本）
+
+<details>
+<summary><b>v1.3.4（2026-09）</b></summary>
+
+- ✅ **动态查杀定位（P0-5 前置）**：本机（360 + 电脑管家 + 无边界安全系统）实测证明"新生成/未签名 PE 一执行就被拒并删除"，与载荷代码无关（Hello-World Go 程序同样被拒、MS 签名程序正常）——结论与证据写进 `CHANGELOG.md`，避免后续重复踩坑。
+- ✅ **植入端默认行为收敛（P0-5）**：启动时"枚举全系统进程 + 比对 38 个杀软进程名"默认关闭（`-tags evasionscan` 才编译，前端开关默认关）；pclntab 高信号标识符与文件名中性化（`stomp*→carve*`、`memexe→imgexec`、`memload→blob`、`evasion→gate`、`loadShellcode→runBlob` 等，`light` 档案连 `beacon*` 都为 0）。
+- ✅ **三个"配置了却无效"的缺陷（P0-5）**：`startup_delay_min/max` 请求字段补齐并透传（此前被静默丢弃）；`interval==0 → 5s`、`jitter==0 → 2%` 的硬编码覆盖改为优先跟服务端配置（示例配置默认 60s/20%）；驱动加载失败回传 Win32 错误码与排查结论。构建参数写入服务端日志。
+- ✅ **驱动加载前自检（P0-1）**：manifest `sha256` 一致性硬拦（不一致 400 拒发）+ `WinVerifyTrust` 签名/篡改校验与签名者 + 易受攻击驱动黑名单策略提示（不内置名单）；`GET /drivers/{name}/verify`；前端标出"哈希不符/未签名"并展示警告。
+- ✅ **内存执行下发前 PE 预检（P0-2）**：手写 PE 解析 + Go 载荷识别，Go/架构不符/.NET 直接拒绝并给原因与建议，TLS/无重定位/donut 给警告，`force:true` 可强制但留痕。
+- ✅ **发版门禁（P0-4）**：`scripts/e2e_smoke.ps1`（临时服务端 + 鉴权/路由 + 三档载荷 + 可选真植入端上线与任务回执 + 摘要与非 0 退出）；CI 增加 tag/版本一致性、zip 内容清单校验与 `checksums.txt`。
+- ✅ **版本 1.3.4**：全量版本号统一（服务端默认版本、Web、About、README、USAGE、部署脚本、打包脚本）。
+
+</details>
 
 <details>
 <summary><b>v1.3.3（2026-09）</b></summary>
@@ -152,9 +154,9 @@
 
 | 现象 | 影响 | 处置建议 |
 |---|---|---|
-| garble v0.16 要求 Go ≥ 1.26，本机 go1.25.0 → 任何 garble 构建必失败 | 混淆选项不可用（界面已如实显示"不可用 + 原因"） | 升级 Go 或安装匹配版本 garble（属环境问题，非代码缺陷） |
-| 本机 AV 会拦截新编译的 **386 位 Go 载荷**（换文件名也 Access denied） | 无法在本机实测 32 位载荷链路 | 换 64 位植入端验证，或用免杀/白名单环境；建议在 ROADMAP P0-4 冒烟脚本里用 64 位载荷 |
-| Go 编译的 EXE 用 `exe_mem` 反射执行会崩宿主（双 Go runtime） | 边界已写入面板与任务输出 | P0-2 里做"载荷类型自动选路 + 明确拒绝" |
-| `exe_mem` 下载荷自行退出会带走植入体（CRT 内部 ExitProcess） | 只对"跑完即退"的工具致命 | P0-2 里做 ExitProcess hook |
-| PPL 进程杀不掉（kgameprotect 无内核读写） | Defender 等 PPL 保护进程需句柄窃取 | P0-1 里补 `rw` 档驱动档案 |
+| garble v0.16 要求 Go ≥ 1.26，本机 go1.25.0 → 任何 garble 构建必失败 | 混淆选项不可用（界面已如实显示"不可用 + 原因"） | 升级 Go 或安装匹配版本 garble（属环境问题，非代码缺陷；本机已装 v0.15.0 可用） |
+| 本机装有 360/电脑管家/无边界安全系统，**任何新生成或未签名的 PE 一执行就被拒并删文件**（连 Hello-World Go 程序也一样，MS 签名程序正常） | **本机无法做任何"动态/行为"验证**（载荷上不了线、`go test` 的新测试二进制也被杀） | 动态验证放到干净 VM（仅 Defender）或 CI；长期解见 P0-5（代码签名 / 由已签名宿主加载） |
+| Go 编译的 EXE 用 `exe_mem` 反射执行会崩宿主（双 Go runtime） | ✅ v1.3.4 已在下发前**明确拒绝**并给建议（P0-2 预检） | —— |
+| `exe_mem` 下载荷自行退出会带走植入体（CRT 内部 ExitProcess） | 只对"跑完即退"的工具致命 | 仍需 P0-2 的 ExitProcess hook（下一版） |
+| PPL 进程杀不掉（无具备内核读写的 `rw` 档驱动） | Defender 等 PPL 保护进程需句柄窃取 | P0-1 里补 `rw` 档驱动档案与 `purpose` 选路 |
 | 一条上线命令的下载地址依赖人工配置 `public_host` | 配置错则命令不可用（已有告警与自动回退） | 可加"服务端主动探测该地址可达性"的自检（P3 可观测性一起做） |

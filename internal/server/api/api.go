@@ -470,6 +470,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/sessions/{id}/edr/byovd-kill", s.byovdKillHandler).Methods("POST")
 	api.HandleFunc("/sessions/{id}/edr/ppl-kill", s.pplKillHandler).Methods("POST")
 	api.HandleFunc("/drivers", s.listDriversHandler).Methods("GET")
+	// 驱动加载前自检（sha256 一致性 / Authenticode 签名者 / 易受攻击驱动黑名单提示）
+	api.HandleFunc("/drivers/{name}/verify", s.verifyDriverHandler).Methods("GET")
 	api.HandleFunc("/drivers/{name}/raw", s.downloadDriverHandler).Methods("GET")
 	api.HandleFunc("/settings", s.getSettingsHandler).Methods("GET")
 	api.HandleFunc("/settings", s.updateSettingsHandler).Methods("PUT")

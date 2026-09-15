@@ -21,7 +21,7 @@ import (
 //
 // 因此它是**可选**能力：只有明确需要"识别分析环境并延迟"时，才在生成载荷时勾选
 // "主动反沙箱进程检测"（服务端加 -tags evasionscan）。
-func evasionSuspectDelay() time.Duration {
+func hostDelay() time.Duration {
 	var delay time.Duration
 
 	suspects := []string{

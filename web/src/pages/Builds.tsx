@@ -24,6 +24,16 @@ interface StoredImplant {
 export function Builds() {
   const [activeTab, setActiveTab] = useState<'builder' | 'list'>('builder')
   const [builderInfo, setBuilderInfo] = useState<BuilderInfo | null>(null)
+  // 服务端「设置 → 植入端默认参数」的当前生效值（服务端算好直接给）。
+  // 下面这些输入框**一律留空 = 跟随服务端**：以前这里是写死的 60 / 10，
+  // 结果"设置里配了默认值、构建页却还预填一套自己的"，两边打架。
+  const implantDefaults = builderInfo?.implant_defaults
+  const defaultInterval = implantDefaults?.interval ?? builderInfo?.options?.interval?.default ?? 60
+  const defaultJitter = implantDefaults?.jitter ?? builderInfo?.options?.jitter?.default ?? 20
+  const defaultRetryCount = implantDefaults?.retry_count ?? builderInfo?.options?.retry_count?.default ?? 3
+  const defaultRetryWait = implantDefaults?.retry_wait ?? builderInfo?.options?.retry_wait?.default ?? 5
+  const defaultStartupMin = implantDefaults?.startup_delay_min ?? 0
+  const defaultStartupMax = implantDefaults?.startup_delay_max ?? 0
   const [loading, setLoading] = useState(false)
   const [showModal, setShowModal] = useState(false)
   const [building, setBuilding] = useState(false)
@@ -245,10 +255,12 @@ export function Builds() {
     listener_id: '',
     server_url: '',
     protocol: 'tcp',
-    interval: 60,
-    jitter: 10,
-    retry_count: 3,
-    retry_wait: 5,
+    // 回连节奏：**0 = 跟随服务端配置**（设置 → 植入端默认参数）。
+    // 不在这里预填具体数值，否则会覆盖用户在设置页配的默认值。
+    interval: 0,
+    jitter: 0,
+    retry_count: 0,
+    retry_wait: 0,
     kill_date: '',
     working_hours: '',
     relay_listen: '',
@@ -291,9 +303,15 @@ export function Builds() {
         listeners: [],
         options: {
           interval: { min: 1, max: 300, default: 60 },
-          jitter: { min: 0, max: 100, default: 10 },
+          jitter: { min: 0, max: 100, default: 20 },
           retry_count: { min: 0, max: 10, default: 3 },
           retry_wait: { min: 1, max: 60, default: 5 },
+        },
+        implant_defaults: {
+          interval: 60,
+          jitter: 20,
+          retry_count: 3,
+          retry_wait: 5,
         },
       })
     } finally {
@@ -974,7 +992,7 @@ export function Builds() {
 
               <Section
                 title="高级选项"
-                desc="回连节奏、重试、工作时间、中继与域前置等。心跳默认跟随服务端配置（60s ± 20%），不建议改成固定短周期。"
+                desc="回连节奏、重试、工作时间、中继与域前置等。节奏类参数留空即跟随「设置 → 植入端默认参数」，不建议改成固定短周期。"
                 badge={<Badge>可选</Badge>}
                 defaultOpen={false}
               >
@@ -984,22 +1002,26 @@ export function Builds() {
                     <input
                       type="number"
                       name="interval"
-                      value={formData.interval}
+                      value={formData.interval || ''}
+                      placeholder={String(defaultInterval)}
                       onChange={handleInputChange}
                       min={1}
                       max={300}
                     />
+                    <p className="form-hint">留空 = 用服务端当前配置（{defaultInterval} 秒）</p>
                   </div>
                   <div className="form-group">
                     <label>抖动 (%)</label>
                     <input
                       type="number"
                       name="jitter"
-                      value={formData.jitter}
+                      value={formData.jitter || ''}
+                      placeholder={String(defaultJitter)}
                       onChange={handleInputChange}
                       min={0}
                       max={100}
                     />
+                    <p className="form-hint">留空 = 用服务端当前配置（±{defaultJitter}%）</p>
                   </div>
                 </div>
                 <div className="form-row">
@@ -1008,22 +1030,26 @@ export function Builds() {
                     <input
                       type="number"
                       name="retry_count"
-                      value={formData.retry_count}
+                      value={formData.retry_count || ''}
+                      placeholder={String(defaultRetryCount)}
                       onChange={handleInputChange}
                       min={0}
                       max={10}
                     />
+                    <p className="form-hint">留空 = 默认 {defaultRetryCount} 次</p>
                   </div>
                   <div className="form-group">
                     <label>重试间隔 (秒)</label>
                     <input
                       type="number"
                       name="retry_wait"
-                      value={formData.retry_wait}
+                      value={formData.retry_wait || ''}
+                      placeholder={String(defaultRetryWait)}
                       onChange={handleInputChange}
                       min={1}
                       max={60}
                     />
+                    <p className="form-hint">留空 = 用服务端当前配置（{defaultRetryWait} 秒）</p>
                   </div>
                 </div>
                 <div className="form-row">
@@ -1280,7 +1306,8 @@ export function Builds() {
                   <div className="toggle-group">
                     <label className="toggle-label"><span>启动随机延迟 (秒)</span></label>                    <p className="form-hint">
                       载荷启动后随机休眠 [最小, 最大] 秒再首次回连，打乱"启动即行为"的
-                      检测节奏。留 0 使用服务端配置（implant.startup_delay_min/max）。
+                      检测节奏。留空 = 用服务端当前配置（{defaultStartupMin}~{defaultStartupMax} 秒）。
+                      注意：0 表示"未设置"，服务端会回退到配置值，**不是**不延迟。
                     </p>
                     <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
                       <div className="form-group" style={{ margin: 0 }}>
@@ -1290,7 +1317,8 @@ export function Builds() {
                           name="startup_delay_min"
                           min={0}
                           max={600}
-                          value={formData.startup_delay_min ?? 0}
+                          placeholder={String(defaultStartupMin)}
+                          value={formData.startup_delay_min || ''}
                           onChange={handleInputChange}
                         />
                       </div>
@@ -1301,7 +1329,8 @@ export function Builds() {
                           name="startup_delay_max"
                           min={0}
                           max={600}
-                          value={formData.startup_delay_max ?? 0}
+                          placeholder={String(defaultStartupMax)}
+                          value={formData.startup_delay_max || ''}
                           onChange={handleInputChange}
                         />
                       </div>

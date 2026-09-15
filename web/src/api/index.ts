@@ -326,9 +326,16 @@ export interface BuildRequest {
   listener_id: string
   server_url: string
   protocol: string
+  /**
+   * 心跳间隔（秒）。**留空/0 = 跟随服务端配置**（「设置 → 植入端默认参数」里的
+   * `implant.interval`，未配置时回退 60s）。构建页输入框留空即发 0。
+   */
   interval: number
+  /** 抖动（%）。**留空/0 = 跟随服务端配置**（`implant.jitter`，未配置时回退 20%）。 */
   jitter: number
+  /** 重试次数。**留空/0 = 用默认值 3**（该项没有服务端配置项）。 */
   retry_count: number
+  /** 重试间隔（秒）。**留空/0 = 跟随服务端配置**（`implant.retry_wait`，未配置时回退 5s）。 */
   retry_wait: number
   kill_date: string
   working_hours: string
@@ -445,6 +452,19 @@ export interface BuilderInfo {
     jitter: { min: number; max: number; default: number }
     retry_count: { min: number; max: number; default: number }
     retry_wait: { min: number; max: number; default: number }
+  }
+  /**
+   * 服务端「设置 → 植入端默认参数」里的**当前生效值**（服务端已按构建时的归一化
+   * 规则算好）。生成载荷页把它们显示成对应输入框的 placeholder：留空 = 跟随服务端，
+   * 这样就不用"设置里配一遍、构建页再填一遍"。
+   */
+  implant_defaults?: {
+    interval?: number
+    jitter?: number
+    retry_count?: number
+    retry_wait?: number
+    startup_delay_min?: number
+    startup_delay_max?: number
   }
   evasion?: {
     garble_available: boolean

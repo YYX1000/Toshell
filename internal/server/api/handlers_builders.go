@@ -20,6 +20,44 @@ import (
 	"toshell/internal/server/logging"
 )
 
+// effectiveImplantDefaults 返回「构建请求里对应字段留 0 时，服务端实际会用的值」。
+// 生成载荷页把这些值显示成输入框的 placeholder，用户留空即等于"跟随设置页"。
+// ⚠️ 这里的回退口径必须与 createBuilderHandler 中的归一化分支保持一致。
+func (s *Server) effectiveImplantDefaults() map[string]uint32 {
+	d := map[string]uint32{}
+	if s.cfg != nil {
+		d["interval"] = s.cfg.Implant.Interval
+		d["jitter"] = s.cfg.Implant.Jitter
+		d["retry_wait"] = s.cfg.Implant.RetryWait
+		// 启动延迟在配置里是 int，且**没有"不延迟"的表示法**（<=0 一律视为未设置），
+		// 这里原样复刻 builder.go 的归一化顺序，保证页面显示的值 = 真正烘焙进载荷的值。
+		min, max := s.cfg.Implant.StartupDelayMin, s.cfg.Implant.StartupDelayMax
+		if max < min {
+			max = min
+		}
+		if max <= 0 {
+			min, max = 2, 10
+		}
+		if min <= 0 {
+			min = 2
+		}
+		d["startup_delay_min"] = uint32(min)
+		d["startup_delay_max"] = uint32(max)
+	}
+	if d["interval"] == 0 {
+		d["interval"] = 60
+	}
+	if d["jitter"] == 0 {
+		d["jitter"] = 20
+	}
+	if d["retry_wait"] == 0 {
+		d["retry_wait"] = 5
+	}
+	// retry_count 没有服务端配置项（设置页里也没有），回退值是硬编码的 3。
+	d["retry_count"] = 3
+	return d
+}
+
 func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -67,6 +105,11 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"retry_count": map[string]uint32{"min": 0, "max": 10, "default": 3},
 			"retry_wait":  map[string]uint32{"min": 1, "max": 60, "default": 5},
 		},
+		// 植入端默认参数 = 「设置 → 植入端默认参数」里配的值，且**按构建时的归一化规则算好**。
+		// 生成载荷页对应输入框留空（前端发 0）时，服务端就用这里的值。前端把本字段当成
+		// 输入框的 placeholder 显示，用户就不用"设置里配一遍、构建页再填一遍"了。
+		// ⚠️ 改这里务必同步 createBuilderHandler 里的归一化分支（两处口径必须一致）。
+		"implant_defaults": s.effectiveImplantDefaults(),
 		"evasion": map[string]interface{}{
 			"garble_available": garbleAvail,
 			"garble_message":   garbleMsg,

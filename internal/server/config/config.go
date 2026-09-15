@@ -515,7 +515,11 @@ func Load(configPath string) (*Config, error) {
 	viper.SetDefault("listener.mimicry_profile", "cdn")
 
 	viper.SetDefault("implant.interval", 60)
-	viper.SetDefault("implant.jitter", 10)
+	// 抖动默认 20%（不是 10%）：与「生成载荷」能力接口对外声明的默认值、
+	// 以及服务端在请求未指定时的回退值保持**同一套口径**。三处曾经不一致
+	// （配置默认 10 / 接口声明 20 / 构建回退 20），用户看到的默认值和实际烘焙
+	// 进载荷的值对不上，排查起来很费劲。
+	viper.SetDefault("implant.jitter", 20)
 	viper.SetDefault("implant.retry_count", 3)
 	viper.SetDefault("implant.retry_wait", 5)
 	viper.SetDefault("implant.output_dir", "./implants")

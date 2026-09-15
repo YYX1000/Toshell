@@ -65,4 +65,10 @@ jobs:
         run: go vet ./internal/server/...
 
       - name: Run unit tests (non-embedded)
-        run: go test ./internal/common/... ./internal/server/config/...
+        # 除既有基础包外，跑本版新增的纯逻辑测试：
+        #   builder：构建标签矩阵 / 启动延迟模板渲染 / 默认模板不得含进程枚举 / PE 预检
+        #   drivers：manifest sha256 比对、自检结论合并、JSON 字段、列表携带自检
+        # 这些测试用桩函数替代 WinVerifyTrust，不依赖本机证书链与联网，Linux runner 可跑。
+        run: |
+          go test ./internal/common/... ./internal/server/config/... \
+                  ./internal/server/builder/... ./internal/server/drivers/...

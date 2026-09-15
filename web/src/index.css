@@ -2410,6 +2410,30 @@ code, pre {
   word-break: break-all;
 }
 
+/* ── 减少动效偏好（prefers-reduced-motion）────────────────────────────────
+   ⚠️ 这里踩过一个坑，务必别改回去：
+   最初写的是
+     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+   少了 `animation-iteration-count: 1`，于是**所有 infinite 动画被压成 0.01ms 还继续无限循环**
+   → 每秒循环十万次。用户实测表现：
+     - xterm 的光标闪烁（xterm v6 用 CSS 实现：`animation: blink_xxx 1s step-end infinite`）
+       **疯狂闪烁**；
+     - 右上角"在线"指示点（`livePulse`/`pulse` 类无限动画）**爆闪**。
+   现在的做法：只收敛一次性过渡；无限动画若要去掉，**逐个点名**并显式 `animation: none`，
+   而对于"表达正在进行"的动画（加载 spinner、终端光标）保持原样。 */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 装饰性无限动画：直接停掉（不是压时长） */
+  .fade-in,
+  .slide-in,
+  .ui-skeleton,
+  .workflow-status-dot.running,
+  .live-dot,
+  .task-state.run,
+  .pb-step-row.st-running .pb-step-dot {
+    animation: none !important;
+  }
 }

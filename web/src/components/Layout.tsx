@@ -1,4 +1,4 @@
-import { ReactNode, useState } from 'react'
+import { ReactNode, useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import {
   LayoutDashboard,
@@ -92,6 +92,35 @@ export function Layout({ children }: { children: ReactNode }) {
   const { theme, toggleTheme } = useThemeStore()
   const { t, lang, setLang } = useI18n()
 
+  // 顶栏"在线"状态：**真实探测后端**，而不是写死"在线"。
+  // 之前是硬编码的一颗绿点，看起来像"状态灯"，用户反馈"爆闪"——根因其实是
+  // prefers-reduced-motion 规则把 pulse 类无限动画压成 0.01ms（已修，见 index.css）。
+  // 这里顺带做成真实状态：每 20s 探一次 /health（失败即"连接中断"），并显示最后检查时间。
+  const [backend, setBackend] = useState<{ ok: boolean; at: Date | null }>({ ok: true, at: null })
+  useEffect(() => {
+    let cancelled = false
+    const ping = async () => {
+      const token = localStorage.getItem('toshell-token')
+      try {
+        const r = await fetch('/api/v1/health', { headers: token ? { Authorization: `Bearer ${token}` } : {} })
+        // 判定口径：**拿到 HTTP 响应且不是 5xx** 就算"服务在线"。
+        // 不直接用 r.ok，否则在"仅 API Key / JWT 过期"的场景下会误报"连接中断"，
+        // 而那种情况属于登录态问题（其它请求会跳登录），不是后端挂了。
+        if (!cancelled) setBackend({ ok: r.status < 500, at: new Date() })
+      } catch {
+        if (!cancelled) setBackend({ ok: false, at: new Date() })
+      }
+    }
+    ping()
+    const timer = window.setInterval(ping, 20000)
+    window.addEventListener('focus', ping)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+      window.removeEventListener('focus', ping)
+    }
+  }, [])
+
   const toggleSidebar = () => {
     setSidebarOpen((v) => {
       localStorage.setItem('toshell.sidebar', v ? 'collapsed' : 'open')
@@ -183,9 +212,16 @@ export function Layout({ children }: { children: ReactNode }) {
             <button className="theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? t('theme.toLight') : t('theme.toDark')}>
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <div className="status-indicator online" title="控制台与后端的实时连接状态">
+            <div
+              className={`status-indicator ${backend.ok ? 'online' : 'offline'}`}
+              title={
+                backend.at
+                  ? `${backend.ok ? '后端可达' : '后端不可达'} · 最后检查 ${backend.at.toLocaleTimeString()}（每 20 秒自动重试）`
+                  : '正在检查后端连接…'
+              }
+            >
               <span className="status-dot" />
-              {t('common.online')}
+              {backend.ok ? t('common.online') : '连接中断'}
             </div>
           </div>
         </header>

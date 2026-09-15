@@ -210,9 +210,15 @@
   background: var(--color-text-muted);
 }
 
+/* 状态点：**不加任何无限动画/发光**（发光在部分 GPU 与远程桌面上会闪；
+   用户反馈过"爆闪"，根因是 prefers-reduced-motion 规则，已修，这里也不再依赖动画） */
 .status-indicator.online .status-dot {
   background: var(--color-success);
-  box-shadow: 0 0 8px var(--color-success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 22%, transparent);
+}
+.status-indicator.offline .status-dot {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 22%, transparent);
 }
 
 .theme-toggle {
@@ -235,9 +241,9 @@
   color: var(--color-primary);
 }
 
-.status-indicator.online {
-  color: var(--color-success);
-}
+.status-indicator.online { color: var(--color-success); }
+.status-indicator.offline { color: var(--color-danger); }
+.status-indicator { white-space: nowrap; }
 
 .content {
   flex: 1;

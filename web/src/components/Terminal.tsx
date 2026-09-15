@@ -136,8 +136,13 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
       fontFamily: 'Consolas, "Courier New", monospace',
       fontSize: 14,
       lineHeight: 1.2,
+      // 光标：保持标准 1s 闪烁（xterm 内部是 `animation: blink 1s step-end infinite`）。
+      // 注意：不要在全局 CSS 里用 `* { animation-duration: 0.01ms }` 去"减少动效"——
+      // 那会让这个无限动画变成每秒循环十万次（用户实测"光标闪这么快"），改法见 index.css。
       cursorBlink: true,
       cursorStyle: 'block',
+      // 失去焦点时用空心光标，避免多个终端同时闪烁（也更省 repaint）
+      cursorInactiveStyle: 'outline',
       scrollback: 10000,
       allowProposedApi: true,
       // Linux shell 输出为 LF（\n），convertEol 让 LF 同时回车，避免每行输出阶梯状错位

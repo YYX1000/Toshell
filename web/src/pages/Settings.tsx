@@ -1,16 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  Bell,
-  FileText,
-  Package,
-  Radio,
-  RefreshCw,
-  Save,
-  Server,
-  Shield,
-  Sparkles,
-  User,
-} from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Bell, Package, RefreshCw, Save, Server, User } from 'lucide-react'
 import { settingsApi } from '../api'
 import { Badge, Callout, Check, Field, Section, Skeleton, Toolbar } from '../components/ui'
 import './Settings.css'
@@ -30,7 +20,7 @@ interface SettingsData {
 }
 
 /** 可分组的配置段（与 /api/v1/settings 的段名一致；general 为只读展示，不在其中） */
-type SettingsGroup = 'listener' | 'implant' | 'builder' | 'notifications' | 'security' | 'ai' | 'web'
+type SettingsGroup = 'general' | 'listener' | 'implant' | 'builder' | 'notifications' | 'security' | 'ai' | 'web'
 
 /** 草稿里所有 Record 型分组（不含仅前端使用的 new_password 字符串字段） */
 type DraftGroup = 'general' | SettingsGroup
@@ -47,6 +37,7 @@ const PLATFORM_LABEL: Record<string, string> = {
 
 /** 分组显示名（保存提示与吸顶条用） */
 const GROUP_LABEL: Record<SettingsGroup, string> = {
+  general: '通用与服务',
   listener: '监听器与回连',
   implant: '植入端默认参数',
   builder: '载荷构建与签名',
@@ -80,24 +71,94 @@ const EMPTY: SettingsData = {
   web: {},
 }
 
-/** 左侧导航：滚到对应分组（分组内所有配置段的 dirty 状态汇总到导航项上） */
-const NAV: Array<{ id: string; label: string; icon: typeof Server; groups: SettingsGroup[] }> = [
-  { id: 'sec-general', label: '通用与服务', icon: Server, groups: [] },
-  { id: 'sec-listener', label: '监听器与回连', icon: Radio, groups: ['listener'] },
-  { id: 'sec-implant', label: '植入端与载荷构建', icon: Package, groups: ['implant', 'builder'] },
-  { id: 'sec-notify', label: '通知 Webhook', icon: Bell, groups: ['notifications'] },
-  { id: 'sec-ai', label: 'AI 副驾驶', icon: Sparkles, groups: ['ai'] },
-  { id: 'sec-account', label: '账户与鉴权', icon: User, groups: ['security'] },
-  { id: 'sec-security', label: '安全与防测绘', icon: Shield, groups: ['web'] },
-  { id: 'sec-logs', label: '日志与审计', icon: FileText, groups: [] },
+/* ───────────────────────────── 分页（左侧导航） ─────────────────────────────
+   设置内容按语义拆成 4 个分页，左侧导航由「锚点滚动」改成「分页切换」：
+   同一时刻只渲染当前分页的配置段，但 draft / baseline 仍然只有一份（组件级 state），
+   所以切页不会丢未保存的改动，底部/顶部保存条始终保存整份配置。 */
+
+type SettingsPageId = 'general' | 'implant' | 'integrations' | 'account'
+
+/** 记住上次停留的分页（URL 里没有 ?page= 时兜底） */
+const PAGE_STORAGE_KEY = 'toshell.settings-page'
+
+interface SettingsPageDef {
+  id: SettingsPageId
+  label: string
+  icon: typeof Server
+  /** 该分页包含的配置段标题（侧栏用于显示段数，标题行用于内容摘要） */
+  sections: string[]
+  /** 该分页涉及的配置分组（用于在侧栏上汇总未保存状态） */
+  groups: SettingsGroup[]
+}
+
+const PAGES: SettingsPageDef[] = [
+  {
+    id: 'general',
+    label: '通用与服务',
+    icon: Server,
+    sections: ['通用与服务', '监听器与回连', '安全与防测绘（控制台防护）', '日志与审计'],
+    groups: ['general', 'listener', 'web'],
+  },
+  {
+    id: 'implant',
+    label: '植入端与载荷',
+    icon: Package,
+    sections: ['植入端默认参数', '载荷构建与签名（builder）'],
+    groups: ['implant', 'builder'],
+  },
+  {
+    id: 'integrations',
+    label: '集成与通知',
+    icon: Bell,
+    sections: ['通知 Webhook', 'AI 副驾驶'],
+    groups: ['notifications', 'ai'],
+  },
+  {
+    id: 'account',
+    label: '账户与鉴权',
+    icon: User,
+    sections: ['账户与鉴权'],
+    groups: ['security'],
+  },
 ]
+
+/** 旧版锚点深链接（/settings#sec-xxx）→ 分页：老链接仍然落到正确的分页 */
+const LEGACY_ANCHOR_PAGE: Record<string, SettingsPageId> = {
+  'sec-general': 'general',
+  'sec-listener': 'general',
+  'sec-security': 'general',
+  'sec-logs': 'general',
+  'sec-implant': 'implant',
+  'sec-notify': 'integrations',
+  'sec-ai': 'integrations',
+  'sec-account': 'account',
+}
+
+const isPageId = (v: string | null | undefined): v is SettingsPageId => !!v && PAGES.some((p) => p.id === v)
+
+/** 初始分页：URL ?page= 优先，其次旧锚点 #sec-xxx，其次 localStorage，最后第一页 */
+function readInitialPage(fromQuery: string | null): SettingsPageId {
+  if (isPageId(fromQuery)) return fromQuery
+  const hash = typeof window !== 'undefined' ? window.location.hash.replace(/^#/, '') : ''
+  const fromHash = LEGACY_ANCHOR_PAGE[hash]
+  if (fromHash) return fromHash
+  try {
+    const saved = localStorage.getItem(PAGE_STORAGE_KEY)
+    if (isPageId(saved)) return saved
+  } catch {
+    /* localStorage 不可用（隐私模式）时忽略 */
+  }
+  return PAGES[0].id
+}
 
 /**
  * 设置页：真实读写运行时配置（/api/v1/settings），保存后热生效。
  *
- * 布局：左侧分组导航（锚点跳转）+ 右侧「吸顶保存条 + 语义分组」。
+ * 布局：左侧分页导航（通用与服务 / 植入端与载荷 / 集成与通知 / 账户与鉴权）
+ * + 右侧「吸顶保存条 + 当前分页的语义分组（未选中的分页不渲染）」。
  * 保存是全局的：一次 PUT 只提交有改动的段（后端 SettingsUpdate 支持多段合并提交），
- * 未保存时吸顶条一直显示徽标，离开页面（关闭/刷新）会由 beforeunload 兜底提示。
+ * 未保存时吸顶条一直显示徽标，离开页面（关闭/刷新）会由 beforeunload 兜底提示；
+ * 草稿存在组件级 state 里，切换分页不会重置，也不会漏报其它分页上的改动。
  */
 export function Settings() {
   const [loading, setLoading] = useState(true)
@@ -107,13 +168,42 @@ export function Settings() {
   const [testing, setTesting] = useState(false)
   const [msg, setMsg] = useState<{ kind: 'ok' | 'err'; text: string } | null>(null)
   const [testResult, setTestResult] = useState<{ ok: boolean; platform?: string; status_code: number; response: string; error?: string } | null>(null)
-  const [active, setActive] = useState(NAV[0].id)
   /** 后端是否在 settings 接口里放行了 builder 段（GET 回传 + PUT 接收） */
   const [builderSupported, setBuilderSupported] = useState(true)
 
   // 表单草稿 + 最近一次加载的快照（用于计算"有未保存修改"）
   const [draft, setDraft] = useState<SettingsData>(EMPTY)
   const [baseline, setBaseline] = useState<SettingsData>(EMPTY)
+
+  // ── 分页（左侧导航切换）：URL ?page= 优先，localStorage 兜底 ──
+  const [searchParams, setSearchParams] = useSearchParams()
+  const [page, setPage] = useState<SettingsPageId>(() => readInitialPage(searchParams.get('page')))
+  const contentRef = useRef<HTMLDivElement>(null)
+
+  // 当前分页写回 localStorage：URL 里没有 ?page=（例如直接打开 /settings）时刷新也能停在同页
+  useEffect(() => {
+    try {
+      localStorage.setItem(PAGE_STORAGE_KEY, page)
+    } catch {
+      /* 忽略：localStorage 不可用 */
+    }
+  }, [page])
+
+  /** 切换分页：只改 URL / localStorage 与渲染分支，draft / baseline 原样保留 */
+  const selectPage = (id: SettingsPageId) => {
+    if (id === page) return
+    setPage(id)
+    try {
+      localStorage.setItem(PAGE_STORAGE_KEY, id)
+    } catch {
+      /* 忽略 */
+    }
+    const next = new URLSearchParams(searchParams)
+    next.set('page', id)
+    setSearchParams(next, { replace: true })
+    // 切页后回到顶部：滚动容器是 Layout 的 .content，交给浏览器找最近的滚动祖先
+    contentRef.current?.scrollIntoView({ block: 'start' })
+  }
 
   const load = async (opts?: { keepBuilder?: Record<string, any> }) => {
     setLoading(true)
@@ -150,7 +240,7 @@ export function Settings() {
     setDraft((prev) => ({ ...prev, [group]: { ...(prev[group] as Record<string, any>), [key]: value } }))
   }
 
-  /** 有改动的配置段（general 只读，永远不参与） */
+  /** 有改动的配置段 */
   const dirtyGroups: SettingsGroup[] = (Object.keys(GROUP_LABEL) as SettingsGroup[]).filter(
     (g) => JSON.stringify(draft[g]) !== JSON.stringify(baseline[g]),
   )
@@ -172,29 +262,6 @@ export function Settings() {
     window.addEventListener('beforeunload', handler)
     return () => window.removeEventListener('beforeunload', handler)
   }, [])
-
-  // 左侧导航高亮：跟随滚动位置
-  useEffect(() => {
-    if (!loaded) return
-    const els = NAV.map((n) => document.getElementById(n.id)).filter((el): el is HTMLElement => !!el)
-    if (!els.length || typeof IntersectionObserver === 'undefined') return
-    const obs = new IntersectionObserver(
-      (entries) => {
-        const visible = entries
-          .filter((e) => e.isIntersecting)
-          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top)
-        if (visible[0]) setActive(visible[0].target.id)
-      },
-      { rootMargin: '-80px 0px -55% 0px', threshold: 0 },
-    )
-    els.forEach((el) => obs.observe(el))
-    return () => obs.disconnect()
-  }, [loaded])
-
-  const gotoSection = (id: string) => {
-    setActive(id)
-    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
-  }
 
   const confirmDiscard = (): boolean => {
     if (!dirty) return true
@@ -305,23 +372,29 @@ export function Settings() {
     }
   }
 
+  const currentPage = PAGES.find((p) => p.id === page) ?? PAGES[0]
+
   return (
     <div className="settings-page">
+      {/* ── 左侧分页导航：点一项切换一个分页（同一时刻只渲染该分页的配置段） ── */}
       <nav className="settings-sidebar">
-        {NAV.map(({ id, label, icon: Icon, groups }) => (
+        {PAGES.map(({ id, label, icon: Icon, sections, groups }) => (
           <button
             key={id}
-            className={`settings-tab ${active === id ? 'active' : ''}`}
-            onClick={() => gotoSection(id)}
+            type="button"
+            className={`settings-tab ${page === id ? 'active' : ''}`}
+            aria-current={page === id ? 'page' : undefined}
+            onClick={() => selectPage(id)}
           >
             <Icon size={18} />
             <span className="settings-tab-label">{label}</span>
             {groups.some((g) => dirtyGroups.includes(g)) && <span className="settings-tab-dot" title="有未保存修改" />}
+            <span className="settings-tab-count" title={sections.join('、')}>{sections.length}</span>
           </button>
         ))}
       </nav>
 
-      <div className="settings-content">
+      <div className="settings-content" ref={contentRef}>
         {/* ── 吸顶保存条：状态 + 保存 + 重新加载（位置固定，不随内容滚动） ── */}
         <div className="settings-savebar">
           <Toolbar style={{ marginBottom: 0 }}>
@@ -358,36 +431,61 @@ export function Settings() {
           </div>
         ) : (
           <>
-            {/* ══ 通用与服务（只读） ══ */}
-            <div id="sec-general" className="settings-anchor">
+            {/* ── 分页标题：当前分页包含的配置段一览 ── */}
+            <div className="settings-page-head">
+              <h2 className="settings-page-title">{currentPage.label}</h2>
+              <span className="settings-page-meta">{currentPage.sections.join(' · ')}</span>
+            </div>
+
+            {/* ══ 通用与服务（改端口 / 主机后需重启服务端生效） ══ */}
+            {page === 'general' && (
               <Section
                 title="通用与服务"
                 desc="控制台/REST API 的监听地址、心跳超时与写队列参数。"
-                badge={<Badge tone="warn">只读</Badge>}
+                badge={<Badge tone="warn">需重启</Badge>}
               >
-                <Callout tone="warn" title="该分组当前无法在本页保存">
-                  <code>/api/v1/settings</code> 的保存接口目前只放行 listener / implant / notifications / security / ai / web 段，
-                  general（服务端口与日志）段需要后端在 settings 接口里放行后才能在此修改。在此之前请编辑 server.yaml 后重启服务。
+                <Callout tone="info" title="改动生效方式">
+                  <code>api_host</code> / <code>api_port</code> / <code>write_queue_size</code> 需要
+                  <b>重启服务端</b>才会生效（保存只是落盘到 server.yaml）；<code>log_level</code> /
+                  <code>log_format</code> / <code>heartbeat_timeout</code> 保存后热生效。
                 </Callout>
                 <div className="settings-grid" style={{ marginTop: 'var(--sp-3)' }}>
-                  <Field label="API 监听地址" hint="控制台与 REST API 绑定地址（只读）">
-                    <input className="ui-input" value={String(draft.general.api_host ?? '')} disabled />
+                  <Field label="API 监听地址" hint="控制台与 REST API 绑定地址（改后需重启）">
+                    <input
+                      className="ui-input"
+                      value={String(draft.general.api_host ?? '')}
+                      onChange={(e) => setField('general', 'api_host', e.target.value)}
+                    />
                   </Field>
-                  <Field label="API 端口" hint="控制台与 REST API 端口（只读）">
-                    <input className="ui-input" value={String(draft.general.api_port ?? '')} disabled />
+                  <Field label="API 端口" hint="控制台与 REST API 端口（改后需重启）">
+                    <input
+                      className="ui-input"
+                      type="number"
+                      value={String(draft.general.api_port ?? '')}
+                      onChange={(e) => setField('general', 'api_port', num(e.target.value))}
+                    />
                   </Field>
-                  <Field label="心跳超时" hint="超过该时长未收到心跳判定会话离线（只读）">
-                    <input className="ui-input" value={String(draft.general.heartbeat_timeout ?? '')} disabled />
+                  <Field label="心跳超时" hint="超过该时长未收到心跳判定会话离线，如 90s / 2m（热生效）">
+                    <input
+                      className="ui-input"
+                      value={String(draft.general.heartbeat_timeout ?? '')}
+                      onChange={(e) => setField('general', 'heartbeat_timeout', e.target.value)}
+                    />
                   </Field>
-                  <Field label="写队列长度" hint="监听器发送队列上限，满队列会丢包（只读）">
-                    <input className="ui-input" value={String(draft.general.write_queue_size ?? '')} disabled />
+                  <Field label="写队列长度" hint="监听器发送队列上限，满队列会丢包（改后需重启）">
+                    <input
+                      className="ui-input"
+                      type="number"
+                      value={String(draft.general.write_queue_size ?? '')}
+                      onChange={(e) => setField('general', 'write_queue_size', num(e.target.value))}
+                    />
                   </Field>
                 </div>
               </Section>
-            </div>
+            )}
 
             {/* ══ 监听器与回连 ══ */}
-            <div id="sec-listener" className="settings-anchor">
+            {page === 'general' && (
               <Section title="监听器与回连" desc="监听器开关、绑定地址与流量拟态（保存后热生效；改端口需重启监听器）。">
                 <div className="settings-grid">
                   <Check
@@ -461,10 +559,10 @@ export function Settings() {
                   更换后所有旧植入端会失联，需要重新生成载荷。
                 </Callout>
               </Section>
-            </div>
+            )}
 
             {/* ══ 植入端与载荷构建 ══ */}
-            <div id="sec-implant" className="settings-anchor">
+            {page === 'implant' && (
               <Section title="植入端默认参数" desc="影响后续构建的默认值（生成载荷时可在构建页覆盖）。">
                 <div className="settings-grid">
                   <Field label="心跳间隔(秒)" hint="默认心跳/轮询间隔">
@@ -529,7 +627,10 @@ export function Settings() {
                   </Field>
                 </div>
               </Section>
+            )}
 
+            {/* ══ 载荷构建与签名 ══ */}
+            {page === 'implant' && (
               <Section
                 title="载荷构建与签名（builder）"
                 desc="C 植入端编译工具链与 Authenticode 代码签名；字段与 server.yaml 的 builder: 段一一对应。"
@@ -629,10 +730,10 @@ export function Settings() {
                   />
                 </div>
               </Section>
-            </div>
+            )}
 
             {/* ══ 通知 Webhook ══ */}
-            <div id="sec-notify" className="settings-anchor">
+            {page === 'integrations' && (
               <Section title="通知 Webhook" desc="会话上线推送钉钉/企业微信/飞书/Slack/Discord（保存后热生效）。">
                 <div className="settings-grid">
                   <Check
@@ -703,10 +804,10 @@ export function Settings() {
                   </div>
                 )}
               </Section>
-            </div>
+            )}
 
             {/* ══ AI 副驾驶 ══ */}
-            <div id="sec-ai" className="settings-anchor">
+            {page === 'integrations' && (
               <Section title="AI 副驾驶" desc="LLM（OpenAI 兼容 chat/completions）配置，保存后热生效。">
                 <div className="settings-grid">
                   <Check
@@ -775,10 +876,10 @@ export function Settings() {
                   </Field>
                 </div>
               </Section>
-            </div>
+            )}
 
             {/* ══ 账户与鉴权 ══ */}
-            <div id="sec-account" className="settings-anchor">
+            {page === 'account' && (
               <Section title="账户与鉴权" desc="控制台登录账户、认证方式与 API 密钥。">
                 <div className="settings-grid">
                   <Field label="用户名" hint="登录用户名（热生效）">
@@ -853,10 +954,10 @@ export function Settings() {
                   )}
                 </Toolbar>
               </Section>
-            </div>
+            )}
 
             {/* ══ 安全与防测绘 ══ */}
-            <div id="sec-security" className="settings-anchor">
+            {page === 'general' && (
               <Section title="安全与防测绘（控制台防护）" desc="前置认证与来源白名单：只作用于控制台与管理 API，植入端回连不受影响。">
                 <Callout tone="info" title="不影响植入端">
                   开启后访问控制台需先通过浏览器认证框，阻止 Fofa/Quake/Hunter 等资产测绘引擎抓取并收录本资产；
@@ -936,25 +1037,35 @@ export function Settings() {
                   </Callout>
                 )}
               </Section>
-            </div>
+            )}
 
-            {/* ══ 日志与审计（只读） ══ */}
-            <div id="sec-logs" className="settings-anchor">
+            {/* ══ 日志与审计 ══ */}
+            {page === 'general' && (
               <Section
                 title="日志与审计"
-                desc="服务端日志级别与格式；登录审计请到「登录日志」页查看。"
-                badge={<Badge tone="warn">只读</Badge>}
+                desc="服务端日志级别与格式（保存后热生效）；登录审计请到「登录日志」页查看。"
+                badge={<Badge>热生效</Badge>}
               >
                 <div className="settings-grid">
-                  <Field label="日志级别" hint="只读：与「通用与服务」同属 general 段，需后端放行或改 server.yaml 的 logging.level">
-                    <input className="ui-input" value={String(draft.general.log_level ?? '')} disabled />
+                  <Field label="日志级别" hint="debug / info / warn / error（保存后立即生效）">
+                    <input
+                      className="ui-input"
+                      value={String(draft.general.log_level ?? '')}
+                      onChange={(e) => setField('general', 'log_level', e.target.value)}
+                      placeholder="info"
+                    />
                   </Field>
-                  <Field label="日志格式" hint="只读：需改 server.yaml 的 logging.format">
-                    <input className="ui-input" value={String(draft.general.log_format ?? '')} disabled />
+                  <Field label="日志格式" hint="text / json（保存后立即生效）">
+                    <input
+                      className="ui-input"
+                      value={String(draft.general.log_format ?? '')}
+                      onChange={(e) => setField('general', 'log_format', e.target.value)}
+                      placeholder="text"
+                    />
                   </Field>
                 </div>
               </Section>
-            </div>
+            )}
           </>
         )}
       </div>

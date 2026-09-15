@@ -1,19 +1,23 @@
-/* 设置页布局：左侧分组导航（锚点） + 右侧「吸顶保存条 + 语义分组」。
-   视觉（卡片/分组/表单/徽标/提示）全部走 index.css 的 ui-* 基础件，这里只补布局。 */
+/* 设置页布局：左侧分页导航（切换 4 个分页） + 右侧「吸顶保存条 + 当前分页的语义分组」。
+   视觉（卡片/分组/表单/徽标/提示）全部走 index.css 的 ui-* 基础件，这里只补布局。
+   间距/字号/颜色统一用 index.css 的 token（--sp-* / --fs-* / --color-*），保证深浅主题一致。 */
 
 .settings-page {
   display: flex;
-  gap: 24px;
+  gap: var(--sp-6);
   min-height: calc(100vh - 140px);
   align-items: flex-start;
+  /* 超宽屏不再把表单无限拉长：整页限宽并居中 */
+  max-width: 1440px;
+  margin: 0 auto;
 }
 
-/* ── 左侧分组导航（锚点跳转，不再切换 tab） ── */
+/* ── 左侧分页导航：点一项切换一个分页（同一时刻只渲染该分页的配置段） ── */
 .settings-sidebar {
-  width: 200px;
+  width: 216px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   flex-shrink: 0;
   position: sticky;
   top: 0;
@@ -23,15 +27,16 @@
 .settings-tab {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 14px;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-3);
   background: none;
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--color-text-secondary);
   font-size: var(--fs-md);
   text-align: left;
-  transition: all 0.2s;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
   cursor: pointer;
 }
 
@@ -40,9 +45,12 @@
   color: var(--color-text);
 }
 
+/* 当前分页：主题色混色（token 派生，深浅主题都成立），不写死十六进制 */
 .settings-tab.active {
-  background: var(--color-primary-muted);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-secondary));
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
   color: var(--color-primary-hover);
+  font-weight: 600;
 }
 
 .settings-tab-label {
@@ -50,7 +58,7 @@
   min-width: 0;
 }
 
-/* 该分组里有未保存修改 */
+/* 该分页里有未保存修改 */
 .settings-tab-dot {
   width: 7px;
   height: 7px;
@@ -59,13 +67,66 @@
   flex-shrink: 0;
 }
 
+/* 该分页包含的配置段数量 */
+.settings-tab-count {
+  flex-shrink: 0;
+  min-width: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  text-align: center;
+}
+
+.settings-tab.active .settings-tab-count {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
+  color: inherit;
+}
+
 .settings-content {
   flex: 1;
   min-width: 0;
+  /* 内容列限宽：表单不再被拉到整屏宽，阅读与填写都更舒服 */
+  max-width: 1040px;
+  /* 竖向留白统一交给 gap：保存条 / 分页标题 / 各配置段之间都是 --sp-5 */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: var(--sp-6);
+}
+
+/* ── 分页标题：当前分页名 + 包含的配置段一览 ── */
+.settings-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+  padding-bottom: var(--sp-3);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.settings-page-title {
+  font-size: var(--fs-lg);
+  font-weight: 650;
+  color: var(--color-text);
+}
+
+.settings-page-meta {
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  line-height: 1.7;
+}
+
+/* 配置段之间的间距由 .settings-content 的 gap 统一控制（Section 自带的 margin-bottom 去掉，避免叠加） */
+.settings-content > .ui-section {
+  margin-bottom: 0;
 }
 
 /* ── 吸顶保存条：状态徽标 + 保存 + 重新加载，滚动时位置固定 ── */
@@ -77,7 +138,8 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 10px 12px;
-  margin-bottom: 16px;
+  /* 与下方内容的间距由 .settings-content 的 gap 控制，这里不再写 margin */
+  margin-bottom: 0;
   box-shadow: var(--shadow-sm);
 }
 
@@ -92,11 +154,6 @@
 
 .settings-savebar .settings-msg {
   margin: 10px 0 0 0;
-}
-
-/* 锚点：滚动到分组时给吸顶条留出空间 */
-.settings-anchor {
-  scroll-margin-top: 76px;
 }
 
 /* ── 分组内栅格：宽屏两列，窄屏自动一列 ── */
@@ -217,30 +274,40 @@
 /* ── API 密钥管理（脱敏回显 + 轮换） ── */
 .setting-inputs-col { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .api-key-chip { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-family: var(--font-mono); color: var(--color-success); }
+/* 兼容两种写法：JSX 里用的是 .settings-muted（复数），这里保留旧的单数名做兜底 */
+.settings-muted,
 .setting-muted { color: var(--color-text-secondary); font-size: var(--fs-sm); }
 
-/* ── 窄屏：导航变成横向滚动条，栅格单列 ── */
+/* ── 窄屏：导航变成横向可滚动的分页标签条，栅格单列 ── */
 @media (max-width: 900px) {
   .settings-page {
     flex-direction: column;
-    gap: 12px;
+    gap: var(--sp-3);
+    max-width: none;
   }
 
   .settings-sidebar {
     position: static;
     width: 100%;
     flex-direction: row;
+    align-items: center;
+    gap: var(--sp-1);
     overflow-x: auto;
-    padding-bottom: 4px;
+    padding-bottom: var(--sp-2);
   }
 
+  /* 标签条上不换行、不收缩：内容区不再被侧栏挤压（横向滚动查看全部分页） */
   .settings-tab {
+    flex: 0 0 auto;
+    width: auto;
     white-space: nowrap;
-    padding: 8px 12px;
+    padding: var(--sp-2) var(--sp-3);
   }
 
   .settings-content {
-    padding: 16px;
+    max-width: none;
+    padding: var(--sp-4);
+    gap: var(--sp-4);
   }
 
   .settings-grid,

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Monitor, FolderOpen, Cpu, Network, Terminal, Upload, Shield, Camera, KeyRound, ShieldCheck, Zap, MonitorPlay, Share2, X } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Monitor, FolderOpen, Cpu, Network, Terminal, Upload, Shield, Camera, KeyRound, ShieldCheck, Zap, MonitorPlay, Share2, X, MoreHorizontal } from 'lucide-react'
 import { format } from 'date-fns'
 import type { Session } from '../types'
 import { FileManager } from './FileManager'
@@ -40,8 +40,21 @@ const TABS: { key: DetailTab; icon: React.ReactNode; label: string }[] = [
   { key: 'relay', icon: <Share2 size={14} />, label: '中继' },
 ]
 
+// 常驻显示的 tab（高频：看信息、传文件、看进程、开 Shell、跑内存执行）
+const PINNED_TABS: DetailTab[] = ['info', 'files', 'process', 'shell', 'fileless']
+// 「更多」下拉里的分组顺序（只影响收纳后的展示顺序，不改任何功能）
+const TAB_GROUPS: { title: string; keys: DetailTab[] }[] = [
+  { title: '执行与注入', keys: ['injection', 'bof'] },
+  { title: '环境与对抗', keys: ['av', 'credentials', 'persistence'] },
+  { title: '屏幕', keys: ['screenshot', 'screenstream'] },
+  { title: '网络', keys: ['relay'] },
+]
+
 export function SessionDetail({ session, onClose }: SessionDetailProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('info')
+  // 「更多」下拉的展开状态（tab 太多时收纳用）
+  const [moreOpen, setMoreOpen] = useState(false)
+  const tabsRef = useRef<HTMLDivElement | null>(null)
   // 服务端能力清单（tabs 白名单）；未加载时用本地 OS 推导兜底
   const [capTabs, setCapTabs] = useState<Record<string, boolean> | null>(null)
 
@@ -86,6 +99,40 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
   // activeTab 被过滤掉时自动回退到 'info'（避免渲染不存在的面板）
   const effectiveTab = availableTabs.some((t) => t.key === activeTab) ? activeTab : 'info'
 
+  // 常驻 tab + 收纳 tab：**当前选中的 tab 永远放进可见区**（否则切到"更多"里的功能后
+  // 看不出自己在哪一页）。菜单里仍然列出全部被收纳项（当前项高亮），计数不随选择变化。
+  const pinnedSet = new Set<DetailTab>(PINNED_TABS)
+  const overflowTabs = availableTabs.filter((t) => !pinnedSet.has(t.key))
+  const visibleTabs = availableTabs.filter(
+    (t) => pinnedSet.has(t.key) || t.key === effectiveTab,
+  )
+
+  // 点空白处 / Esc 关闭「更多」下拉
+  useEffect(() => {
+    if (!moreOpen) return
+    const onDown = (e: MouseEvent) => {
+      if (tabsRef.current && !tabsRef.current.contains(e.target as Node)) setMoreOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMoreOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [moreOpen])
+
+  // Esc 关闭详情面板（与「更多」下拉的 Esc 不冲突：下拉关闭后事件仍冒泡，这里只在没有下拉时生效）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !moreOpen) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [moreOpen, onClose])
+
   return (
     <div className="session-detail-panel">
       <div className="detail-header">
@@ -113,8 +160,11 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
         </button>
       </div>
 
-      <div className="detail-tabs">
-        {availableTabs.map((tab) => (
+      {/* tab 条：常用 tab 固定显示，其余收进「更多」下拉（按功能分组）。
+          Windows 会话最多 13 个 tab，窄面板里单行横滚等于"把 tab 藏起来"（看不出还能滚），
+          所以这里改成显式收纳：当前选中的 tab 永远出现在可见区。 */}
+      <div className="detail-tabs" ref={tabsRef}>
+        {visibleTabs.map((tab) => (
           <button
             key={tab.key}
             className={`tab-btn ${effectiveTab === tab.key ? 'active' : ''}`}
@@ -124,6 +174,48 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
             {tab.icon} {tab.label}
           </button>
         ))}
+
+        {overflowTabs.length > 0 && (
+          <div className="detail-tabs-more">
+            <button
+              className={`tab-btn tab-more-btn ${overflowTabs.some((t) => t.key === effectiveTab) ? 'active' : ''}`}
+              onClick={() => setMoreOpen((v) => !v)}
+              title="更多功能"
+              aria-expanded={moreOpen}
+            >
+              <MoreHorizontal size={14} /> 更多
+              <span className="tab-more-count">{overflowTabs.length}</span>
+            </button>
+            {moreOpen && (
+              <div className="detail-tabs-menu" role="menu">
+                {TAB_GROUPS.map((group) => {
+                  const items = group.keys
+                    .map((k) => overflowTabs.find((t) => t.key === k))
+                    .filter((t): t is (typeof overflowTabs)[number] => !!t)
+                  if (items.length === 0) return null
+                  return (
+                    <div key={group.title} className="detail-tabs-menu-group">
+                      <div className="detail-tabs-menu-title">{group.title}</div>
+                      {items.map((tab) => (
+                        <button
+                          key={tab.key}
+                          className={`detail-tabs-menu-item ${effectiveTab === tab.key ? 'active' : ''}`}
+                          onClick={() => {
+                            setActiveTab(tab.key)
+                            setMoreOpen(false)
+                          }}
+                          role="menuitem"
+                        >
+                          {tab.icon} {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="detail-content">

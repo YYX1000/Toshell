@@ -2181,3 +2181,261 @@
   color: var(--color-text-muted);
 }
 
+/* ═══════════════════════════════════════════════════════════════
+   v1.3.5 会话页统一（工具条 / 表格 / 徽标）
+   ───────────────────────────────────────────────────────────────
+   本文件上方存在历史重复规则（同一选择器写了 2~3 遍，还带 translateY 抖动），
+   这里收敛成一份统一实现。所有规则都限定在 `.sessions-page` 作用域内，
+   避免影响 SessionDetail 内的其它子组件（FileManager / ProcessList /
+   AVDetectTab 复用本文件的 .empty-state、.status-badge、.btn-small 等，
+   那些历史规则保持原样不动）。
+   局部新增 class（index.css 中没有，合并时请保留）：
+     .sessions-status-filter / .sessions-total / .search-clear /
+     .status-cell / .relay-badge / .sessions-clear-btn
+   ═══════════════════════════════════════════════════════════════ */
+
+.sessions-page .ui-toolbar {
+  margin-bottom: 0;
+}
+
+/* ── 搜索框（工具条内） ── */
+.sessions-page .search-box {
+  flex: 1 1 320px;
+  min-width: 220px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  transition: border-color var(--transition), box-shadow var(--transition);
+}
+
+.sessions-page .search-box:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--ring);
+}
+
+.sessions-page .search-box input {
+  min-width: 0;
+  font-size: var(--fs-base);
+}
+
+.sessions-page .search-box input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.sessions-page .search-clear {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  flex-shrink: 0;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--transition), background var(--transition);
+}
+
+.sessions-page .search-clear:hover {
+  color: var(--color-text);
+  background: var(--color-bg-tertiary);
+}
+
+/* ── 状态筛选 / 计数 / 刷新 ── */
+.sessions-page .sessions-status-filter {
+  width: auto;
+  min-width: 132px;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-base);
+}
+
+.sessions-page .sessions-total {
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.sessions-page .refresh-btn {
+  margin-left: auto;
+  padding: var(--sp-2) var(--sp-4);
+  min-width: 84px;
+  font-size: var(--fs-base);
+}
+
+/* ── 表格：fixed 布局 + 关键列最小宽度（IP / 进程名不再把表格挤变形） ── */
+.sessions-page .sessions-list-panel {
+  flex: 1;
+  min-width: 0;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: auto;
+}
+
+.sessions-page .sessions-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+}
+
+.sessions-page .sessions-table th,
+.sessions-page .sessions-table td {
+  padding: var(--sp-3);
+  font-size: var(--fs-base);
+  text-align: left;
+  vertical-align: middle;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sessions-page .sessions-table th:nth-child(1) { width: 52px; text-align: center; }
+.sessions-page .sessions-table th:nth-child(2) { width: 120px; }  /* 备注 */
+.sessions-page .sessions-table th:nth-child(3) { width: 132px; }  /* 状态 */
+.sessions-page .sessions-table th:nth-child(4) { width: 180px; }  /* 主机名 */
+.sessions-page .sessions-table th:nth-child(5) { width: 150px; }  /* 用户 */
+.sessions-page .sessions-table th:nth-child(6) { width: 92px; min-width: 84px; }   /* 进程ID */
+.sessions-page .sessions-table th:nth-child(7) { width: 140px; min-width: 128px; } /* 内网IP */
+.sessions-page .sessions-table th:nth-child(8) { width: 150px; }  /* 操作系统 */
+.sessions-page .sessions-table th:nth-child(9) { width: 92px; }   /* 心跳 */
+.sessions-page .sessions-table th:nth-child(10) { width: 96px; text-align: center; }
+
+.sessions-page .sessions-table td:nth-child(1) { text-align: center; }
+.sessions-page .sessions-table td:nth-child(6),
+.sessions-page .sessions-table td:nth-child(7) { font-family: var(--font-mono); }
+
+/* 表头吸顶：长列表滚动时列名不丢 */
+.sessions-page .sessions-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-secondary);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* 行：hover 统一 --color-bg-tertiary，去掉历史规则里的位移/投影抖动 */
+.sessions-page .sessions-table tbody tr {
+  height: 56px;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+
+.sessions-page .sessions-table tbody tr:hover {
+  background: var(--color-bg-tertiary);
+  transform: none;
+  box-shadow: none;
+}
+
+.sessions-page .sessions-table tbody tr:hover td {
+  background: transparent;
+}
+
+.sessions-page .sessions-table tbody tr.selected {
+  background: color-mix(in srgb, var(--color-primary) 10%, transparent);
+}
+
+.sessions-page .sessions-table tbody tr.selected:hover {
+  background: color-mix(in srgb, var(--color-primary) 14%, transparent);
+}
+
+/* 选中/激活行左侧强调：透明边框占位，切换时不产生 2px 位移 */
+.sessions-page .sessions-table tbody td:first-child {
+  border-left: 2px solid transparent;
+}
+
+.sessions-page .sessions-table tbody tr.selected td:first-child {
+  border-left-color: var(--color-primary);
+}
+
+/* ── 单元格内容：省略号 + 提示（title 由组件给出） ── */
+.sessions-page .status-cell {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+}
+
+.sessions-page .relay-badge {
+  display: inline-flex;
+  align-items: center;
+}
+
+/* 空态里的「清除筛选」：不复用 .btn-small（该历史类在 1719 行被硬编码深色覆盖） */
+.sessions-page .sessions-clear-btn {
+  margin-top: var(--sp-1);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  color: var(--color-text-secondary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: border-color var(--transition), color var(--transition);
+}
+
+.sessions-page .sessions-clear-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.sessions-page .hostname-cell {
+  justify-content: flex-start;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: 0;
+}
+
+.sessions-page .hostname-cell svg {
+  flex-shrink: 0;
+  color: var(--color-text-muted);
+}
+
+.sessions-page .hostname-cell span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-page .user-cell {
+  min-width: 0;
+  padding: 0;
+}
+
+.sessions-page .user-cell .username,
+.sessions-page .user-cell .domain {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-page .os-cell {
+  min-width: 0;
+  padding: 0;
+}
+
+.sessions-page .os-cell span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 窄屏：隐藏计数，工具条自动换行 ── */
+@media (max-width: 1024px) {
+  .sessions-page .sessions-total {
+    display: none;
+  }
+}
+

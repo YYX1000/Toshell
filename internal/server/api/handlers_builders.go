@@ -88,7 +88,8 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			}(),
 			// BOF 默认关闭：需要跑 BOF 时在页面上勾选（会带上一整套 Beacon* API 名字）
 			"bof_default": false,
-			// DLL 载荷可用性（真正 c-shared DLL 需要与目标架构匹配的 mingw gcc）
+			// DLL 载荷可用性：**按目标架构分别返回**（c-shared 需要与架构一致的 mingw gcc：
+			// x64 要 x86_64-w64-mingw32-gcc。只有 i686 时前端应当场提示，而不是等构建失败）
 			"dll_available": func() bool {
 				ok, _ := builder.DLLStatus("amd64")
 				return ok
@@ -96,6 +97,14 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"dll_message": func() string {
 				_, msg := builder.DLLStatus("amd64")
 				return msg
+			}(),
+			"dll_arch": func() map[string]interface{} {
+				out := map[string]interface{}{}
+				for _, a := range []string{"amd64", "386", "arm64"} {
+					ok, msg := builder.DLLStatus(a)
+					out[a] = map[string]interface{}{"available": ok, "message": msg}
+				}
+				return out
 			}(),
 		},
 	})

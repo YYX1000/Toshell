@@ -1,12 +1,12 @@
 # ToShell 后续优化路线（ROADMAP）
 
-> 记录 v1.3.6 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
+> 记录 v1.3.5 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
 > 已完成的项归档在本文件底部「已完成」章节；更新日志见 `CHANGELOG.md`。
 > **本文只聚焦「下一步要做什么、为什么」**，不重复发版说明。
 
 ---
 
-## 当前版本状态（v1.3.6）
+## 当前版本状态（v1.3.5）
 
 | 能力 | 状态 |
 |---|---|
@@ -118,24 +118,21 @@
 
 ## 已完成（归档，见 `CHANGELOG.md` 对应版本）
 
-<details>
-<summary><b>v1.3.6（2026-09）</b></summary>
 
-- ✅ **DLL 载荷修成真 DLL（P0-5 落地链的关键前置）**：`format=dll` 以前因 `CGO_ENABLED=0` 下 `import "C"` 被静默跳过，产物其实是"改了扩展名的 EXE"（实测 `IMAGE_FILE_DLL=false`、导出表为空），白加黑/rundll32 三条链第一步就失败。现在用 `-buildmode=c-shared + mingw-w64 gcc`（**要求与目标架构一致的 gcc**，否则明确报错而不是产出错误架构的 DLL）编译真 DLL：`IMAGE_FILE_DLL=true` + 导出表；默认**加载即启动**（`init()` → `go startImplant()`），导出名可配（默认 `Start`，可填宿主期望的系统 API 名；C 侧 `__stdcall` 包装，386 用 `-Wl,--kill-at` 剥 `@16`）；能力接口新增 `dll_available/dll_message`，生成载荷页显示缺哪个 gcc。实测 386 DLL 导出 `Start` 与自定义 `GetFileVersionInfoW` 均正确。
-- ✅ **共享库构建取舍（如实说明）**：cgo 包不能带 Go 汇编 → 排除 PEB 汇编与 amd64 直接系统调用，新增 `directsyscall_windows_amd64_shared.go` 走 apihash 回退；`main.go` 拆出 `startImplant()`（DLL/exe 共用）+ `entry_exec.go`（`!shared`）。
-- ✅ **修 JSON 响应 bug**：构建失败时错误文本含换行会产出非法 JSON（前端只看到"解析失败"而非真正原因），新增 `writeJSONError` 并改写构建相关错误响应。
-
-</details>
 
 <details>
 <summary><b>v1.3.5（2026-09）</b></summary>
 
+- ✅ **Web 控制台 UI 全面优化**：修掉"短别名变量没定义、只有深色兜底值"导致**浅色主题配色错误**的根因，统一 token（颜色/间距/字号/动效/焦点环）；新增一层基础件（`web/src/components/ui`：Card/Section/Badge/RiskBadge/Callout/Field/Check/Empty/Skeleton/Stat/KeyValue/Toolbar/Code）与 `ui-*` 工具类；生成载荷页把 30 多个控件收进可折叠分组、一键上线命令改为**分组筛选 + 搜索 + 复制全部 + 风险等级徽标**、新增**落地建议**与**签名结论**提示、`dll` 格式出现导出名与"加载即启动"选项；侧栏折叠持久化与窄屏浮层、会话详情 13 个 tab 改为单行横滚 + 吸顶、仪表盘/会话列表/设置/登录/关于统一卡片与空态/骨架屏；设置页新增 `builder.sign_*` 等构建配置可视化填写。
 - ✅ **构建后代码签名（P0-5）**：pfx / 证书存储指纹两种模式；签名栈优先 signtool、回退系统自带 PowerShell（密码走环境变量、不进命令行）；签名后复核并回传签名者/状态/中文说明；前端「上次构建」显示签名结果。实测自签证书已签上（`SignatureType=Authenticode`、+1.4KB），并修掉两个真实坑：PowerShell 5.1 的 `Get-PfxCertificate` 无 `-Password`；`UnknownError` + 有签名者应判为"已签名但链不受信任"。
 - ✅ **8 条加载器链 + 落地建议（P0-5）**：白加黑 DLL 侧加载 / 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / PowerShell 内存注入 shellcode / mshta + 宿主注入骨架，每条带 `note`（前置条件 + 风险等级）；`LoaderAdvice()` → `loader_advice_title/tips` 给出降级顺序；新增 `docs/LOADERS.md`。
 - ✅ **BOF 按需编译（P0-5）**：`-tags bof` 才编译，默认载荷 `beaconAPI=0`（勾选后 22），full 档案最后一项高信号明文消失；新增 `TestBOFIsOptIn`。
 - ✅ **Go 构建期指纹擦除（P0-5）**：`ScrubGoFingerprint` 擦除 buildinfo 魔数 / 窗口内版本串 / `Go build ID:` 前缀（长度不变），exe 与 dll 路径都接入，实测均归零；单测覆盖擦除/幂等/边界。
 - ✅ **版本 1.3.5**：全量版本号统一。
 
+- ✅ **DLL 载荷修成真 DLL（P0-5 落地链的关键前置）**：`format=dll` 以前因 `CGO_ENABLED=0` 下 `import "C"` 被静默跳过，产物其实是"改了扩展名的 EXE"（实测 `IMAGE_FILE_DLL=false`、导出表为空），白加黑/rundll32 三条链第一步就失败。现在用 `-buildmode=c-shared + mingw-w64 gcc`（**要求与目标架构一致的 gcc**，否则明确报错而不是产出错误架构的 DLL）编译真 DLL：`IMAGE_FILE_DLL=true` + 导出表；默认**加载即启动**（`init()` → `go startImplant()`），导出名可配（默认 `Start`，可填宿主期望的系统 API 名；C 侧 `__stdcall` 包装，386 用 `-Wl,--kill-at` 剥 `@16`）；能力接口新增 `dll_available/dll_message`，生成载荷页显示缺哪个 gcc。实测 386 DLL 导出 `Start` 与自定义 `GetFileVersionInfoW` 均正确。
+- ✅ **共享库构建取舍（如实说明）**：cgo 包不能带 Go 汇编 → 排除 PEB 汇编与 amd64 直接系统调用，新增 `directsyscall_windows_amd64_shared.go` 走 apihash 回退；`main.go` 拆出 `startImplant()`（DLL/exe 共用）+ `entry_exec.go`（`!shared`）。
+- ✅ **修 JSON 响应 bug**：构建失败时错误文本含换行会产出非法 JSON（前端只看到"解析失败"而非真正原因），新增 `writeJSONError` 并改写构建相关错误响应。
 </details>
 
 <details>

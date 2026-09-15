@@ -1,7 +1,9 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Trash2, Monitor, Network } from 'lucide-react'
+import { Trash2, Monitor, Network, WifiOff } from 'lucide-react'
 import { sessionApi } from '../api'
+import { Badge, Empty } from './ui'
+import type { BadgeTone } from './ui'
 import type { Session } from '../types'
 
 interface SessionTableProps {
@@ -13,6 +15,39 @@ interface SessionTableProps {
   embedded?: boolean
   /** 外部搜索过滤词（由父组件管理搜索） */
   searchFilter?: string
+  /** 外部状态过滤（'all' 或后端状态值，客户端过滤） */
+  statusFilter?: string
+  /** 清除搜索/筛选（空态里的「清除筛选」按钮用） */
+  onClearFilters?: () => void
+}
+
+/** 会话状态 → 统一徽标（会话页表格与会话详情共用同一套文案/配色） */
+const STATUS_BADGE: Record<string, { label: string; tone: BadgeTone }> = {
+  active: { label: '在线', tone: 'ok' },
+  dead: { label: '离线', tone: 'danger' },
+  sleep: { label: '休眠', tone: 'warn' },
+}
+
+export function sessionStatusBadge(status: string): { label: string; tone: BadgeTone } {
+  return STATUS_BADGE[status] || { label: status || '未知', tone: 'default' }
+}
+
+/**
+ * 心跳相对时间：自己算一个轻量工具函数（不引依赖），每秒随父组件 tick 重渲染。
+ * 新鲜 → ok；≥1 分钟 → 默认；≥5 分钟 → warn；≥1 小时 → danger。
+ */
+export function heartbeatBadge(lastSeen: string): { text: string; tone: BadgeTone } {
+  if (!lastSeen) return { text: '—', tone: 'default' }
+  const t = new Date(lastSeen).getTime()
+  if (isNaN(t)) return { text: '—', tone: 'default' }
+  const seconds = Math.floor((Date.now() - t) / 1000)
+  if (seconds < 0) return { text: '刚刚', tone: 'ok' }
+  if (seconds < 60) return { text: `${seconds}s 前`, tone: 'ok' }
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return { text: `${minutes}m 前`, tone: minutes < 5 ? 'default' : 'warn' }
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return { text: `${hours}h 前`, tone: 'warn' }
+  return { text: `${Math.floor(hours / 24)}d 前`, tone: 'danger' }
 }
 
 export function SessionTable({
@@ -22,18 +57,21 @@ export function SessionTable({
   onSessionsChange,
   embedded: _embedded = false,
   searchFilter = '',
+  statusFilter = 'all',
+  onClearFilters,
 }: SessionTableProps) {
   const navigate = useNavigate()
 
+  const query = (searchFilter || '').trim().toLowerCase()
+  // 客户端过滤：主机名 / 用户名 / IP / 进程名 / 会话 ID；状态筛选同样在本地完成
   const filteredSessions = Array.isArray(sessions)
     ? sessions
-        .filter(
-          (s) =>
-            !searchFilter ||
-            s.hostname?.toLowerCase().includes(searchFilter.toLowerCase()) ||
-            s.username?.toLowerCase().includes(searchFilter.toLowerCase()) ||
-            s.id.includes(searchFilter)
-        )
+        .filter((s) => {
+          if (statusFilter && statusFilter !== 'all' && (s.status || '') !== statusFilter) return false
+          if (!query) return true
+          return [s.hostname, s.username, s.remote_addr, s.process_name, s.id]
+            .some((v) => (v || '').toLowerCase().includes(query))
+        })
         .sort(
           (a, b) => new Date(b.first_seen).getTime() - new Date(a.first_seen).getTime()
         )
@@ -77,31 +115,12 @@ export function SessionTable({
     setEditingValue('')
   }
 
-  // 每秒触发一次重渲染，让心跳秒数实时走动
+  // 每秒触发一次重渲染，让心跳相对时间实时走动
   const [, setTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setTick((x) => x + 1), 1000)
     return () => clearInterval(t)
   }, [])
-
-  const getStatusBadge = (status: string) => {
-    const map: Record<string, { label: string; class: string }> = {
-      active: { label: '活跃', class: 'success' },
-      dead: { label: '离线', class: 'danger' },
-      sleep: { label: '休眠', class: 'warning' },
-    }
-    return map[status] || { label: status, class: '' }
-  }
-
-  const getHeartbeat = (lastSeen: string) => {
-    if (!lastSeen) return { text: '-', className: '' }
-    const seconds = Math.floor((Date.now() - new Date(lastSeen).getTime()) / 1000)
-    if (seconds < 0) return { text: '0s', className: 'heartbeat-fresh' }
-    if (seconds < 30) return { text: `${seconds}s`, className: 'heartbeat-fresh' }
-    if (seconds < 60) return { text: `${seconds}s`, className: 'heartbeat-normal' }
-    if (seconds < 90) return { text: `${seconds}s`, className: 'heartbeat-warning' }
-    return { text: `${seconds}s`, className: 'heartbeat-danger' }
-  }
 
   const tableEl = (
     <div className="sessions-list-panel">
@@ -110,59 +129,93 @@ export function SessionTable({
           <tr><th>#</th><th>备注</th><th>状态</th><th>主机名</th><th>用户</th><th>进程ID</th><th>内网IP</th><th>操作系统</th><th>心跳</th><th>操作</th></tr>
         </thead>
         <tbody>
-          {filteredSessions.map((session, index) => (
-            <tr
-              key={session.id}
-              className={selectedSession?.id === session.id ? 'selected' : ''}
-              onClick={() => onSelectSession(session)}
-            >
-              <td><span className="session-index">{index + 1}</span></td>
-              <td>
-                <div className="comment-cell" onClick={(e) => e.stopPropagation()}>
-                  {editingId === session.id ? (
-                    <input
-                      className="comment-input"
-                      value={editingValue}
-                      onChange={(e) => setEditingValue(e.target.value)}
-                      onBlur={() => saveEdit(session.id)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur() } if (e.key === 'Escape') { setEditingId(null); setEditingValue('') } }}
-                      autoFocus
-                      placeholder="添加备注"
-                    />
-                  ) : (
-                    <span className="comment-text" title="点击编辑备注" onClick={() => startEdit(session)}>
-                      {session.comment || <span className="comment-placeholder">点击添加</span>}
-                    </span>
-                  )}
-                </div>
-              </td>
-              <td>
-                <span className={`status-badge ${getStatusBadge(session.status || '').class}`}>{getStatusBadge(session.status || '').label}</span>
-                {session.listener?.startsWith('relay') && (
-                  <span
-                    className="status-badge"
-                    title="经中继链回连（Beacon Mesh）"
-                    style={{ marginLeft: 4, background: 'rgba(140,90,255,0.15)', color: '#b48cff', border: '1px solid rgba(140,90,255,0.4)' }}
-                  >
-                    {session.listener === 'relay' ? '中继' : `中继×${session.listener.slice(5)}`}
-                  </span>
-                )}
-              </td>
-              <td><div className="hostname-cell"><Monitor size={16} /><span>{session.hostname || '-'}</span></div></td>
-              <td><div className="user-cell"><span className="username">{session.username || '-'}</span><span className="domain">@{session.domain || '-'}</span></div></td>
-              <td><span className="mono">{session.pid || '-'}</span></td>
-              <td><span className="mono">{session.remote_addr ? session.remote_addr.split(':')[0] : '-'}</span></td>
-              <td><div className="os-cell"><span>{session.os || '-'}</span></div></td>
-              <td><span className={`heartbeat ${getHeartbeat(session.last_seen).className}`}>{getHeartbeat(session.last_seen).text}</span></td>
-              <td><div className="actions">
-                <button className="action-btn" title="创建SOCKS5代理" onClick={(e) => { e.stopPropagation(); navigate(`/tunnels?session=${session.id}`) }}><Network size={16} /></button>
-                <button className="action-btn danger" title="删除" onClick={(e) => { e.stopPropagation(); setConfirmDelete(session) }}><Trash2 size={16} /></button>
-              </div></td>
-            </tr>
-          ))}
+          {filteredSessions.map((session, index) => {
+            const st = sessionStatusBadge(session.status || '')
+            const hb = heartbeatBadge(session.last_seen)
+            const ip = session.remote_addr ? session.remote_addr.split(':')[0] : ''
+            return (
+              <tr
+                key={session.id}
+                className={selectedSession?.id === session.id ? 'selected' : ''}
+                onClick={() => onSelectSession(session)}
+              >
+                <td><span className="session-index">{index + 1}</span></td>
+                <td>
+                  <div className="comment-cell" onClick={(e) => e.stopPropagation()}>
+                    {editingId === session.id ? (
+                      <input
+                        className="comment-input"
+                        value={editingValue}
+                        onChange={(e) => setEditingValue(e.target.value)}
+                        onBlur={() => saveEdit(session.id)}
+                        onKeyDown={(e) => { if (e.key === 'Enter') { e.currentTarget.blur() } if (e.key === 'Escape') { setEditingId(null); setEditingValue('') } }}
+                        autoFocus
+                        placeholder="添加备注"
+                      />
+                    ) : (
+                      <span className="comment-text" title={session.comment || '点击编辑备注'} onClick={() => startEdit(session)}>
+                        {session.comment || <span className="comment-placeholder">点击添加</span>}
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <div className="status-cell">
+                    <Badge tone={st.tone}>{st.label}</Badge>
+                    {session.listener?.startsWith('relay') && (
+                      <span className="relay-badge" title="经中继链回连（Beacon Mesh）">
+                        <Badge tone="accent">
+                          {session.listener === 'relay' ? '中继' : `中继×${session.listener.slice(5)}`}
+                        </Badge>
+                      </span>
+                    )}
+                  </div>
+                </td>
+                <td>
+                  <div className="hostname-cell" title={session.hostname || '-'}>
+                    <Monitor size={15} />
+                    <span>{session.hostname || '-'}</span>
+                  </div>
+                </td>
+                <td>
+                  <div className="user-cell" title={`${session.username || '-'}@${session.domain || '-'}`}>
+                    <span className="username">{session.username || '-'}</span>
+                    <span className="domain">@{session.domain || '-'}</span>
+                  </div>
+                </td>
+                <td><span className="mono" title={session.pid ? String(session.pid) : undefined}>{session.pid || '-'}</span></td>
+                <td><span className="mono" title={ip || undefined}>{ip || '-'}</span></td>
+                <td><div className="os-cell" title={`${session.os || '-'} ${session.arch || ''}`.trim()}><span>{session.os || '-'}</span></div></td>
+                <td><Badge tone={hb.tone}>{hb.text}</Badge></td>
+                <td><div className="actions">
+                  <button className="action-btn" title="创建SOCKS5代理" onClick={(e) => { e.stopPropagation(); navigate(`/tunnels?session=${session.id}`) }}><Network size={16} /></button>
+                  <button className="action-btn danger" title="删除" onClick={(e) => { e.stopPropagation(); setConfirmDelete(session) }}><Trash2 size={16} /></button>
+                </div></td>
+              </tr>
+            )
+          })}
         </tbody>
       </table>
-      {filteredSessions.length === 0 && <div className="empty-state"><Network size={48} /><p>暂无会话</p></div>}
+      {filteredSessions.length === 0 && (
+        sessions.length === 0 ? (
+          <Empty
+            icon={<WifiOff size={26} />}
+            title="还没有会话"
+            desc="植入端首次上线后会自动出现在这里"
+          />
+        ) : (
+          <Empty
+            icon={<Network size={26} />}
+            title="没有匹配的会话"
+            desc="换个关键词，或清除状态筛选后再试"
+            action={
+              <button type="button" className="sessions-clear-btn" onClick={onClearFilters}>
+                清除筛选
+              </button>
+            }
+          />
+        )
+      )}
     </div>
   )
 

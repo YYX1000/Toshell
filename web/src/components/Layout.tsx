@@ -80,11 +80,24 @@ const navGroups: NavGroup[] = [
 ]
 
 export function Layout({ children }: { children: ReactNode }) {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
+  // 折叠状态持久化：刷新/切页后不再每次都展开（窄屏默认折叠）。
+  const [sidebarOpen, setSidebarOpen] = useState<boolean>(() => {
+    const saved = localStorage.getItem('toshell.sidebar')
+    if (saved === 'collapsed') return false
+    if (saved === 'open') return true
+    return typeof window !== 'undefined' ? window.innerWidth > 1100 : true
+  })
   const location = useLocation()
   const { logout, username } = useAuthStore()
   const { theme, toggleTheme } = useThemeStore()
   const { t, lang, setLang } = useI18n()
+
+  const toggleSidebar = () => {
+    setSidebarOpen((v) => {
+      localStorage.setItem('toshell.sidebar', v ? 'collapsed' : 'open')
+      return !v
+    })
+  }
 
   const handleLogout = () => {
     logout()
@@ -99,13 +112,16 @@ export function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className="layout">
+      {/* 窄屏（<900px）展开侧栏时的遮罩：点一下收起，避免"挡住了看不到主区" */}
+      {sidebarOpen && <div className="sidebar-backdrop" onClick={toggleSidebar} />}
+
       <aside className={`sidebar ${sidebarOpen ? 'open' : 'collapsed'}`}>
         <div className="sidebar-header">
           <div className="logo">
             <Shell size={28} className="logo-icon" />
             {sidebarOpen && <span className="logo-text">ToShell</span>}
           </div>
-          <button className="toggle-btn" onClick={() => setSidebarOpen(!sidebarOpen)}>
+          <button className="toggle-btn" onClick={toggleSidebar} title={sidebarOpen ? '收起侧栏' : '展开侧栏'}>
             {sidebarOpen ? <X size={18} /> : <Menu size={18} />}
           </button>
         </div>
@@ -118,7 +134,16 @@ export function Layout({ children }: { children: ReactNode }) {
                 <NavLink
                   key={item.path}
                   to={item.path}
+                  // 折叠时只剩图标：用 title 提供悬浮提示，避免"认不出是哪个功能"
+                  title={sidebarOpen ? undefined : t(item.tKey)}
                   className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+                  onClick={() => {
+                    // 窄屏点完导航自动收起侧栏（否则遮住内容）
+                    if (window.innerWidth <= 900) {
+                      setSidebarOpen(false)
+                      localStorage.setItem('toshell.sidebar', 'collapsed')
+                    }
+                  }}
                 >
                   {item.icon}
                   {sidebarOpen && <span>{t(item.tKey)}</span>}
@@ -135,7 +160,7 @@ export function Layout({ children }: { children: ReactNode }) {
               <span className="username">{username}</span>
             </div>
           )}
-          <button className="logout-btn" onClick={handleLogout}>
+          <button className="logout-btn" onClick={handleLogout} title={sidebarOpen ? undefined : t('common.logout')}>
             <LogOut size={18} />
             {sidebarOpen && <span>{t('common.logout')}</span>}
           </button>
@@ -144,6 +169,10 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <main className="main-content">
         <header className="topbar">
+          {/* 窄屏时侧栏是浮层，顶栏需要一个"汉堡"入口 */}
+          <button className="topbar-menu-btn" onClick={toggleSidebar} title="菜单">
+            <Menu size={18} />
+          </button>
           <div className="page-title">{pageTitle}</div>
           <div className="topbar-actions">
             <NotificationCenter />
@@ -154,7 +183,7 @@ export function Layout({ children }: { children: ReactNode }) {
             <button className="theme-toggle" onClick={toggleTheme} title={theme === 'dark' ? t('theme.toLight') : t('theme.toDark')}>
               {theme === 'dark' ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <div className="status-indicator online">
+            <div className="status-indicator online" title="控制台与后端的实时连接状态">
               <span className="status-dot" />
               {t('common.online')}
             </div>

@@ -14,6 +14,8 @@ import { FilelessExecPanel } from './FilelessExecPanel'
 import { ScreenStreamPanel } from './ScreenStreamPanel'
 import { RelayPanel } from './RelayPanel'
 import { pluginApi, sessionApi } from '../api'
+import { Badge } from './ui'
+import './SessionDetail.css'
 
 export type DetailTab = 'info' | 'files' | 'process' | 'injection' | 'shell' | 'bof' | 'persistence' | 'screenshot' | 'credentials' | 'av' | 'fileless' | 'screenstream' | 'relay'
 
@@ -87,18 +89,26 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
   return (
     <div className="session-detail-panel">
       <div className="detail-header">
-        <div className="detail-title">
-          <Monitor size={20} />
-          <h3>{session.hostname}</h3>
-          <span
-            className={`status-badge ${
-              getStatusBadge(session.status || '').class
-            }`}
-          >
-            {getStatusBadge(session.status || '').label}
-          </span>
+        <div style={{ minWidth: 0 }}>
+          <div className="detail-title">
+            <Monitor size={20} />
+            <h3>{session.hostname}</h3>
+            <Badge tone={session.status === 'active' ? 'ok' : session.status === 'sleep' ? 'warn' : 'danger'}>
+              <span className="ui-dot" />
+              {getStatusBadge(session.status || '').label}
+            </Badge>
+          </div>
+          {/* 次要信息：面板顶部就能看出"这是哪台机器、什么系统、地址是什么" */}
+          <div className="detail-meta">
+            <span>{session.os || '未知系统'}{session.arch ? ` / ${session.arch}` : ''}</span>
+            {(session as { remote_addr?: string }).remote_addr && (
+              <span>· {(session as { remote_addr?: string }).remote_addr}</span>
+            )}
+            {session.process_name && <span>· {session.process_name}</span>}
+            {session.username && <span>· {session.username}</span>}
+          </div>
         </div>
-        <button className="close-btn" onClick={onClose}>
+        <button className="close-btn" onClick={onClose} title="关闭详情（Esc）">
           <X size={18} />
         </button>
       </div>
@@ -109,6 +119,7 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
             key={tab.key}
             className={`tab-btn ${effectiveTab === tab.key ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.key)}
+            title={tab.label}
           >
             {tab.icon} {tab.label}
           </button>

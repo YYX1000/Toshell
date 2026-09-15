@@ -58,7 +58,7 @@ export const zhDict: Dict = {
   'theme.toLight': '切换到亮色模式',
   'theme.toDark': '切换到暗色模式',
   // 登录
-  'login.subtitle': 'C2 命令控制平台',
+  'login.subtitle': '自托管远程管理控制台',
   'login.username': '用户名',
   'login.password': '密码',
   'login.submit': '登录',
@@ -109,7 +109,7 @@ export const enDict: Dict = {
   'nav.about': 'About',
   'theme.toLight': 'Switch to light mode',
   'theme.toDark': 'Switch to dark mode',
-  'login.subtitle': 'C2 Command & Control',
+  'login.subtitle': 'Self-hosted remote management console',
   'login.username': 'Username',
   'login.password': 'Password',
   'login.submit': 'Sign in',

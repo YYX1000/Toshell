@@ -1,6 +1,6 @@
 # ToShell Team Server 使用说明
 
-> **当前版本: v1.3.6(2026-09)** · 更新日志见文末「附」章节。
+> **当前版本: v1.3.5(2026-09)** · 更新日志见文末「附」章节。
 
 > ToShell 是一个自托管的 C2(命令与控制)框架,用于授权红队演练、渗透测试与安全研究。请仅在获得授权的前提下使用。
 
@@ -221,7 +221,7 @@ Import-Certificate -FilePath .\codesign.cer -CertStoreLocation Cert:\LocalMachin
 
 > **合规与前置**:本项目**不内置任何第三方加载器/宿主程序** —— 白加黑需要的已签名宿主 exe 及其 DLL 名、Squiblydoo 需要的 `.sct` 脚本,全部由操作员自备并自负合规责任。完整说明(何时用哪条、失败排查)见 [docs/LOADERS.md](docs/LOADERS.md)。
 
-#### 3.3.1 DLL 载荷怎么用(v1.3.6 起是**真 DLL**)
+#### 3.3.1 DLL 载荷怎么用(v1.3.5 起是**真 DLL**)
 
 生成载荷页把格式选成 `dll` 时:
 
@@ -451,13 +451,12 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 
 ## 附、更新日志与新增功能
 
-### v1.3.6(2026-09)
+### v1.3.5(2026-09)
+
 - **DLL 载荷修好了**:`format=dll` 以前其实是"改了扩展名的 EXE"——普通 `go build`(`CGO_ENABLED=0`)下 `import "C"` 的胶水被 Go 静默跳过,实测产物 `IMAGE_FILE_DLL=false`、无导出表,导致白加黑/rundll32 三条链第一步就失败。现在用 `-buildmode=c-shared + mingw-w64 gcc` 编译**真 DLL**:`IMAGE_FILE_DLL=true` + 导出表;默认**加载即启动**(Go 的 `init()` 在 c-shared 下执行 → `go startImplant()`),导出名可配置(默认 `Start`,可填宿主期望的系统 API 名),386 上用 `-Wl,--kill-at` 剥掉 `@16` 修饰以便 `rundll32 payload.dll,Start` 按字面名找到。要求 gcc 与目标架构一致(x64 需 `x86_64-w64-mingw32-gcc`),否则明确报错而不是产出错误架构的 DLL;能力接口新增 `dll_available/dll_message`,页面直接显示缺哪个 gcc。
 - **共享库构建的取舍(如实说明)**:Go 不允许 cgo 包带 Go 汇编,故 DLL 构建排除 PEB 汇编与 amd64 直接系统调用,新增 `directsyscall_windows_amd64_shared.go` 走 apihash 回退(功能不变,特征略增);`main.go` 入口拆成 `startImplant()`(DLL/exe 共用)+ `entry_exec.go`(`!shared`)。
 - **修 JSON 响应 bug**:构建失败时按 `{"error":"%s"}` 拼字符串,错误里含换行(编译失败信息几乎必然多行)时产出非法 JSON,前端 `JSON.parse` 抛错、只显示"解析失败"。新增 `writeJSONError` 并按此改写。
 - 实测:386 DLL 导出 `Start` / 自定义 `GetFileVersionInfoW` 均正确;请求 amd64 且本机只有 i686 gcc 时给出 `pacman -S mingw-w64-x86_64-gcc` 的明确提示。
-
-### v1.3.5(2026-09)
 - **构建后代码签名(Authenticode)**:新增服务端签名能力(证书文件 pfx 或本机证书存储指纹),构建产物在落盘前签名,接口返回 `signed/signer/sign_method/sign_status/sign_message`,生成载荷页直接显示"已签名/未签名原因"。实测:自签证书签名后 `SignatureType=Authenticode`、签名者与指纹一致、体积 +1.4KB;签名栈优先 `signtool.exe`(仅指纹模式,避免密码进命令行),否则回退系统自带 PowerShell(密码走环境变量)。踩坑修复:Windows PowerShell 5.1 的 `Get-PfxCertificate` 没有 `-Password` 参数,改用 `X509Certificate2(path,pw,flags)`;`Status=UnknownError` 且有签名者时语义是"已签名但链不受信任",不再误报"未签名"。
 - **8 条加载器链 + 落地建议**:`one_liners` 新增白加黑(DLL 侧加载)/ 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / PowerShell 内存注入 shellcode / mshta + 签名宿主注入(骨架),每条带 `note`(前置条件与国产杀软下风险等级);Windows `dll`/`shellcode` 格式以前回"不支持一条命令上线",现在返回加载器链。新增 `LoaderAdvice(targetOS, format, signed)` → 响应字段 `loader_advice_title/tips`,给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序。文档见 `docs/LOADERS.md`。
 - **BOF 改为按需编译(默认关)**:BOF 兼容层必须导出整套 `Beacon*` API 名字(实测 22 处明文,是 full 档案里唯一剩下的高信号特征),现改为 `-tags bof` 才编译;默认载荷 `beaconAPI=0`,勾选后为 22(证明门控生效)。生成载荷页新增「BOF 支持」开关。

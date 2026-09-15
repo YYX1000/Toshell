@@ -3,30 +3,21 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含驱动能力分档、内存执行加固、屏幕流跨平台、平台工具库与远程加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
-## [v1.3.6] - 2026-09-15
-
-重点：**把"白加黑 / rundll32"这条链修成真的能用** —— `format=dll` 以前产出的其实是"改了扩展名的 EXE"（Go 静默跳过 cgo 胶水），现在用 `-buildmode=c-shared + mingw` 编译**真正的 DLL**（IMAGE_FILE_DLL + 导出表 + 加载即启动），并可按宿主期望导出任意函数名。
-
-### 🧩 DLL 载荷修好了（v1.3.5 的加载器链只有它不是真的）
-- **问题（实测）**：`format=dll` 走的是普通 `go build`（`CGO_ENABLED=0`），而生成胶水里 `import "C"` 的文件在 CGO_ENABLED=0 下会被 Go **静默跳过**，产物是一个普通 EXE 改了扩展名 —— 实测 `IMAGE_FILE_DLL=false`、导出目录 RVA=0。也就是说 v1.3.5 给出的"白加黑（DLL 侧加载）""rundll32 侧加载""计划任务 + rundll32"三条链**第一步就失败**。
-- **修法**（`internal/server/builder/dll.go`）：
-  - `go build -buildmode=c-shared` + `CGO_ENABLED=1` + mingw-w64 gcc，**且要求 gcc 与目标架构一致**（x64 需要 `x86_64-w64-mingw32-gcc`；只有 i686 时会明确报错并给出安装命令，绝不产出一个架构不对的 DLL）；
-  - **加载即启动**：Go 的 `init()` 在 c-shared 下会执行 → `go startImplant()`，白加黑不用关心宿主调用哪个导出；可在页面取消勾选（去掉 `autostart` 标签）；
-  - **导出名可配**：C 侧 `__declspec(dllexport) void __stdcall <名字>(...)` 包装 → 调 Go 的 `tshEntry`。这样导出名可以填成**宿主期望的系统 API 名**（如 `GetFileVersionInfoW`）而不会与 windows.h 同名声明冲突；386 上再加 `-Wl,--kill-at` 剥掉 `@16` 修饰，`rundll32 payload.dll,Start` 才能按字面名找到导出；
-  - 服务端能力接口新增 `dll_available` / `dll_message`，生成载荷页直接显示"本机能不能构 DLL、缺哪个 gcc"。
-- **踩坑记录**：cgo 的 preamble 会被编进两个目标文件，把导出函数定义写在里面会 `multiple definition of 'Start@16'`（实测）→ 定义移到单独的 `dllentry.c`；`extern void tshEntry(void)` 声明留在 preamble。
-- **实测（本机 386，未执行 DLL）**：`isDLL=true`、`machine=0x14c`、导出表有 **`Start`**（默认）与 **`GetFileVersionInfoW`**（自定义名）；`dll_autostart=false` 时仍导出函数、只是没有 `init` 启动；请求 amd64 时因本机只有 i686 gcc 而**明确报错**（提示 `pacman -S mingw-w64-x86_64-gcc`）。
-
-### 🪟 配套：共享库构建的取舍（如实说明）
-- Go 不允许"使用 cgo 的包"同时带 Go 汇编文件（`package using cgo has Go assembly file`），所以 DLL 构建会排除 PEB 汇编（`getpeb_windows_*.s`）与 amd64 直接系统调用（`directsyscall_windows_amd64.{go,s}`），并新增 `directsyscall_windows_amd64_shared.go` 提供接口一致的 apihash 回退实现。
-- 代价：**DLL 载荷里没有 PEB 快速解析与直接系统调用**（回退 `LoadLibrary`/`GetProcAddress` + ntdll 导出），功能不变、静态与行为特征略增。需要这两条更强规避路径时用 `exe`/`raw` 格式；`main.go` 的入口也相应拆成 `startImplant()`（DLL 与 exe 共用）+ `entry_exec.go`（`!shared` 的 `main()`）。
-
-### 🩹 顺带修掉的 JSON 响应 bug
-- 构建失败时返回的是 `fmt.Sprintf(`{"error":"%s"}`, err)`：只要错误里含换行（编译失败信息几乎必然多行）产出的就是**非法 JSON**，前端 `JSON.parse` 直接抛错、用户只看到"解析失败"而不是真正的失败原因（本次实测踩到）。新增 `writeJSONError`（`json_response.go`）并按此改写构建相关错误响应。
-
 ## [v1.3.5] - 2026-09-15
 
-重点：**直击"开了国产杀软就起不来"** —— 构建后 **Authenticode 代码签名**（实测已签上、可复核）、**8 条加载器链**（白加黑/计划任务/LOLBin/内存加载，不落地未签名 PE）、**BOF 改为按需编译**（默认载荷 `beacon*` 归零）、**Go 构建期指纹擦除**（buildinfo 魔数 / build ID）。
+重点：**直击"开了国产杀软就起不来"** —— 构建后 **Authenticode 代码签名**（实测已签上、可复核）、**8 条加载器链**（白加黑/计划任务/LOLBin/内存加载，不落地未签名 PE）、**真 DLL 载荷**（c-shared + mingw，加载即启动、导出名可配，白加黑/rundll32 真正可用）、**BOF 改为按需编译**（默认载荷 `beacon*` 归零）、**Go 构建期指纹擦除**（buildinfo 魔数 / build ID）；同时做了**一次 Web 控制台 UI 全面优化**。
+
+### 🎨 Web 控制台 UI 全面优化
+- **先修一个根因**：很多组件写的是 `var(--text-dim, #9a9aab)` 这类"变量根本没定义、只有深色兜底值"的写法 —— **浅色主题下这些地方颜色全是错的**。现在把两套命名（`--color-*` 与 `--bg/--text/--border/--warn…` 短别名）统一指向同一组 token，并补齐**间距/字号/动效标尺**（`--sp-1..8`、`--fs-xs..2xl`、`--ring`、`--transition`）与**键盘焦点环**（`:focus-visible`，此前只有 `:hover`）。
+- **新增一层基础件** `web/src/components/ui/index.tsx` + `index.css` 里的 `ui-*` 工具类：`Card`（卡片）、`Section`（可折叠分组）、`Badge`/`RiskBadge`（状态与风险等级）、`Callout`（提示条）、`Field`/`Check`（表单字段）、`Empty`/`Skeleton`（空态与加载骨架）、`Stat`/`KeyValue`/`Toolbar`/`Code`。
+- **生成载荷页（改动最大）**：
+  - 「高级选项」与「免杀与落地选项」改成可折叠分组（后者带一句"默认按最小特征设置"的说明），一屏不再堆 30 多个控件；
+  - 结果面板新增：**落地建议**（`loader_advice_title/tips`，直接给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序）、**签名结论 Callout**（已签名/未签名 + 未签名时明确告诉你"装 360 的机器会拒绝执行"）；
+  - 一键上线命令从"一长条 10~14 条"改为**分组 + 搜索 + 复制全部**：`全部 / 下载即执行 / 加载器链` 分段切换、按命令/手法/前置条件搜索、每条标注 **加载器链 / 直连** 与**风险等级**徽标；
+  - `format=dll` 时出现「DLL 载荷」选项组：导出函数名（rundll32 用/白加黑可填宿主期望的系统 API 名）与「DLL 加载即启动」开关，并显示本机是否装了**架构匹配的 mingw gcc**（缺哪个一目了然）。
+- **布局与导航**：侧栏折叠状态持久化（`localStorage`）、折叠态图标居中并带 `title` 提示、窄屏（<900px）浮层侧栏加遮罩与顶部汉堡入口、点击导航自动收起；顶栏与内容区内边距在窄屏收敛。
+- **会话详情面板**：头部改成两行（主机名 + 状态徽标 / 系统·架构·地址·进程·用户），13 个 tab 改为**单行横向滚动**（不再换行把内容顶下去）+ 吸顶，关闭按钮改为 hover 变红防误点。
+- **各页面统一**：仪表盘与会话列表改用统一的卡片/统计块/徽标/空态/骨架屏（含"没有会话"与"筛选无结果"两种空态区分）、表头吸顶、窄屏自适应；设置页按语义分组（通用/监听与回连/植入端与载荷构建/通知/AI/账户/安全/日志），顶部吸顶保存条并显示"有未保存修改"，**新增代码签名等 `builder.sign_*` 配置项可直接在页面上填写**；登录页与关于页统一卡片化排版（版本 1.3.5 + 合规声明）。
 
 ### 🔏 构建后代码签名（Authenticode）——本版最重要的一项
 - **背景（实测）**：装有 360 安全卫士/腾讯电脑管家等国产安全软件的主机上，**未签名的新 PE 会在"创建进程"阶段被拒绝执行并删除文件**（连 Hello-World Go 程序也一样；微软签名的 `notepad.exe` 副本可正常运行）。改载荷代码对这一层无效，**签名是"能不能跑起来"的敲门砖**。
@@ -63,6 +54,23 @@
 ### 🩹 其它
 - `internal/server/builder/gate_scan_test.go` 同步 4 参数 `buildTagList`，并新增 `TestBOFIsOptIn`（默认 stub 不得含任何 Beacon 符号）。
 - 发版门禁脚本与 CI 校验沿用 v1.3.4（`scripts/e2e_smoke.ps1`、版本/包内容校验、`checksums.txt`）。
+
+### 🧩 DLL 载荷修好了（v1.3.5 的加载器链只有它不是真的）
+- **问题（实测）**：`format=dll` 走的是普通 `go build`（`CGO_ENABLED=0`），而生成胶水里 `import "C"` 的文件在 CGO_ENABLED=0 下会被 Go **静默跳过**，产物是一个普通 EXE 改了扩展名 —— 实测 `IMAGE_FILE_DLL=false`、导出目录 RVA=0。也就是说 v1.3.5 给出的"白加黑（DLL 侧加载）""rundll32 侧加载""计划任务 + rundll32"三条链**第一步就失败**。
+- **修法**（`internal/server/builder/dll.go`）：
+  - `go build -buildmode=c-shared` + `CGO_ENABLED=1` + mingw-w64 gcc，**且要求 gcc 与目标架构一致**（x64 需要 `x86_64-w64-mingw32-gcc`；只有 i686 时会明确报错并给出安装命令，绝不产出一个架构不对的 DLL）；
+  - **加载即启动**：Go 的 `init()` 在 c-shared 下会执行 → `go startImplant()`，白加黑不用关心宿主调用哪个导出；可在页面取消勾选（去掉 `autostart` 标签）；
+  - **导出名可配**：C 侧 `__declspec(dllexport) void __stdcall <名字>(...)` 包装 → 调 Go 的 `tshEntry`。这样导出名可以填成**宿主期望的系统 API 名**（如 `GetFileVersionInfoW`）而不会与 windows.h 同名声明冲突；386 上再加 `-Wl,--kill-at` 剥掉 `@16` 修饰，`rundll32 payload.dll,Start` 才能按字面名找到导出；
+  - 服务端能力接口新增 `dll_available` / `dll_message`，生成载荷页直接显示"本机能不能构 DLL、缺哪个 gcc"。
+- **踩坑记录**：cgo 的 preamble 会被编进两个目标文件，把导出函数定义写在里面会 `multiple definition of 'Start@16'`（实测）→ 定义移到单独的 `dllentry.c`；`extern void tshEntry(void)` 声明留在 preamble。
+- **实测（本机 386，未执行 DLL）**：`isDLL=true`、`machine=0x14c`、导出表有 **`Start`**（默认）与 **`GetFileVersionInfoW`**（自定义名）；`dll_autostart=false` 时仍导出函数、只是没有 `init` 启动；请求 amd64 时因本机只有 i686 gcc 而**明确报错**（提示 `pacman -S mingw-w64-x86_64-gcc`）。
+
+### 🪟 配套：共享库构建的取舍（如实说明）
+- Go 不允许"使用 cgo 的包"同时带 Go 汇编文件（`package using cgo has Go assembly file`），所以 DLL 构建会排除 PEB 汇编（`getpeb_windows_*.s`）与 amd64 直接系统调用（`directsyscall_windows_amd64.{go,s}`），并新增 `directsyscall_windows_amd64_shared.go` 提供接口一致的 apihash 回退实现。
+- 代价：**DLL 载荷里没有 PEB 快速解析与直接系统调用**（回退 `LoadLibrary`/`GetProcAddress` + ntdll 导出），功能不变、静态与行为特征略增。需要这两条更强规避路径时用 `exe`/`raw` 格式；`main.go` 的入口也相应拆成 `startImplant()`（DLL 与 exe 共用）+ `entry_exec.go`（`!shared` 的 `main()`）。
+
+### 🩹 顺带修掉的 JSON 响应 bug
+- 构建失败时返回的是 `fmt.Sprintf(`{"error":"%s"}`, err)`：只要错误里含换行（编译失败信息几乎必然多行）产出的就是**非法 JSON**，前端 `JSON.parse` 直接抛错、用户只看到"解析失败"而不是真正的失败原因（本次实测踩到）。新增 `writeJSONError`（`json_response.go`）并按此改写构建相关错误响应。
 
 ## [v1.3.4] - 2026-09-15
 

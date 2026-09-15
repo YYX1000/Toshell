@@ -3,7 +3,7 @@
 > 自托管的 C2（命令与控制）远程管理平台，用于**授权红队演练、渗透测试与安全研究**。
 > **仅限获得授权后使用。** 严禁未授权的入侵 / 攻击 / 数据窃取。
 
-**v1.3.6** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
+**v1.3.5** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
 
 ---
 
@@ -33,6 +33,12 @@ ToShell 是一个轻量 C2 框架，由 **服务端（Team Server）+ Web 控制
 - 每构建随机化（配置块魔数/密钥、字符串密钥、API 哈希种子）、编译期字符串混淆、apihash/PEB 动态解析、**启动随机延迟（可按载荷配置）+ 心跳抖动**。
 - **默认不做任何"枚举进程找杀软"的动作**（这类行为会被 360/火绒/电脑管家主动防御直接拦截）：需要时在生成载荷页显式勾选「主动反沙箱进程检测」。
 - 内存模块/驱动模块的**高信号函数名与文件名已中性化**（pclntab 里不再出现 `loadShellcode`/`memexe_windows.go` 这类明文），`light` 档案进一步裁剪全部重量级模块。
+- **构建后代码签名（Authenticode）**：pfx / 证书存储指纹两种模式，签完立刻复核并把签名者与状态回传界面；**BOF 改为按需编译**（默认载荷不含 `Beacon*` 名字）；**Go 构建期指纹擦除**（buildinfo 魔数 / 构建 ID）。
+- **落地方案**：除"下载即执行"外给出 **8 条加载器链**（白加黑 DLL 侧加载 / 计划任务 + 已签名宿主 / rundll32·mshta·certutil / 内存加载 shellcode），并按"是否已签名"给出**降级顺序**；`dll` 格式产出的是**真 DLL**（c-shared，加载即启动、导出名可配）。详见 [docs/LOADERS.md](docs/LOADERS.md)。
+
+**Web 控制台**
+- 统一的深/浅色主题与组件层（卡片/分组/徽标/提示条/空态/骨架屏），键盘焦点可见；侧栏折叠记忆、窄屏浮层。
+- 生成载荷页把 30 多个选项收进可折叠分组，一键上线命令支持**分组筛选 / 搜索 / 复制全部**并标注**风险等级**，结果面板直接给出**签名结论**与**落地建议**。
 
 **加密通信**
 - 控制帧 AES-256-GCM 认证加密 + 隧道数据 SM4-GCM（国密自研），密钥域分离；配置热更新。
@@ -156,7 +162,7 @@ go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
 
 登录 Web 控制台 →「生成载荷」→ 选平台 / 通道 / 免杀配置 → 构建 → 目标机运行即回连。
 
-### 构建档位与免杀边界（v1.3.6）
+### 构建档位与免杀边界（v1.3.5）
 
 | 选项 | 默认 | 说明 |
 |---|---|---|

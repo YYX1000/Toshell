@@ -1,7 +1,14 @@
+/* ═══════════════════════════════════════════════════════════════
+   驾驶舱（Dashboard）
+   约定（v1.3.5）：颜色/间距/字号一律走 index.css 的 token，
+   卡片统一用 components/ui 的 Card（.ui-card），统计统一用 Stat（.ui-stat）。
+   本文件只保留驾驶舱特有的布局：顶栏、统计栅格、图表高度、系统状态、面板行、信息条。
+   ═══════════════════════════════════════════════════════════════ */
+
 .dashboard {
   display: flex;
   flex-direction: column;
-  gap: 20px;
+  gap: var(--sp-4);
   padding: 0;
   max-width: 1280px;
   margin: 0 auto;
@@ -13,32 +20,32 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 16px;
+  gap: var(--sp-4);
   flex-wrap: wrap;
-  padding: 4px 0 8px;
+  padding: var(--sp-1) 0 var(--sp-2);
 }
 
 .dash-hero-left h1 {
-  font-size: 22px;
+  font-size: var(--fs-xl);
   font-weight: 700;
   color: var(--color-text);
-  margin: 0 0 4px;
+  margin: 0 0 var(--sp-1);
   letter-spacing: -0.3px;
 }
 
 .dash-hero-left p {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-muted);
 }
 
 .hero-live {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: var(--sp-1);
   color: var(--color-success);
   font-weight: 500;
 }
@@ -52,13 +59,13 @@
 }
 
 @keyframes livePulse {
-  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.4); }
-  50% { opacity: 0.7; box-shadow: 0 0 0 4px rgba(34, 197, 94, 0); }
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-success) 40%, transparent); }
+  50% { opacity: 0.7; box-shadow: 0 0 0 4px transparent; }
 }
 
 .dash-hero-actions {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   flex-wrap: wrap;
 }
 
@@ -66,15 +73,15 @@
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  padding: 8px 14px;
+  padding: var(--sp-2) var(--sp-4);
   border-radius: var(--radius-md);
   border: 1px solid var(--color-border);
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   cursor: pointer;
-  transition: all 0.2s;
+  transition: border-color var(--transition), color var(--transition), transform var(--transition);
   position: relative;
 }
 
@@ -94,7 +101,7 @@
   font-size: 10px;
   font-weight: 600;
   padding: 1px 7px;
-  border-radius: 10px;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--color-success) 20%, transparent);
   color: var(--color-success);
 }
@@ -104,185 +111,64 @@
   color: var(--color-text-muted);
 }
 
-/* ── 统计卡片 ── */
+/* ── 统计区（统一 .ui-stat，栅格自适应换行） ── */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
+  gap: var(--sp-4);
 }
 
-.stat-card {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 14px 16px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  transition: all 0.25s ease;
-  position: relative;
-  overflow: hidden;
-}
-
-.stat-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: linear-gradient(90deg, var(--color-primary), transparent);
-  opacity: 0.5;
-}
-
-.stat-card:hover {
-  transform: translateY(-2px);
-  border-color: var(--color-border-hover);
-  box-shadow: var(--shadow-md);
-}
-
-.stat-main {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-.stat-icon {
-  width: 40px;
-  height: 40px;
-  border-radius: 10px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.stat-icon.sessions { background: rgba(99, 102, 241, 0.15); color: var(--color-primary); }
-.stat-icon.tasks { background: rgba(245, 158, 11, 0.15); color: var(--color-warning); }
-.stat-icon.completed { background: rgba(34, 197, 94, 0.15); color: var(--color-success); }
-.stat-icon.failed { background: rgba(239, 68, 68, 0.15); color: var(--color-danger); }
-
-.stat-spark {
-  font-size: 12px;
-  color: var(--color-text-muted);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.stat-value {
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--color-text);
-  line-height: 1.1;
-  letter-spacing: -0.4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.stat-foot {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-end;
-  gap: 4px;
-  margin-left: auto;
-  flex-shrink: 0;
-}
-
-.stat-tag {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 11px;
-  font-weight: 500;
-  padding: 2px 8px;
-  border-radius: 10px;
-  white-space: nowrap;
-}
-
-.stat-tag.ok { background: color-mix(in srgb, var(--color-success) 12%, transparent); color: var(--color-success); }
-.stat-tag.warn { background: color-mix(in srgb, var(--color-warning) 12%, transparent); color: var(--color-warning); }
-.stat-tag.err { background: color-mix(in srgb, var(--color-danger) 12%, transparent); color: var(--color-danger); }
-.stat-tag.muted { background: color-mix(in srgb, var(--color-text-muted) 10%, transparent); color: var(--color-text-muted); }
-
-/* ── 图表 + 系统 ── */
+/* ── 图表 + 系统状态 ── */
 .charts-container {
   display: grid;
   grid-template-columns: 1.6fr 1fr;
-  gap: 14px;
+  gap: var(--sp-4);
+  align-items: start;
 }
 
-.chart-card,
-.system-card {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 18px;
-  min-height: 300px;
-  transition: all 0.25s ease;
+.dash-card {
+  min-width: 0;
 }
 
-.chart-card:hover,
-.system-card:hover {
-  border-color: var(--color-border-hover);
+/* 图表容器固定高度：数据刷新/recharts 重绘时整页不抖 */
+.chart-body {
+  height: 260px;
 }
 
-.chart-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 12px;
-  gap: 8px;
-}
-
-.chart-header h3 {
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--color-text);
+.chart-body--empty {
   display: flex;
   align-items: center;
-  gap: 8px;
-  margin: 0;
-}
-
-.chart-subtitle {
-  font-size: 11px;
-  color: var(--color-text-muted);
+  justify-content: center;
 }
 
 .chart-total {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--color-text-secondary);
   padding: 3px 10px;
   background: var(--color-bg-tertiary);
-  border-radius: 12px;
+  border-radius: 999px;
   white-space: nowrap;
 }
 
 .chart-total.mono {
   font-family: var(--font-mono);
-  font-size: 11px;
-  max-width: 140px;
+  font-size: var(--fs-xs);
+  max-width: 160px;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-
-.chart-body {
-  height: 260px;
 }
 
 .system-stats {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--sp-3);
 }
 
 .system-stat {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: var(--sp-3);
 }
 
 .system-stat-icon {
@@ -297,26 +183,28 @@
   flex-shrink: 0;
 }
 
-.system-stat-icon.mem { color: var(--color-warning); background: rgba(245, 158, 11, 0.1); }
-.system-stat-icon.heap { color: var(--color-success); background: rgba(34, 197, 94, 0.1); }
-.system-stat-icon.uptime { color: var(--color-info); background: rgba(59, 130, 246, 0.1); }
+.system-stat-icon.mem { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 12%, transparent); }
+.system-stat-icon.heap { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, transparent); }
+.system-stat-icon.uptime { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 12%, transparent); }
 
 .system-stat-info {
   flex: 1;
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 3px;
 }
 
 .system-stat-label {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
 }
 
 .system-stat-value {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--color-text);
+  font-variant-numeric: tabular-nums;
 }
 
 .progress-bar {
@@ -334,54 +222,34 @@
 }
 
 .progress-fill.memory {
-  background: linear-gradient(90deg, var(--color-warning), #fbbf24);
+  background: linear-gradient(90deg, var(--color-warning), color-mix(in srgb, var(--color-warning) 60%, #fff));
 }
 
 .progress-fill.disk {
-  background: linear-gradient(90deg, var(--color-success), #4ade80);
+  background: linear-gradient(90deg, var(--color-success), color-mix(in srgb, var(--color-success) 60%, #fff));
 }
 
 .system-meta {
   display: flex;
   justify-content: space-between;
-  padding-top: 10px;
+  gap: var(--sp-3);
+  padding-top: var(--sp-2);
   border-top: 1px dashed var(--color-border);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--color-text-muted);
 }
 
-/* ── 面板（最近会话/任务） ── */
+/* ── 面板（最近会话 / 最近任务） ── */
 .info-container {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 14px;
+  gap: var(--sp-4);
 }
 
-.panel-card {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 16px;
+.dash-panel {
   display: flex;
   flex-direction: column;
-  min-height: 260px;
-}
-
-.panel-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.panel-header h3 {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text);
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  margin: 0 0 2px;
+  min-height: 300px;
 }
 
 .panel-more {
@@ -391,11 +259,11 @@
   background: none;
   border: none;
   color: var(--color-text-muted);
-  font-size: 12px;
+  font-size: var(--fs-sm);
   cursor: pointer;
-  padding: 4px 6px;
+  padding: var(--sp-1) 6px;
   border-radius: 6px;
-  transition: all 0.15s;
+  transition: color var(--transition), background var(--transition);
 }
 
 .panel-more:hover {
@@ -409,27 +277,18 @@
   gap: 2px;
   overflow-y: auto;
   flex: 1;
-  max-height: 300px;
-}
-
-.panel-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 40px 16px;
-  color: var(--color-text-muted);
-  font-size: 13px;
+  min-height: 0;
+  max-height: 320px;
 }
 
 .panel-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 9px 10px;
-  border-radius: 8px;
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-2);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  transition: background 0.15s;
+  transition: background var(--transition);
 }
 
 .panel-row:hover {
@@ -439,20 +298,20 @@
 .os-badge {
   width: 30px;
   height: 30px;
-  border-radius: 8px;
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 700;
   flex-shrink: 0;
   background: var(--color-bg-tertiary);
   color: var(--color-text-secondary);
 }
 
-.os-badge.win { background: rgba(59, 130, 246, 0.15); color: #60a5fa; }
-.os-badge.lin { background: rgba(245, 158, 11, 0.15); color: #fbbf24; }
-.os-badge.mac { background: rgba(168, 85, 247, 0.15); color: #c084fc; }
+.os-badge.win { background: color-mix(in srgb, var(--color-info) 15%, transparent); color: var(--color-info); }
+.os-badge.lin { background: color-mix(in srgb, var(--color-warning) 15%, transparent); color: var(--color-warning); }
+.os-badge.mac { background: color-mix(in srgb, var(--color-primary) 15%, transparent); color: var(--color-primary-hover); }
 
 .panel-row-main {
   flex: 1;
@@ -463,7 +322,7 @@
 }
 
 .panel-row-title {
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 500;
   color: var(--color-text);
   white-space: nowrap;
@@ -475,7 +334,7 @@
 }
 
 .panel-row-sub {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--color-text-muted);
   white-space: nowrap;
   overflow: hidden;
@@ -499,13 +358,14 @@
   border-radius: 50%;
 }
 
-.status-dot.online { background: var(--color-success); box-shadow: 0 0 6px rgba(34, 197, 94, 0.5); }
+.status-dot.online { background: var(--color-success); box-shadow: 0 0 6px color-mix(in srgb, var(--color-success) 50%, transparent); }
 .status-dot.offline { background: var(--color-text-muted); }
 
 .panel-row-time {
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--color-text-muted);
   font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
 }
 
 .task-state {
@@ -523,7 +383,7 @@
   font-size: 10px;
   font-weight: 600;
   padding: 1px 8px;
-  border-radius: 10px;
+  border-radius: 999px;
   text-transform: uppercase;
   letter-spacing: 0.3px;
 }
@@ -536,9 +396,9 @@
 .server-strip {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: var(--sp-6);
   flex-wrap: wrap;
-  padding: 12px 18px;
+  padding: var(--sp-3) var(--sp-4);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -548,6 +408,7 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
+  min-width: 0;
 }
 
 .server-strip-item span {
@@ -558,7 +419,7 @@
 }
 
 .server-strip-item strong {
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--color-text);
   font-weight: 600;
 }
@@ -568,10 +429,10 @@
 .strip-link {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  font-size: 12px;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
-  transition: color 0.15s;
+  transition: color var(--transition);
 }
 
 .strip-link:hover { color: var(--color-primary); }
@@ -581,18 +442,14 @@
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── 响应式 ── */
-@media (max-width: 1100px) {
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+/* ── 响应式：<1200px 图表/面板改为单列，统计栅格自动换行 ── */
+@media (max-width: 1200px) {
   .charts-container { grid-template-columns: 1fr; }
-}
-
-@media (max-width: 800px) {
   .info-container { grid-template-columns: 1fr; }
-  .stats-grid { grid-template-columns: repeat(2, 1fr); }
-  .dash-hero { flex-direction: column; align-items: flex-start; }
 }
 
-@media (max-width: 560px) {
-  .stats-grid { grid-template-columns: 1fr; }
+@media (max-width: 640px) {
+  .dash-hero { flex-direction: column; align-items: flex-start; }
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .server-strip { gap: var(--sp-4); }
 }

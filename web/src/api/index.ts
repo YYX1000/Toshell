@@ -398,6 +398,10 @@ export interface BuildResponse {
   sign_status?: string
   /** 中文说明（未签名的原因 / 失败原因） */
   sign_message?: string
+  /** 落地链建议标题（按平台/格式 + 是否已签名给出"该走哪条链"） */
+  loader_advice_title?: string
+  /** 落地链建议要点，顺序即优先级（直接运行 → 计划任务 → 白加黑 → 内存加载） */
+  loader_advice_tips?: string[]
 }
 
 /** 一条命令上线的单个变体：由服务端生成，前端只做展示与复制 */
@@ -453,10 +457,12 @@ export interface BuilderInfo {
     sign_message?: string
     /** BOF 默认是否编译进载荷（恒为 false：需要时在页面勾选） */
     bof_default?: boolean
-    /** 本机能否构建真正的 DLL（需要与目标架构一致的 mingw-w64 gcc） */
+    /** 本机能否为 amd64 构建真正的 DLL（兼容字段；按架构判断请用 dll_arch） */
     dll_available?: boolean
     /** DLL 能力说明（不可用时给出安装哪种 gcc） */
     dll_message?: string
+    /** 按目标架构分别给出 DLL 能力：c-shared 需要与架构一致的 mingw gcc */
+    dll_arch?: Record<string, { available: boolean; message: string }>
   }
 }
 

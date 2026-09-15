@@ -1,19 +1,17 @@
+/* 关于页：卡片统一用 ui-card 基础件，这里只做页内栅格/尺寸与文档链接排版 */
+
 .about-page {
   display: flex;
   flex-direction: column;
-  gap: 28px;
+  gap: var(--sp-5);
   max-width: 900px;
   margin: 0 auto;
 }
 
-/* 头部区域 */
-.about-hero {
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  padding: 40px 32px;
+/* 头部区域（外层是 <Card className="about-hero-card">，双类名稳定覆盖 ui-card 内边距） */
+.about-hero-card.ui-card {
+  padding: 36px 32px;
   text-align: center;
-  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
 }
 
 .about-logo {
@@ -32,17 +30,15 @@
   color: var(--color-text);
 }
 
-.about-version {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-primary);
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  padding: 2px 12px;
-  border-radius: 999px;
+.about-version-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 4px;
 }
 
-.about-hero h2 {
+.about-hero-card h2 {
   margin: 0 0 10px 0;
   font-size: 18px;
   font-weight: 600;
@@ -51,7 +47,7 @@
 
 .about-slogan {
   margin: 0 auto;
-  font-size: 13px;
+  font-size: var(--fs-base);
   color: var(--color-text-secondary);
   line-height: 1.7;
   max-width: 560px;
@@ -74,7 +70,7 @@
   border-radius: var(--radius-md);
   color: var(--color-text);
   text-decoration: none;
-  font-size: 13px;
+  font-size: var(--fs-base);
   transition: all 0.2s ease;
 }
 
@@ -97,31 +93,21 @@
   background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--fs-base);
   font-weight: 600;
   color: var(--color-text);
-}
-
-/* 内容区块 */
-.about-section h3 {
-  margin: 0 0 16px 0;
-  font-size: 16px;
-  font-weight: 600;
-  color: var(--color-text);
-  padding-left: 10px;
-  border-left: 3px solid var(--color-primary);
 }
 
 /* 架构组成 */
 .about-arch {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 16px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
 }
 
 .about-arch-card {
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 20px;
@@ -129,37 +115,19 @@
 
 .about-arch-card h4 {
   margin: 0 0 8px 0;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--color-text);
 }
 
 .about-arch-card p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
   line-height: 1.6;
 }
 
-/* 提示块 */
-.about-note {
-  margin: 12px 0 0 0;
-  padding: 12px 14px;
-  background: var(--color-bg-tertiary);
-  border: 1px solid var(--color-border);
-  border-left: 3px solid var(--color-primary);
-  border-radius: var(--radius-md);
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  line-height: 1.7;
-}
-
-.about-note-warn {
-  border-left-color: var(--color-warning);
-  color: var(--color-warning);
-}
-
-/* 功能模块列表 */
+/* 能力清单 */
 .about-modules {
   list-style: none;
   margin: 0;
@@ -173,7 +141,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
   line-height: 1.6;
 }
@@ -190,7 +158,7 @@
 .about-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
+  font-size: var(--fs-sm);
 }
 
 .about-table th,
@@ -208,26 +176,28 @@
 }
 
 .about-table tr:nth-child(even) td {
-  background: var(--color-bg-secondary);
+  background: var(--color-bg);
 }
 
+/* 特性卡片栅格（核心特性 / 内置安全特性） */
 .about-features {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+  margin-bottom: 12px;
 }
 
 .about-feature-card {
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: 20px;
-  transition: all 0.3s ease;
+  transition: all 0.2s ease;
 }
 
 .about-feature-card:hover {
   transform: translateY(-2px);
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+  box-shadow: var(--shadow-md);
   border-color: var(--color-border-hover);
 }
 
@@ -238,14 +208,14 @@
 
 .about-feature-card h4 {
   margin: 0 0 8px 0;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 600;
   color: var(--color-text);
 }
 
 .about-feature-card p {
   margin: 0;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
   line-height: 1.6;
 }
@@ -259,39 +229,81 @@
 
 .about-tech-tag {
   padding: 6px 16px;
-  background: var(--color-bg-secondary);
+  background: var(--color-bg-tertiary);
   border: 1px solid var(--color-border);
   border-radius: 999px;
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--color-text-secondary);
+}
+
+/* 许可证与文档链接 */
+.about-docs {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--sp-2);
+}
+
+.about-doc {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 9px 12px;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text);
+  text-decoration: none;
+  font-size: var(--fs-base);
+  transition: all 0.2s ease;
+}
+
+.about-doc:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.about-doc-name {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+}
+
+.about-doc-desc {
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  margin-left: auto;
+}
+
+.about-doc-ext {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.about-docs-hint {
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  color: var(--color-text-muted);
+  line-height: 1.7;
 }
 
 /* 底部 */
 .about-footer {
   text-align: center;
-  padding: 20px 0 8px 0;
+  padding: 4px 0 8px 0;
 }
 
 .about-footer p {
   margin: 0;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: var(--color-text-muted);
 }
 
 @media (max-width: 768px) {
-  .about-features {
-    grid-template-columns: 1fr;
-  }
-
-  .about-arch {
-    grid-template-columns: 1fr;
-  }
-
+  .about-features,
   .about-modules {
     grid-template-columns: 1fr;
   }
 
-  .about-hero {
-    padding: 28px 20px;
+  .about-hero-card.ui-card {
+    padding: 24px 16px;
   }
 }

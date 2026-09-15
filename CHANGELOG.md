@@ -3,6 +3,46 @@
 本项目采用 [语义化版本](https://semver.org/lang/zh-CN/)。所有值得注意的改动都会记录在本文件。
 后续优化方向（含驱动能力分档、内存执行加固、屏幕流跨平台、平台工具库与远程加载型红队能力等）见 [ROADMAP.md](ROADMAP.md)。
 
+## [v1.3.5] - 2026-09-15
+
+重点：**直击"开了国产杀软就起不来"** —— 构建后 **Authenticode 代码签名**（实测已签上、可复核）、**8 条加载器链**（白加黑/计划任务/LOLBin/内存加载，不落地未签名 PE）、**BOF 改为按需编译**（默认载荷 `beacon*` 归零）、**Go 构建期指纹擦除**（buildinfo 魔数 / build ID）。
+
+### 🔏 构建后代码签名（Authenticode）——本版最重要的一项
+- **背景（实测）**：装有 360 安全卫士/腾讯电脑管家等国产安全软件的主机上，**未签名的新 PE 会在"创建进程"阶段被拒绝执行并删除文件**（连 Hello-World Go 程序也一样；微软签名的 `notepad.exe` 副本可正常运行）。改载荷代码对这一层无效，**签名是"能不能跑起来"的敲门砖**。
+- **服务端实现**（`internal/server/builder/sign.go`）：构建产物落盘前签名，`size`/`sha256` 按签名后的字节计算，保证下载物与接口一致。
+  - 证书两种模式：`sign_pfx_path` + `sign_pfx_password`（证书文件）或 `sign_thumbprint`（本机证书存储 `CurrentUser\My` 按指纹取证书）；
+  - 签名栈：优先 `signtool.exe`（配置路径 → PATH → Windows SDK 目录；**只有指纹模式**用它，避免证书密码进命令行），否则回退系统自带的 PowerShell `Set-AuthenticodeSignature`（**pfx 密码通过环境变量传给子进程，不出现在命令行**）；
+  - `sign_fail_closed=true` 时签名失败即放弃该载荷；默认只告警并返回未签名产物；
+  - 签名后立刻用 `Get-AuthenticodeSignature` 复核，把 **签名者/状态/中文说明**随构建响应回传（`signed/signer/sign_method/sign_status/sign_message`），前端「上次构建」直接显示。
+- **实测（本机端到端，未执行载荷）**：`New-SelfSignedCertificate` 生成自签证书 → 导出 pfx → 服务端构建 → 产物 `Get-AuthenticodeSignature`：`SignatureType=Authenticode`、`Signer=CN=ToShell Test Signing`（指纹一致）、体积 +1,427 字节；因自签根未导入，`Status=UnknownError`（"chain terminated in a root certificate which is not trusted"）——这正是自签名的预期状态，**导入目标机「受信任的根证书颁发机构」后即为 Valid**。
+- **踩坑记录**：Windows PowerShell 5.1 的 `Get-PfxCertificate` **没有 `-Password` 参数**（实测报"找不到与参数名称 Password 匹配的参数"），改为 `X509Certificate2(path, password, flags)` 构造函数（5.1/7 通用）；复核状态为 `UnknownError` 但取到签名者时，语义应是"**已签名、链不受信任**"而不是"未签名"，已按此修正结论文案。
+- 配置项与自签证书生成/导出/导入步骤写进 `configs/server.yaml.example`（两份）与 `USAGE.md`。
+
+### 🧩 加载器链：不把未签名 PE 落到目标机（8 条）
+- `oneLinerSet` 除原有「下载即执行」变体外，新增 **8 条加载器链**，每条都带 `note`（前置条件、占位符含义、**国产杀软下的风险等级**），前端直接渲染：
+  1. **白加黑 · 签名宿主 DLL 侧加载**（把 dll 改名成宿主会加载的 DLL 放同目录 → 启动签名宿主；磁盘上没有未签名 PE，风险中）；
+  2. **计划任务 · 已签名宿主加载**（`schtasks /create` + `/run` + `/delete`，动作 `rundll32` 加载我们的 DLL）；
+  3. **LOLBin · rundll32 侧加载**；4. **LOLBin · mshta 脚本下载并加载**（内联 JScript + WinHttp + ADODB.Stream）；
+  5. **LOLBin · regsvr32 Squiblydoo**（如实说明本项目不托管 `.sct`，需操作员自备）；
+  6. **LOLBin · certutil 下载 + 宿主加载**；7. **内存加载 · PowerShell 注入 shellcode**（不落地 PE，hex/`shellcode_bin` 分别解码）；8. **内存加载 · mshta + 签名宿主注入**（骨架）。
+- Windows `dll`/`shellcode`/`shellcode_bin` 以前只回"不支持一条命令上线"，现在返回纯文本加载器链（兼容字段 `one_liner` = 白加黑命令）；exe/raw 由 6 条变 14 条。
+- 新增纯函数 **`LoaderAdvice(targetOS, format, signed)`**：构建响应新增 `loader_advice_title` / `loader_advice_tips`，按"是否已签名 + 平台/格式"给出**该走哪条链、按什么顺序降级**（直接运行 → 计划任务 → 白加黑 → 内存加载），并写明"签名很脆弱：签名后再 UPX/改资源会让签名失效"。
+- 新增文档 **`docs/LOADERS.md`**：什么时候用哪条、前置条件、国产杀软下的风险、常见失败原因、合规声明。**本项目不内置任何第三方加载器/宿主程序**，宿主 exe 与其 DLL 名、SCT 脚本均由操作员自备并自负合规责任。
+
+### 🥷 BOF 改为按需编译（默认载荷 `beacon*` 归零）
+- 上一版体检里唯一剩下的高信号明文就是 BOF 兼容层的 **Cobalt Strike Beacon API 名字**（`BeaconDataParse`/`BeaconOutput`/`BeaconPrintf`… 实测 22 处，靠 pclntab 保留）。这是 BOF 二进制的符号契约、**不能改名**，所以改为**按需编译**：`bof_windows.go` 标签改成 `windows && !light && bof`，默认走新增的 `bof_stub_windows.go`（返回"BOF 未编译进本载荷"）。
+- 生成载荷页新增「BOF 支持」开关（默认关，提示代价）；服务端请求字段 `bof_enabled`。
+- **实测**：默认载荷 `beaconAPI=0`；勾选后 `beaconAPI=22`（证明门控生效），且体积从 3,551,880 → 3,656,840（+105KB，就是整套 BOF 兼容层）。
+
+### 🫥 Go 构建期指纹擦除（`internal/server/builder/harden.go`）
+- `-s -w` 去不掉 Go 的 **buildinfo 块**（`\xff Go buildinf:` 魔数 + 内嵌 Go 版本串）与构建 ID（`Go build ID:`），而它们是 Go 家族 YARA 规则最稳定的命中点。新增 `ScrubGoFingerprint(bin)`：**只做原地 0x00 覆盖、绝不改变长度**（PE 节表/RVA/重定位/UPX 输入全部不受影响），擦除 ① 全部 `\xff Go buildinf:` 16 字节头；② 该头后 512 字节窗口内的 `go1.x.y` 版本串；③ `Go build ID:` 前缀（规范形态连 ID 与换行一起清）。**pclntab / 符号表绝不触碰**（运行期栈回溯与 GC 的核心数据，且属 garble 的职责）。
+- 接入点：Go exe 与 DLL 两条编译路径（都在 UPX 之前），**实测**默认载荷 `Go buildinf=0`、`Go build ID:=0`。
+- 单测 `harden_test.go` 覆盖擦除/幂等/边界（窗口外版本串不动/非 Go 文件字节不变）。已知边界：函数**不能**用于服务端自身产物（服务端含 `pecheck.go` 的同类常量）。
+
+### 🩹 其它
+- `internal/server/builder/gate_scan_test.go` 同步 4 参数 `buildTagList`，并新增 `TestBOFIsOptIn`（默认 stub 不得含任何 Beacon 符号）。
+- 发版门禁脚本与 CI 校验沿用 v1.3.4（`scripts/e2e_smoke.ps1`、版本/包内容校验、`checksums.txt`）。
+
 ## [v1.3.4] - 2026-09-15
 
 重点：**动态（行为）查杀**排查与本机实测反差、植入端默认行为收敛（不再自动枚举进程查杀软）、pclntab 高信号标识符中性化、启动/心跳节奏参数与服务端配置真正生效、驱动加载前自检、内存执行载荷预检、发版端到端冒烟门禁。

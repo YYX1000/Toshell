@@ -1,6 +1,6 @@
 # ToShell Team Server 使用说明
 
-> **当前版本: v1.3.4(2026-09)** · 更新日志见文末「附」章节。
+> **当前版本: v1.3.5(2026-09)** · 更新日志见文末「附」章节。
 
 > ToShell 是一个自托管的 C2(命令与控制)框架,用于授权红队演练、渗透测试与安全研究。请仅在获得授权的前提下使用。
 
@@ -170,7 +170,56 @@ ToShell 由三部分组成:
 > 注意:混淆不改变载荷功能,但极个别杀软仍可能因行为特征报毒,建议结合 garble + UPX 使用。
 > **行为变化(v1.3.4 起)**:不再默认"枚举进程找杀软"。原实现在启动时遍历全系统进程并与一批安全软件进程名比对 —— 这是 360/火绒/电脑管家主动防御**明确拦截**的对抗行为,现在必须显式勾选「主动反沙箱进程检测」(`evasion_scan`)才会编译进载荷。
 > **如何确认参数真的生效**:服务端日志会打印 `rendering implant: … interval=… jitter=… startup_delay=… evasion_scan=… profile=…` 与 `compiling implant: … tags="…"`,这是唯一可信的"真正烘焙进载荷的值"。
-> **一个必须知道的边界**:装有 360/电脑管家等国产安全软件的主机上,**未签名的新 PE 常在创建进程阶段就被拒绝执行并删除**(实测连 Hello-World Go 程序也一样,而微软签名的 `notepad.exe` 副本可正常执行)。这类拦截与载荷代码无关,需要代码签名或改由已签名宿主加载,见 [ROADMAP.md](ROADMAP.md) 的 P0-5。
+> **一个必须知道的边界**:装有 360/电脑管家等国产安全软件的主机上,**未签名的新 PE 常在创建进程阶段就被拒绝执行并删除**(实测连 Hello-World Go 程序也一样,而微软签名的 `notepad.exe` 副本可正常执行)。这类拦截与载荷代码无关 —— v1.3.5 起有两条正解:**代码签名**(见 3.2)与**加载器链**(见 3.3)。
+
+### 3.2 代码签名(Authenticode):解决"装着 360 就跑不起来"
+
+**为什么**:未签名的新 PE 会被国产杀软的"未知程序"策略在创建进程阶段拦掉,这与载荷里写了什么代码无关。签名是"能不能跑起来"的敲门砖(不是免杀银弹:杀软还会看云端信誉与运行时行为)。
+
+**怎么配**(服务端 `configs/server.yaml` 的 `builder` 段,生成载荷页会自动显示"已配置/未配置"):
+
+```yaml
+builder:
+    sign_enabled: true
+    # 方式一:证书文件(密码通过环境变量传给子进程,不会出现在命令行里)
+    sign_pfx_path: "C:/path/codesign.pfx"
+    sign_pfx_password: "你的pfx密码"
+    # 方式二:用本机证书存储 CurrentUser\My 里的证书(填指纹;有 signtool.exe 时优先用它)
+    # sign_thumbprint: "A1B2C3..."
+    sign_timestamp_url: ""      # 时间戳服务器,内网/离线留空即可(失败不影响签名本身)
+    sign_signtool_path: ""      # 留空自动探测 PATH 与 Windows SDK 目录
+    sign_fail_closed: false     # true=签名失败就丢弃该载荷
+```
+
+**自签名证书(仅测试用)**:
+
+```powershell
+New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=YourName" `
+  -KeyUsage DigitalSignature -KeySpec Signature `
+  -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
+$c = Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -like '*YourName*'
+Export-PfxCertificate -Cert $c -FilePath .\codesign.pfx `
+  -Password (ConvertTo-SecureString '你的密码' -AsPlainText -Force)
+# 目标机上把证书导入"受信任的根证书颁发机构"后,签名状态才会是 Valid:
+Import-Certificate -FilePath .\codesign.cer -CertStoreLocation Cert:\LocalMachine\Root   # 需管理员
+```
+
+**怎么确认签上了**:生成载荷页会显示"已签名(签名者:CN=…)"或未签名原因;接口响应字段 `signed`/`signer`/`sign_method`/`sign_status`/`sign_message`;本机也可用
+`Get-AuthenticodeSignature .\payload.exe | Format-List Status,SignerCertificate` 复核。
+注意两个如实说明:
+- 状态 `UnknownError` + 有签名者 = **签名本身有效,但证书链不受信任**(自签名证书未导入受信任根时就是这样),不是"没签上";
+- **签名后再 UPX 加壳/改资源会让签名失效** —— 先签名,别在签名之后动产物。
+
+### 3.3 落地方案:8 条加载器链(不把未签名 PE 落到目标机)
+
+构建响应里的 `one_liners` 除"下载即执行"变体外,还会给出 **8 条加载器链**(每条带 `note`:前置条件、占位符、国产杀软下的风险等级),并按"是否已签名 + 平台/格式"给出 `loader_advice_title/tips`,明确**降级顺序:直接运行 → 计划任务 → 白加黑 → 内存加载**:
+
+1. **白加黑(DLL 侧加载)**:把植入端按 `dll` 格式构建,改名为已签名宿主会加载的 DLL 名,放到宿主同目录 → 启动签名宿主。磁盘上不出现未签名 PE(风险:中);
+2. **计划任务 + 已签名宿主**:`schtasks /create` + `/run` + `/delete`,动作是 `rundll32` 加载我们的 DLL;
+3. **LOLBin 直载**:`rundll32` / `mshta`(JScript + WinHttp + ADODB.Stream)/ `certutil` 下载 + 宿主加载 / `regsvr32` Squiblydoo;
+4. **内存加载**:拉 shellcode 注入已签名进程,不落地 PE(`powershell -enc`,或 mshta 骨架)。
+
+> **合规与前置**:本项目**不内置任何第三方加载器/宿主程序** —— 白加黑需要的已签名宿主 exe 及其 DLL 名、Squiblydoo 需要的 `.sct` 脚本,全部由操作员自备并自负合规责任。完整说明(何时用哪条、失败排查)见 [docs/LOADERS.md](docs/LOADERS.md)。
 
 ### 4. 支持的目标平台
 
@@ -381,6 +430,13 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 ---
 
 ## 附、更新日志与新增功能
+
+### v1.3.5(2026-09)
+- **构建后代码签名(Authenticode)**:新增服务端签名能力(证书文件 pfx 或本机证书存储指纹),构建产物在落盘前签名,接口返回 `signed/signer/sign_method/sign_status/sign_message`,生成载荷页直接显示"已签名/未签名原因"。实测:自签证书签名后 `SignatureType=Authenticode`、签名者与指纹一致、体积 +1.4KB;签名栈优先 `signtool.exe`(仅指纹模式,避免密码进命令行),否则回退系统自带 PowerShell(密码走环境变量)。踩坑修复:Windows PowerShell 5.1 的 `Get-PfxCertificate` 没有 `-Password` 参数,改用 `X509Certificate2(path,pw,flags)`;`Status=UnknownError` 且有签名者时语义是"已签名但链不受信任",不再误报"未签名"。
+- **8 条加载器链 + 落地建议**:`one_liners` 新增白加黑(DLL 侧加载)/ 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / PowerShell 内存注入 shellcode / mshta + 签名宿主注入(骨架),每条带 `note`(前置条件与国产杀软下风险等级);Windows `dll`/`shellcode` 格式以前回"不支持一条命令上线",现在返回加载器链。新增 `LoaderAdvice(targetOS, format, signed)` → 响应字段 `loader_advice_title/tips`,给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序。文档见 `docs/LOADERS.md`。
+- **BOF 改为按需编译(默认关)**:BOF 兼容层必须导出整套 `Beacon*` API 名字(实测 22 处明文,是 full 档案里唯一剩下的高信号特征),现改为 `-tags bof` 才编译;默认载荷 `beaconAPI=0`,勾选后为 22(证明门控生效)。生成载荷页新增「BOF 支持」开关。
+- **Go 构建期指纹擦除**:新增 `ScrubGoFingerprint`(只做原地置零、长度不变):擦除 `\xff Go buildinf:` 魔数、buildinfo 窗口内的 `go1.x.y` 版本串、`Go build ID:` 前缀(这三类是 Go 家族 YARA 规则最稳定的命中点,运行时不需要);pclntab/符号表绝不触碰。exe 与 dll 两条编译路径都已接入,实测默认载荷 `Go buildinf=0`、`Go build ID:=0`。
+- **可回归**:`gate_scan_test.go` 增加 `TestBOFIsOptIn`;`harden_test.go` 覆盖擦除/幂等/边界。
 
 ### v1.3.4(2026-09)
 - **动态查杀排查(重要结论)**:本机(装有 360 安全卫士 + 腾讯电脑管家 + 无边界安全系统)实测——**任何新生成或未签名的 PE 一执行就被拒绝并删除文件**,与载荷里有什么代码无关:一个只有 `time.Sleep` 的 Hello-World Go 程序同样被拒(`Access is denied` + 文件被删除),`release/implants/` 历史产物被清空;对照微软签名的 `notepad.exe` 副本可正常执行。→ 拦截依据是"未签名/未知 PE + 主动防御策略",**改载荷代码无用**;这类环境请走代码签名或由已签名宿主加载(见 `ROADMAP.md` P0-5)。

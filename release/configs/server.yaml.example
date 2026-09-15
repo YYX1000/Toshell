@@ -53,6 +53,37 @@ builder:
     # 可填 gcc 可执行文件路径、所在目录，或 PATH 中的命令名。
     mingw_gcc_path: ""
 
+    # ── 代码签名（Authenticode，Windows 载荷可选）────────────────────────
+    # 为什么需要：装有 360/电脑管家等国产安全软件的主机上，**未签名的新 PE 往往在
+    # 进程创建阶段就被拒绝执行并删除**（实测连 Hello-World 程序也一样，而微软签名的
+    # notepad.exe 副本可正常执行）。签名不是免杀银弹（杀软还会看信誉与行为），
+    # 但它是"能不能跑起来"这一层的敲门砖。
+    #
+    # 证书二选一（pfx 优先）：
+    #   sign_pfx_path + sign_pfx_password：用证书文件签名（密码通过环境变量传给子进程，
+    #     不会出现在命令行里）；
+    #   sign_thumbprint：用本机证书存储 CurrentUser\My 里该指纹的证书签名（EV/硬件
+    #     令牌场景更标准；有 signtool.exe 时优先用它，否则回退 PowerShell）。
+    # 自签名证书（仅测试；目标机需导入受信任根，签名才会显示 Valid）：
+    #   New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=YourName" `
+    #     -KeyUsage DigitalSignature -KeySpec Signature `
+    #     -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
+    #   导出 pfx：$c = Get-ChildItem Cert:\CurrentUser\My\<指纹>; `
+    #     Export-PfxCertificate -Cert $c -FilePath .\codesign.pfx `
+    #     -Password (ConvertTo-SecureString '你的密码' -AsPlainText -Force)
+    sign_enabled: false
+    sign_pfx_path: ""
+    sign_pfx_password: ""
+    sign_thumbprint: ""
+    # 时间戳服务器（可选）：留空则不时间戳；内网/离线环境通常不可达，失败不影响签名本身
+    sign_timestamp_url: ""
+    # signtool.exe 路径（可选）：留空自动探测 PATH 与 Windows SDK 目录
+    sign_signtool_path: ""
+    # 写入签名的描述（可选）
+    sign_description: ""
+    # true：签名失败就丢弃该载荷（构建报错）；false：只告警并返回未签名产物
+    sign_fail_closed: false
+
 listener:
     cert_file: ""
     enabled: true

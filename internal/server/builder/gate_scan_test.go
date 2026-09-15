@@ -10,30 +10,66 @@ import (
 )
 
 // 构建标签直接决定哪些免杀/对抗代码进入载荷，改错很难在功能测试里暴露，
-// 因此固定行为：默认**不带** evasionscan（主动反沙箱进程检测默认关闭）。
+// 因此固定行为：**默认既不带 evasionscan（主动反沙箱进程检测）也不带 bof（Beacon API 面）**。
 func TestBuildTagList(t *testing.T) {
 	cases := []struct {
 		transport   string
 		profile     string
 		evasionScan bool
+		bof         bool
 		want        string
 	}{
-		{"tcp", "full", false, ""},
-		{"tcp", "full", true, "evasionscan"},
-		{"http", "full", false, "transport_http"},
-		{"http", "full", true, "transport_http evasionscan"},
-		{"http", "light", false, "transport_http light"},
-		{"websocket", "light", true, "transport_ws light evasionscan"},
-		{"mqtt", "full", false, "transport_mqtt"},
+		{"tcp", "full", false, false, ""},
+		{"tcp", "full", true, false, "evasionscan"},
+		{"tcp", "full", false, true, "bof"},
+		{"tcp", "full", true, true, "evasionscan bof"},
+		{"http", "full", false, false, "transport_http"},
+		{"http", "full", true, false, "transport_http evasionscan"},
+		{"http", "light", false, false, "transport_http light"},
+		{"websocket", "light", true, true, "transport_ws light evasionscan bof"},
+		{"mqtt", "full", false, false, "transport_mqtt"},
 	}
 	for _, c := range cases {
-		if got := buildTagList(c.transport, c.profile, c.evasionScan); got != c.want {
-			t.Errorf("buildTagList(%q,%q,%v) = %q, want %q", c.transport, c.profile, c.evasionScan, got, c.want)
+		if got := buildTagList(c.transport, c.profile, c.evasionScan, c.bof); got != c.want {
+			t.Errorf("buildTagList(%q,%q,%v,%v) = %q, want %q", c.transport, c.profile, c.evasionScan, c.bof, got, c.want)
 		}
 	}
-	// 默认载荷（不勾选任何免杀选项）绝不能带 evasionscan。
-	if strings.Contains(buildTagList("tcp", "full", false), "evasionscan") {
+	// 默认载荷（不勾选任何免杀选项）绝不能带 evasionscan / bof。
+	def := buildTagList("tcp", "full", false, false)
+	if strings.Contains(def, "evasionscan") {
 		t.Fatal("default build must not include evasionscan")
+	}
+	if strings.Contains(def, "bof") {
+		t.Fatal("default build must not include bof (Beacon API 面默认不进载荷)")
+	}
+}
+
+// BOF 支持必须由构建标签门控：默认实现（bof_stub_windows.go）不得包含任何 Beacon API 名字，
+// 真实实现（bof_windows.go）必须只在 -tags bof 时编译。
+func TestBOFIsOptIn(t *testing.T) {
+	dir := "implant"
+	realSrc, err := os.ReadFile(filepath.Join(dir, "bof_windows.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(realSrc), "//go:build windows && !light && bof") {
+		t.Error("bof_windows.go must be gated behind the bof tag")
+	}
+	stubSrc, err := os.ReadFile(filepath.Join(dir, "bof_stub_windows.go"))
+	if err != nil {
+		t.Fatalf("缺 bof_stub_windows.go：%v", err)
+	}
+	if !strings.Contains(string(stubSrc), "//go:build windows && !light && !bof") {
+		t.Error("bof_stub_windows.go must be the default (no bof tag) implementation")
+	}
+	// 默认实现里不能出现任何 Beacon API 符号（否则静态特征又回来了）
+	for _, bad := range []string{"BeaconDataParse", "BeaconOutput", "beaconAPI", "BeaconPrintf", "beaconState"} {
+		if strings.Contains(string(stubSrc), bad) {
+			t.Errorf("默认 BOF stub 不应包含 %q（那是真实 BOF 兼容层的符号）", bad)
+		}
+	}
+	if !strings.Contains(string(stubSrc), "func loadBOF(") {
+		t.Error("bof_stub_windows.go 必须提供 loadBOF（main.go 的两处调用依赖它）")
 	}
 }
 

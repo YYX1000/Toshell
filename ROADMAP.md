@@ -1,12 +1,12 @@
 # ToShell 后续优化路线（ROADMAP）
 
-> 记录 v1.3.4 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
+> 记录 v1.3.5 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
 > 已完成的项归档在本文件底部「已完成」章节；更新日志见 `CHANGELOG.md`。
 > **本文只聚焦「下一步要做什么、为什么」**，不重复发版说明。
 
 ---
 
-## 当前版本状态（v1.3.4）
+## 当前版本状态（v1.3.5）
 
 | 能力 | 状态 |
 |---|---|
@@ -17,7 +17,8 @@
 | BYOVD 驱动 | ✅ **不内置任何驱动**（操作员自备 .sys + manifest 档案）；✅ 驱动击杀/档案登记/会话级记忆；✅ **加载前自检**（sha256 一致性硬拦 + Authenticode 签名者 + 易受攻击驱动黑名单提示） |
 | C 植入端工具链 | ✅ 探测鲁棒（配置/环境变量/便携目录/注册表 PATH）+ 架构校验 |
 | 通知 | ✅ 飞书/钉钉/企业微信/Slack/Discord 各自结构 + 业务码判定 |
-| 运行时行为足迹 | ⚠️ 启动自动"枚举进程找杀软"已默认关闭（`evasion_scan` 需显式开启）✅；pclntab 高信号名已中性化（`light` 档案 `beacon*` 也为 0）✅；启动延迟/心跳节奏可按载荷配置 ✅；**未解决：未签名 PE 被国产杀软主动防御直接拒绝执行**（见 P0-5） |
+| 运行时行为足迹 | ✅ 启动自动"枚举进程找杀软"默认关闭（`evasion_scan` 显式开启）；pclntab 高信号名中性化；**BOF 默认不编译（`beacon*`=0）**；**Go buildinfo/构建 ID 已擦除**；启动延迟/心跳节奏可按载荷配置 |
+| 落地能力（"起不来"的正解） | ✅ **代码签名**（pfx/证书指纹 + 签名后复核 + 前端显示）；✅ **8 条加载器链**（白加黑/计划任务/LOLBin/内存加载）+ 降级建议；⚠️ 真实证书获取与目标机信任链落地仍需操作员准备 |
 | 发版门禁 | ✅ `scripts/e2e_smoke.ps1`（临时服务端 + 三档载荷 + 关键接口 + 可选真植入端上线）+ CI 侧版本号与包内容校验 + `checksums.txt` |
 | 平台工具库 `data/tools/` | ❌ 未建设（P2 前置项） |
 
@@ -63,14 +64,19 @@
 - **现状（本机实测，2026-09）**：
   - 装有 360 安全卫士 + 腾讯电脑管家 + 无边界安全系统的主机上，**任何新生成/未签名的 PE 一执行就被拒并删文件**：一个只有 `time.Sleep` 的 Hello-World Go 程序同样被拒（`Access is denied` + 文件被删除），`release/implants/` 历史产物已被清空；对照 MS 签名的 `notepad.exe` 副本可正常执行。
   - 所以本机看到的"动态被查杀"**判别不出载荷特征**：拦截依据是"未签名/未知 PE + 主动防御策略"。Defender 日志里唯一的 C2 类记录是历史样本的 `Behavior:Win32/CommandAndControl.A!ml`（行为判定，非本项目）。
-- **已做（v1.3.4）**：启动阶段的"枚举全系统进程 + 比对 38 个杀软/分析工具进程名"默认关闭（`-tags evasionscan` 才编译）；启动随机延迟、心跳间隔/抖动可按载荷配置且服务端配置真正生效（示例配置默认改为 60s/20%）；pclntab 高信号标识符中性化（`light` 档案 `beacon*` 也为 0）；驱动加载失败回传具体 Win32 错误码；构建参数写入服务端日志便于核对。
+- **已做（v1.3.4）**：启动阶段的"枚举全系统进程 + 比对 38 个杀软/分析工具进程名"默认关闭（`-tags evasionscan` 才编译）；启动随机延迟、心跳间隔/抖动可按载荷配置且服务端配置真正生效（示例配置默认改为 60s/20%）；pclntab 高信号标识符中性化；驱动加载失败回传具体 Win32 错误码；构建参数写入服务端日志便于核对。
+- **已做（v1.3.5，本版重点）**：
+  1. ✅ **代码签名**（`sign.go`）：pfx / 证书存储指纹两种模式，签名栈优先 signtool、回退系统自带 PowerShell（密码走环境变量），签名后立刻复核并把 `signed/signer/sign_method/sign_status/sign_message` 回传前端；**本机实测已签上**（`SignatureType=Authenticode`、签名者与指纹一致、+1.4KB），自签证书因根未受信任为 `UnknownError`（已如实区分"已签名但链不受信任"与"未签名"）。
+  2. ✅ **加载器链**（`oneliner.go` + `docs/LOADERS.md`）：8 条（白加黑 DLL 侧加载 / 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / 内存注入 shellcode / mshta+宿主注入骨架），每条带前置条件与风险等级；`LoaderAdvice()` 给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序。
+  3. ✅ **BOF 按需编译**：默认载荷 `beaconAPI=0`（勾选后 22），full 档案最后一项高信号明文消失。
+  4. ✅ **Go 构建期指纹擦除**：`\xff Go buildinf:` 魔数 / buildinfo 内版本串 / `Go build ID:` 前缀（长度不变、只置零），exe 与 dll 两条路径都接入，实测均归零。
 - **待做（按收益排序）**：
-  1. **加载器优先**：README/USAGE 明确"未签名 PE 在国产杀软环境下会被直接拒绝执行"，主推**白加黑（签名宿主 + 恶意 DLL）/ 计划任务拉签名进程内存加载 / 已签名安装包投放**三条落地链，而不是继续在裸 PE 上打磨；
-  2. **代码签名**：支持给生成的 exe 做**签名**（自带证书 / 用户提供 pfx），服务端在构建后调用 `signtool`（不可用时明确提示），并给出"自签名证书需导入受信任根"的完整说明；
-  3. **高信号内存模块 build tag 化**：`memexe/memload/stomp/injection/edr` 等模块默认不编译（按需 `-tags`），默认载荷只保留"上线 + 基础命令"，把 pclntab 里的 `beacon*`/`shellcode`/`stomp`/`loadEXEMem` 函数名一并砍掉（当前靠 garble 掩盖）；
-  4. **EDR/杀软名单字符串外置**：`edr_windows.go` 的 `defaultAVProcesses` 与 EDR 相关常量改为构建期随机化/服务端下发，减少"大段杀软名单"这种高熵特征；
-  5. **网络侧节奏**：默认 `interval`/`jitter` 再收敛（长间隔 + 大抖动 + 首次回连随机化已有），避免固定周期轮询；UPX 默认关闭（压缩壳本身是被行为引擎重点标记的特征）。
-- **验收**：在干净 VM（仅 Defender）里，默认载荷执行后 5 分钟内不触发 `Behavior:` 类拦截；给出"签名后的载荷在装有 360 的机器上可执行"的实测记录；内存模块按需编译后，默认载荷字符串体检无 `beacon/shellcode/stomp/loadEXEMem`。
+  1. **真实证书落地**：目前只有自签名可用（目标机需导入受信任根）；后续可做"证书导入自检 + 目标机信任状态提示"，以及用 EV/受信任证书的完整验证记录；
+  2. **内存模块 build tag 化（剩下的一半）**：`injection/edr/stomp/memexe` 等仍随 full 编译（函数名已中性化），可按需 `-tags` 裁剪；
+  3. **EDR/杀软名单字符串外置**：`edr_windows.go` 的 `defaultAVProcesses` 改由服务端下发，去掉"大段杀软名单"这种高熵特征；
+  4. **网络侧节奏**：默认 `interval`/`jitter` 继续收敛（已有 60s/20%），UPX 默认关闭（压缩壳本身是被行为引擎重点标记的特征）；
+  5. **内存执行 hook**：`ExitProcess`/`RtlExitUserProcess` 运行时 hook + stdout 捕获（见 P0-2）。
+- **验收**：在干净 VM（仅 Defender）里，默认载荷执行后 5 分钟内不触发 `Behavior:` 类拦截；在装有 360 的机器上给出"签名载荷可执行 / 白加黑链可执行"的实测记录（**需要目标机配合，本机因安全软件拦截无法执行任何新 PE**）。
 
 ---
 
@@ -111,6 +117,17 @@
 ---
 
 ## 已完成（归档，见 `CHANGELOG.md` 对应版本）
+
+<details>
+<summary><b>v1.3.5（2026-09）</b></summary>
+
+- ✅ **构建后代码签名（P0-5）**：pfx / 证书存储指纹两种模式；签名栈优先 signtool、回退系统自带 PowerShell（密码走环境变量、不进命令行）；签名后复核并回传签名者/状态/中文说明；前端「上次构建」显示签名结果。实测自签证书已签上（`SignatureType=Authenticode`、+1.4KB），并修掉两个真实坑：PowerShell 5.1 的 `Get-PfxCertificate` 无 `-Password`；`UnknownError` + 有签名者应判为"已签名但链不受信任"。
+- ✅ **8 条加载器链 + 落地建议（P0-5）**：白加黑 DLL 侧加载 / 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / PowerShell 内存注入 shellcode / mshta + 宿主注入骨架，每条带 `note`（前置条件 + 风险等级）；`LoaderAdvice()` → `loader_advice_title/tips` 给出降级顺序；新增 `docs/LOADERS.md`。
+- ✅ **BOF 按需编译（P0-5）**：`-tags bof` 才编译，默认载荷 `beaconAPI=0`（勾选后 22），full 档案最后一项高信号明文消失；新增 `TestBOFIsOptIn`。
+- ✅ **Go 构建期指纹擦除（P0-5）**：`ScrubGoFingerprint` 擦除 buildinfo 魔数 / 窗口内版本串 / `Go build ID:` 前缀（长度不变），exe 与 dll 路径都接入，实测均归零；单测覆盖擦除/幂等/边界。
+- ✅ **版本 1.3.5**：全量版本号统一。
+
+</details>
 
 <details>
 <summary><b>v1.3.4（2026-09）</b></summary>

@@ -1,4 +1,4 @@
-//go:build windows && !light
+//go:build windows && !light && bof
 
 package main
 

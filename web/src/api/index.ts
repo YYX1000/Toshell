@@ -351,6 +351,16 @@ export interface BuildRequest {
    * 且会把 toolhelp32 导入与进程名字符串写进载荷，故默认不编译。
    */
   evasion_scan?: boolean
+  /**
+   * BOF 支持（默认关闭）：开启会带上整套 Cobalt Strike Beacon API 名字
+   * （BeaconDataParse/BeaconOutput…，实测 22 处 pclntab 明文），只在需要跑 BOF 时开。
+   */
+  bof_enabled?: boolean
+  /**
+   * 构建后代码签名（Authenticode）：证书配置在服务端 builder.sign_*，这里只能开启。
+   * 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行并删除。
+   */
+  sign_enabled?: boolean
   /** 启动随机延迟（秒）：留空用服务端配置（implant.startup_delay_min/max） */
   startup_delay_min?: number
   startup_delay_max?: number
@@ -374,6 +384,16 @@ export interface BuildResponse {
   one_liner_warning?: string
   /** 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python 等） */
   one_liners?: OneLinerVariant[]
+  /** 产物是否带有效 Authenticode 签名（启用代码签名时才有意义） */
+  signed?: boolean
+  /** 签名者主题（如 CN=xxx, O=yyy） */
+  signer?: string
+  /** 实际使用的签名方式：powershell / signtool / none */
+  sign_method?: string
+  /** 签名复核状态：Valid / NotSigned / UnknownError … */
+  sign_status?: string
+  /** 中文说明（未签名的原因 / 失败原因） */
+  sign_message?: string
 }
 
 /** 一条命令上线的单个变体：由服务端生成，前端只做展示与复制 */
@@ -386,6 +406,8 @@ export interface OneLinerVariant {
   /** 手法与适用场景说明 */
   desc: string
   command: string
+  /** 加载器链的补充说明：前置条件 / 占位符含义 / 国产杀软下的风险等级 */
+  note?: string
 }
 
 /** 一键上线命令集合：含下载地址解析结果与不可达告警 */
@@ -421,6 +443,12 @@ export interface BuilderInfo {
     /** garble 不可用的原因（或可用时的路径说明） */
     garble_message?: string
     upx_available: boolean
+    /** 服务端是否已配好代码签名证书（builder.sign_enabled + pfx/指纹） */
+    sign_configured?: boolean
+    /** 代码签名的配置说明（未配置原因 / 使用的证书与签名栈） */
+    sign_message?: string
+    /** BOF 默认是否编译进载荷（恒为 false：需要时在页面勾选） */
+    bof_default?: boolean
   }
 }
 

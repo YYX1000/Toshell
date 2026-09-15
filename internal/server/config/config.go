@@ -26,7 +26,7 @@ type Config struct {
 	Web      WebConfig      `mapstructure:"web" json:"web"`
 }
 
-// BuilderConfig 构建工具链配置（C 植入端编译所需的 mingw gcc 等）。
+// BuilderConfig 构建工具链配置（C 植入端编译所需的 mingw gcc、构建后代码签名等）。
 type BuilderConfig struct {
 	// MingwGCCPath 指定 mingw-w64 gcc 可执行文件路径（C 植入端编译用），
 	// 也可填 gcc 所在目录或用 PATH 中的名字。留空时自动探测：环境变量
@@ -34,6 +34,29 @@ type BuilderConfig struct {
 	// 服务端同目录的便携工具链（如 ./mingw64/bin/gcc.exe）→ 常见安装目录
 	// （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH 与 Windows 注册表 PATH。
 	MingwGCCPath string `mapstructure:"mingw_gcc_path" json:"mingw_gcc_path"`
+
+	// ─── 代码签名（Authenticode，Windows 载荷可选）──────────────────────
+	//
+	// 为什么需要：装有 360/电脑管家等国产安全软件的主机上，**未签名的新 PE 往往在
+	// 进程创建阶段就被拒绝执行并删除**（实测连 Hello-World Go 程序也一样，而微软签名的
+	// notepad.exe 副本可正常执行）。签名不是万能的（杀软还会看信誉/行为），但它是
+	// "能不能跑起来"这一层的敲门砖。
+	//
+	// 签名模式（二选一，pfx 优先）：
+	//   1) SignPFXPath + SignPFXPassword：用 pfx/证书文件签名；
+	//   2) SignThumbprint：用本机证书存储（CurrentUser\My）里该指纹的证书签名。
+	// 签名工具优先用 signtool.exe（SignSigntoolPath → PATH → Windows SDK 常见路径），
+	// 找不到时自动回退到 PowerShell 的 Set-AuthenticodeSignature（系统自带，无需装 SDK）。
+	SignEnabled      bool   `mapstructure:"sign_enabled" json:"sign_enabled"`
+	SignPFXPath      string `mapstructure:"sign_pfx_path" json:"sign_pfx_path"`
+	SignPFXPassword  string `mapstructure:"sign_pfx_password" json:"-"`
+	SignThumbprint   string `mapstructure:"sign_thumbprint" json:"sign_thumbprint"`
+	SignTimestampURL string `mapstructure:"sign_timestamp_url" json:"sign_timestamp_url"`
+	SignSigntoolPath string `mapstructure:"sign_signtool_path" json:"sign_signtool_path"`
+	// SignDescription 写入签名描述（可选，留空用默认）。
+	SignDescription string `mapstructure:"sign_description" json:"sign_description"`
+	// SignFailClosed 为 true 时"签名失败就丢弃该载荷"（构建报错）；默认 false 只告警并返回未签名产物。
+	SignFailClosed bool `mapstructure:"sign_fail_closed" json:"sign_fail_closed"`
 }
 
 // WebConfig Web 控制台防护配置（防资产测绘引擎收录、防未授权访问）。

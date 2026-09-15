@@ -262,12 +262,12 @@ export function About() {
           <div className="about-version-row">
             <Badge tone="accent">v1.3.5</Badge>
             <Badge tone="info">MIT License</Badge>
-            <Badge>自托管 · Tanovo</Badge>
+            <Badge>自托管部署</Badge>
           </div>
         </div>
         <h2>自托管的 C2（命令与控制）远程管理平台</h2>
         <p className="about-slogan">
-          ToShell（Tanovo）是一个自托管的 C2 框架，用于授权红队演练、渗透测试与安全研究。
+          ToShell 是一个自托管的 C2 框架，用于授权红队演练、渗透测试与安全研究。
           提供多平台、多协议的会话控制、载荷构建与隧道转发能力，覆盖从载荷生成、会话管理到
           任务执行的完整链路。请仅在获得授权的前提下使用。
         </p>
@@ -290,7 +290,7 @@ export function About() {
       <Card title="项目信息" icon={<Info size={16} />}>
         <KeyValue
           items={[
-            { k: '名称', v: 'ToShell（代号 Tanovo）—— 自托管 C2 远程管理平台' },
+            { k: '名称', v: 'ToShell —— 自托管 C2 远程管理平台' },
             {
               k: '版本',
               v: (
@@ -447,7 +447,7 @@ export function About() {
       </Callout>
 
       <div className="about-footer">
-        <p>© 2026 ToShell (Tanovo) · 作者：青山 / Q1lintu / c0ffee（核心开发者） · 仅供授权测试与学习使用</p>
+        <p>© 2026 ToShell · 作者：青山 / Q1lintu / c0ffee（核心开发者） · 仅供授权测试与学习使用</p>
       </div>
     </div>
   )

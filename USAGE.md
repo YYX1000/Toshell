@@ -1,6 +1,6 @@
 # ToShell Team Server 使用说明
 
-> **当前版本: v1.3.5(2026-09)** · 更新日志见文末「附」章节。
+> **当前版本: v1.3.6(2026-09)** · 更新日志见文末「附」章节。
 
 > ToShell 是一个自托管的 C2(命令与控制)框架,用于授权红队演练、渗透测试与安全研究。请仅在获得授权的前提下使用。
 
@@ -221,6 +221,26 @@ Import-Certificate -FilePath .\codesign.cer -CertStoreLocation Cert:\LocalMachin
 
 > **合规与前置**:本项目**不内置任何第三方加载器/宿主程序** —— 白加黑需要的已签名宿主 exe 及其 DLL 名、Squiblydoo 需要的 `.sct` 脚本,全部由操作员自备并自负合规责任。完整说明(何时用哪条、失败排查)见 [docs/LOADERS.md](docs/LOADERS.md)。
 
+#### 3.3.1 DLL 载荷怎么用(v1.3.6 起是**真 DLL**)
+
+生成载荷页把格式选成 `dll` 时:
+
+- **前置**:服务端需要**与目标架构一致**的 mingw-w64 gcc(x64 DLL 要 `x86_64-w64-mingw32-gcc`,MSYS2:`pacman -S mingw-w64-x86_64-gcc`);页面上的「DLL 载荷」一栏会直接显示本机是否可用、缺哪个编译器。
+- **导出函数名**:默认 `Start`,可直接 `rundll32 payload.dll,Start`;也可以填成**宿主期望的名字**(如 `GetFileVersionInfoW`)用于白加黑 —— 服务端用 C 侧 `__stdcall` 包装导出,不会与系统声明冲突,386 上还会剥掉 `@16` 修饰。
+- **DLL 加载即启动**(默认开):DLL 被宿主加载时就自动跑植入端,白加黑场景无需宿主调用任何导出函数;需要宿主控制时机时在页面上取消勾选。
+- **两种用法**:
+
+  ```bat
+  :: ① rundll32 直接加载(不需要自备宿主;mshta/rundll32 是系统签名程序)
+  rundll32.exe "%TEMP%\payload.dll",Start
+
+  :: ② 白加黑:把 payload.dll 改名成宿主会加载的 DLL 名,放到已签名宿主 exe 同目录,直接运行宿主
+  copy payload.dll "C:\Path\SignedHost\version.dll"
+  start "" "C:\Path\SignedHost\SignedHost.exe"
+  ```
+
+- **如实说明的取舍**:Go 不允许 cgo 包带 Go 汇编,所以 DLL 构建排除了 PEB 汇编与 amd64 直接系统调用(回退 `LoadLibrary`/`GetProcAddress` + ntdll 导出)—— 功能不变,静态/行为特征比 `exe` 略增;要这两条更强规避路径时用 `exe`/`raw`。
+
 ### 4. 支持的目标平台
 
 | 目标系统 | 架构 | 生成格式 |
@@ -430,6 +450,12 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 ---
 
 ## 附、更新日志与新增功能
+
+### v1.3.6(2026-09)
+- **DLL 载荷修好了**:`format=dll` 以前其实是"改了扩展名的 EXE"——普通 `go build`(`CGO_ENABLED=0`)下 `import "C"` 的胶水被 Go 静默跳过,实测产物 `IMAGE_FILE_DLL=false`、无导出表,导致白加黑/rundll32 三条链第一步就失败。现在用 `-buildmode=c-shared + mingw-w64 gcc` 编译**真 DLL**:`IMAGE_FILE_DLL=true` + 导出表;默认**加载即启动**(Go 的 `init()` 在 c-shared 下执行 → `go startImplant()`),导出名可配置(默认 `Start`,可填宿主期望的系统 API 名),386 上用 `-Wl,--kill-at` 剥掉 `@16` 修饰以便 `rundll32 payload.dll,Start` 按字面名找到。要求 gcc 与目标架构一致(x64 需 `x86_64-w64-mingw32-gcc`),否则明确报错而不是产出错误架构的 DLL;能力接口新增 `dll_available/dll_message`,页面直接显示缺哪个 gcc。
+- **共享库构建的取舍(如实说明)**:Go 不允许 cgo 包带 Go 汇编,故 DLL 构建排除 PEB 汇编与 amd64 直接系统调用,新增 `directsyscall_windows_amd64_shared.go` 走 apihash 回退(功能不变,特征略增);`main.go` 入口拆成 `startImplant()`(DLL/exe 共用)+ `entry_exec.go`(`!shared`)。
+- **修 JSON 响应 bug**:构建失败时按 `{"error":"%s"}` 拼字符串,错误里含换行(编译失败信息几乎必然多行)时产出非法 JSON,前端 `JSON.parse` 抛错、只显示"解析失败"。新增 `writeJSONError` 并按此改写。
+- 实测:386 DLL 导出 `Start` / 自定义 `GetFileVersionInfoW` 均正确;请求 amd64 且本机只有 i686 gcc 时给出 `pacman -S mingw-w64-x86_64-gcc` 的明确提示。
 
 ### v1.3.5(2026-09)
 - **构建后代码签名(Authenticode)**:新增服务端签名能力(证书文件 pfx 或本机证书存储指纹),构建产物在落盘前签名,接口返回 `signed/signer/sign_method/sign_status/sign_message`,生成载荷页直接显示"已签名/未签名原因"。实测:自签证书签名后 `SignatureType=Authenticode`、签名者与指纹一致、体积 +1.4KB;签名栈优先 `signtool.exe`(仅指纹模式,避免密码进命令行),否则回退系统自带 PowerShell(密码走环境变量)。踩坑修复:Windows PowerShell 5.1 的 `Get-PfxCertificate` 没有 `-Password` 参数,改用 `X509Certificate2(path,pw,flags)`;`Status=UnknownError` 且有签名者时语义是"已签名但链不受信任",不再误报"未签名"。

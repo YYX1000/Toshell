@@ -361,6 +361,10 @@ export interface BuildRequest {
    * 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行并删除。
    */
   sign_enabled?: boolean
+  /** DLL 载荷（format=dll）：导出函数名（rundll32 payload.dll,<名字>；留空=Start） */
+  dll_export?: string
+  /** DLL 载荷是否"加载即启动"（白加黑场景宿主不一定调用我们的导出函数，默认 true） */
+  dll_autostart?: boolean
   /** 启动随机延迟（秒）：留空用服务端配置（implant.startup_delay_min/max） */
   startup_delay_min?: number
   startup_delay_max?: number
@@ -449,6 +453,10 @@ export interface BuilderInfo {
     sign_message?: string
     /** BOF 默认是否编译进载荷（恒为 false：需要时在页面勾选） */
     bof_default?: boolean
+    /** 本机能否构建真正的 DLL（需要与目标架构一致的 mingw-w64 gcc） */
+    dll_available?: boolean
+    /** DLL 能力说明（不可用时给出安装哪种 gcc） */
+    dll_message?: string
   }
 }
 

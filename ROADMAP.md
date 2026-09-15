@@ -1,12 +1,12 @@
 # ToShell 后续优化路线（ROADMAP）
 
-> 记录 v1.3.5 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
+> 记录 v1.3.6 之后待优化的方向。每条标注现状（代码事实）、问题/根因、目标与验收方式，按优先级排序。
 > 已完成的项归档在本文件底部「已完成」章节；更新日志见 `CHANGELOG.md`。
 > **本文只聚焦「下一步要做什么、为什么」**，不重复发版说明。
 
 ---
 
-## 当前版本状态（v1.3.5）
+## 当前版本状态（v1.3.6）
 
 | 能力 | 状态 |
 |---|---|
@@ -117,6 +117,15 @@
 ---
 
 ## 已完成（归档，见 `CHANGELOG.md` 对应版本）
+
+<details>
+<summary><b>v1.3.6（2026-09）</b></summary>
+
+- ✅ **DLL 载荷修成真 DLL（P0-5 落地链的关键前置）**：`format=dll` 以前因 `CGO_ENABLED=0` 下 `import "C"` 被静默跳过，产物其实是"改了扩展名的 EXE"（实测 `IMAGE_FILE_DLL=false`、导出表为空），白加黑/rundll32 三条链第一步就失败。现在用 `-buildmode=c-shared + mingw-w64 gcc`（**要求与目标架构一致的 gcc**，否则明确报错而不是产出错误架构的 DLL）编译真 DLL：`IMAGE_FILE_DLL=true` + 导出表；默认**加载即启动**（`init()` → `go startImplant()`），导出名可配（默认 `Start`，可填宿主期望的系统 API 名；C 侧 `__stdcall` 包装，386 用 `-Wl,--kill-at` 剥 `@16`）；能力接口新增 `dll_available/dll_message`，生成载荷页显示缺哪个 gcc。实测 386 DLL 导出 `Start` 与自定义 `GetFileVersionInfoW` 均正确。
+- ✅ **共享库构建取舍（如实说明）**：cgo 包不能带 Go 汇编 → 排除 PEB 汇编与 amd64 直接系统调用，新增 `directsyscall_windows_amd64_shared.go` 走 apihash 回退；`main.go` 拆出 `startImplant()`（DLL/exe 共用）+ `entry_exec.go`（`!shared`）。
+- ✅ **修 JSON 响应 bug**：构建失败时错误文本含换行会产出非法 JSON（前端只看到"解析失败"而非真正原因），新增 `writeJSONError` 并改写构建相关错误响应。
+
+</details>
 
 <details>
 <summary><b>v1.3.5（2026-09）</b></summary>

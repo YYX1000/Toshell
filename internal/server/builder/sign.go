@@ -381,8 +381,8 @@ func runPowerShellOutput(script string, env map[string]string) (string, error) {
 // trimOutput 截断外部命令输出，避免把整篇日志塞进响应/日志行。
 func trimOutput(b []byte) string {
 	s := strings.TrimSpace(string(b))
-	if len(s) > 400 {
-		return s[:400] + "…"
+	if len(s) > 4000 {
+		return s[:4000] + "…"
 	}
 	return s
 }

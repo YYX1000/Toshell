@@ -24,6 +24,12 @@
 - 前端文案与排版一并整理：BYOVD 区块改为「驱动说明 + 内置驱动一键加载/卸载 + 驱动击杀 + 自定义 .sys 上传」四段式，去掉原先那段与实现不再匹配的 RTCore64 长文与挤在一行的排版；About/USAGE 同步更新。
 
 
+### 🚫 不再内置任何 BYOVD 驱动（改为操作员自备）
+- **移除 kgameprotect.sys**（连同上一版的 RTCore64.sys）：内置驱动的代价是**载荷与服务端里都带驱动名/IOCTL 明文**，而 AV/EDR 普遍按易受攻击驱动名做规则 —— 实测改动前载荷里可直接搜到 `kgameprotect` ×5 与 `\\.\kgameprotect`。现在发布包与二进制里**不含任何驱动**。
+- **驱动目录改为运行期扫描 + manifest**：`drivers/`（发布包同目录）与 `data/drivers/` 下的 `*.sys` 由 `/api/v1/drivers` 实时列出（SHA-256 现算），同目录 `manifest.json` 声明 `device/service/ioctl/purpose`；没有 manifest 也会列出，只是元数据留空（前端提示补全）。
+- **植入端不再内置任何驱动默认值**：设备名/服务名/终止 IOCTL 全部由服务端在任务数据里下发；缺参数时明确报错（不再回退到某个内置驱动名）。同时把 `handleBYOVD*` / `byovdKillByPID` 等**高信号函数名改成中性名**（`handleDrvLoad/Unload/Kill` / `drvXferPid`），减少 Go pclntab 里的明文特征。
+- **服务端新增会话级驱动档案**：`byovd_load` 可带 `name/device_name/kill_ioctl`，服务端登记后 `byovd_kill` 直接复用（也可在请求里显式带 `device`/`ioctl`）；前端「杀软对抗」页改为"服务端 drivers/ 目录 + 上传 .sys"，并新增设备名/服务名/终止 IOCTL 三个输入框。
+- **合规**：`THIRD-PARTY-NOTICES.md` 相应改写为"本项目不再内置任何驱动；使用者自行提供并自负合规责任"。
 ### 📡 会话稳定性：不再「离线几秒又在线」（ROADMAP P0-1）
 - **判活阈值强制留余量**：实际超时 = `max(listener.heartbeat_timeout, 3 × 实测心跳间隔)`，并在启动日志里写明「margin 3x」。此前 `heartbeat_timeout=60s` 与心跳间隔 60s 几乎零余量，任何一次心跳迟到（调度抖动/网络排队/休眠唤醒）都会被判离线，下一个心跳又恢复，前端表现为闪断。
 - **按会话自适应**：会话运行中采样实测心跳间隔（只向上立即生效、向下缓慢回收），因此构建时可自定义 `interval` 的载荷也按自己的节奏判活，不再依赖全局配置猜。

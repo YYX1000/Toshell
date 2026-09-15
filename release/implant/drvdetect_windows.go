@@ -13,7 +13,7 @@ import (
 //
 // 本文件原先还包含"借内置驱动做任意内核读、沿 PsActiveProcessHead 遍历 EPROCESS
 // 并用特征签名动态定位 EPROCESS.Protection 偏移"的探测路线。内置驱动已换成
-// kgameprotect.sys（WHQL 签名，只暴露无鉴权进程终止 IOCTL 0x222048，**不具备
+// 操作员自备的驱动（若提供进程终止 IOCTL，可把普通杀软进程直接终止；**不具备
 // 任意内核读写**），该探测路线及其调用的内核读 helper、配套硬编码 Protection
 // 偏移表已整体移除（未使用的 helper 一并删除，不留死代码）。
 //

@@ -9,12 +9,18 @@ import (
 	"toshell/internal/server/drivers"
 )
 
-// listDriversHandler 返回内置 BYOVD 驱动目录（供前端"一键加载内置驱动"）。
+// listDriversHandler 返回**操作员自备**的 BYOVD 驱动目录（服务端不再内置任何驱动）：
+// 扫描 exe 同目录 drivers/、CWD drivers/、data/drivers/ 下的 *.sys + manifest.json。
+// 前端据此展示"可加载的驱动"；列表为空表示需要自行放置/上传 .sys。
 func (s *Server) listDriversHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	list := drivers.List()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"drivers": drivers.List(),
-		"count":   len(drivers.Catalog),
+		"drivers":       list,
+		"count":         len(list),
+		"search_dirs":   drivers.SearchDirs(),
+		"builtin":       false,
+		"manifest_hint": "把 .sys 放进任一 search_dirs，并在同目录 manifest.json 里声明 device/service/ioctl（或在前端加载时手填）",
 	})
 }
 

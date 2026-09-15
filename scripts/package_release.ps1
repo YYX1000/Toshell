@@ -1,4 +1,4 @@
-﻿# =====================================================================
+# =====================================================================
 #  ToShell v1.3.5 local packaging: mirrors .github/workflows/release.yml
 #  Output: release/release-zips/toshell-server-<os>-<arch>.zip (6 targets)
 # =====================================================================
@@ -46,6 +46,10 @@ foreach ($m in $matrix) {
   Copy-Item (Join-Path $base 'configs\server.yaml.example') (Join-Path $pkg 'configs\server.yaml.example')
   Copy-Item (Join-Path $base 'README.md') (Join-Path $pkg 'README.md')
   Copy-Item (Join-Path $base 'USAGE.md')  (Join-Path $pkg 'USAGE.md')
+  # 文档目录必须随包分发：README/USAGE 里大量链接指向 docs\EVASION.md、
+  # docs\LOADERS.md、docs\DEPLOY-DOMAIN-CDN.md（截图也在 docs\screenshots 下），
+  # 不打包就是一堆死链。与 .github\workflows\release.yml 保持一致。
+  Copy-Item -Recurse (Join-Path $base 'docs') (Join-Path $pkg 'docs')
   # 许可与第三方声明（包内含 UPX(GPL) 与第三方签名驱动，需随包分发）
   Copy-Item (Join-Path $base 'LICENSE') (Join-Path $pkg 'LICENSE')
   Copy-Item (Join-Path $base 'DISCLAIMER.md') (Join-Path $pkg 'DISCLAIMER.md')

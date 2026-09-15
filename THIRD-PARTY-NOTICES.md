@@ -33,7 +33,7 @@ they are **not** covered by the MIT license and remain under their own terms.
 
 | 项 | 说明 |
 |---|---|
-| 放置位置 | 服务端 `drivers/` 或 `data/drivers/`（发布包内即 `release/drivers/`） |
+| 放置位置 | 服务端 `drivers/` 或 `data/drivers/`（仓库内打包源目录为 `release/drivers/`，发布 zip 内为 `drivers/`） |
 | 元数据 | 同目录 `manifest.json` 声明 `device` / `service` / `ioctl` / `purpose`；也可在控制台「杀软对抗」页上传 .sys 并手填 |
 | 权属与合规 | 驱动由**使用者自行提供**，其版权、许可、签名有效性与合规性由使用者自行确认；本项目仅做透传与档案登记，不对其合法性背书 |
 | 校验 | 加载前请自行核对 SHA-256 与 Authenticode 签名（`signtool verify /pa /all your.sys`） |
@@ -49,10 +49,11 @@ they are **not** covered by the MIT license and remain under their own terms.
 | 模块 | 许可 |
 |---|---|
 | `github.com/gorilla/mux`、`github.com/gorilla/websocket` | BSD-3-Clause |
-| `github.com/refraction-networking/utls`（HTTP 载荷 TLS 指纹） | BSD-3-Clause |
+| `github.com/refraction-networking/utls`（HTTP 载荷 TLS 指纹，仅植入端模板 `go.mod`） | BSD-3-Clause |
 | `github.com/Binject/go-donut`（EXE→shellcode 转换） | MIT |
 | `github.com/spf13/viper`、`cobra`、`fsnotify` | MIT |
-| `github.com/eclipse/paho.mqtt.golang`、`mochi-mqtt/server` | EPL-2.0 / MIT |
+| `github.com/eclipse/paho.mqtt.golang` | EPL-2.0 |
+| `github.com/mochi-mqtt/server/v2` | MIT |
 | `github.com/quic-go/quic-go` | MIT |
 | `golang.org/x/*`（crypto、net、sys 等） | BSD-3-Clause |
 
@@ -78,3 +79,12 @@ Slack、Discord 等）为其各自权利人的商标或注册商标，本项目�
 ---
 
 _如认为本文件遗漏了某个组件的声明，欢迎开 issue 指出，我们会尽快补充。_
+
+---
+
+## 相关文档
+
+- [LICENSE](LICENSE) — ToShell 本体许可（MIT）
+- [DISCLAIMER.md](DISCLAIMER.md) — 授权使用范围声明
+- [SECURITY.md](SECURITY.md) — 支持版本与安全 / 滥用报告渠道
+- [USAGE.md](USAGE.md) — 部署与使用说明

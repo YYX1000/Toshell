@@ -1,6 +1,6 @@
 # 域名 + CDN 上线使用说明
 
-> 适用版本：**v1.3.3+** ｜ 对应 [issue #3](https://github.com/iQingshan/Toshell/issues/3)
+> 适用版本：**v1.3.5** ｜ 对应 [issue #3](https://github.com/iQingshan/Toshell/issues/3)
 > 目标：把植入端回连从「裸 IP + 端口」改成「合法域名（+ CDN / 反代）」，让出站流量看起来像正常 HTTPS 访问，提升存活与过白名单能力。
 
 **结论：支持。** 本项目通过 **HTTP(S) 轮询监听器 + 流量拟态 + 域前置** 支持三种上线方式，按自己的条件选一种即可：
@@ -60,7 +60,7 @@ listener:
     mimicry_site: ""          # 想更真实就填一个真站，如 https://www.example.com
 ```
 
-> **强烈建议**：控制台端口（默认 `18081`）**不要**挂到 CDN 上，并按 v1.3.3 的能力给它加一层防测绘（见文末「安全建议」）。
+> **强烈建议**：控制台端口（`server.api_port`，示例配置为 `18081`）**不要**挂到 CDN 上，并按 v1.3.5 的能力给它加一层防测绘（见文末「安全建议」）。
 
 ### 2) CDN 侧配置
 
@@ -195,7 +195,7 @@ server {
 ## 六、安全建议
 
 1. **控制台与 C2 分离**：只把 C2 监听端口放到 CDN/公网；控制台端口尽量只对运维网段开放。
-2. **启用控制台防护（v1.3.3+）**：`web.basic_auth_enabled: true`，并选择未认证响应方式——`basic`（401 弹认证框）或 `disguise`（纯 404 伪装）。disguise 模式下用入口 `/__gate?k=<stealth_key>`（或访问 `/__gate` 弹框输入凭据）进入控制台。详见 `configs/server.yaml.example` 的 `web:` 段。
+2. **启用控制台防护（v1.3.5）**：`web.basic_auth_enabled: true`，并选择未认证响应方式——`basic`（401 弹认证框）或 `disguise`（纯 404 伪装）。disguise 模式下需填 `web.stealth_key`，用入口 `/__gate?k=<stealth_key>`（或访问 `/__gate` 弹框输入凭据）进入控制台。详见 `configs/server.yaml.example` 的 `web:` 段；部署侧的加固清单见 [SECURITY.md](../SECURITY.md)。
 3. **密钥与域名轮换**：`encryption_key`、`jwt_key`、CDN 域名与 `front_domain` 建议定期更换；更换 `encryption_key` 后必须重新生成全部植入端。
 4. **最小暴露**：CDN 只回源必要端口；源站安全组只放行 CDN 回源 IP 段（CDN 提供商一般提供回源 IP 列表）。
 5. **合规**：仅在你获得书面授权的目标与范围内使用。
@@ -208,7 +208,7 @@ server {
 | --- | --- |
 | `listener.protocol` | 通道类型：`http`（轮询）/ `tcp` / `websocket` / `mqtt` |
 | `listener.port` / `host` | 监听地址（CDN 回源目标） |
-| `listener.public_host` | 生成载荷时展示/使用的对外地址（填 CDN 域名或真实域名）；**「一条命令上线」的载荷下载地址也取这里**，因此跨 CDN/反代取件时务必填写完整地址（如 `https://cdn.example.com`） |
+| `listener.public_host` | 生成载荷时展示/使用的对外地址（填 CDN 域名或真实域名）；**「一条命令上线」的载荷下载地址优先取这里**，因此跨 CDN/反代取件时务必填写完整地址（如 `https://cdn.example.com`） |
 | `listener.tls_enabled` + `cert_file`/`key_file` | 源站是否启用 HTTPS（配合 CDN「HTTPS 回源」） |
 | `listener.mimicry_profile` | 非 C2 路径的拟态模板：`cdn` / `api` / `stream` |
 | `listener.mimicry_site` | 非 C2 路径反向代理到真实站点（更真实） |
@@ -216,3 +216,13 @@ server {
 | `listener.heartbeat_timeout` | 判活阈值；务必大于植入端心跳间隔 |
 | `implant.interval` / `jitter` | 植入端心跳间隔与抖动 |
 | `web.*` | 控制台防测绘（basic 认证 / 404 伪装 / 隐蔽入口） |
+
+---
+
+## 相关文档
+
+- [README.md](../README.md) — 项目总览与架构
+- [USAGE.md](../USAGE.md) — 部署、监听器配置与常见问题
+- [SECURITY.md](../SECURITY.md) — 部署加固清单与安全 / 滥用报告渠道
+- [DISCLAIMER.md](../DISCLAIMER.md) — 授权使用范围声明
+- [CHANGELOG.md](../CHANGELOG.md) ｜ [ROADMAP.md](../ROADMAP.md) — 版本变更与后续计划

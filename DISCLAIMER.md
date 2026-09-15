@@ -18,9 +18,11 @@ ToShell 是一款面向**授权安全测试**的命令与控制（C2）框架，
 使用者须**自行确保授权充分且可举证**，并对自己的行为及后果承担全部责任。项目作者与贡献者
 不对因使用本软件产生的任何直接或间接损失负责。
 
-发布包内捆绑的第三方组件（UPX、第三方签名驱动等）**不受 MIT 许可覆盖**，各自遵循原许可，
-详见 [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。其中内置的 BYOVD 驱动存在已知设计
-缺陷（暴露无鉴权进程终止 IOCTL），**只应在你有授权的测试环境中加载**，用完请立即卸载。
+发布包内捆绑的第三方组件（当前主要是 UPX）**不受 MIT 许可覆盖**，各自遵循原许可，详见
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)。自 v1.3.3 起发布包**不再捆绑任何内核驱动**：
+BYOVD 所用的 `.sys` 由**操作员自行提供**（放在服务端 `drivers/` 或 `data/drivers/`），其版权、
+许可、签名有效性与合规性由使用者自行确认；本项目只做透传与档案登记，不对其合法性背书。
+这类驱动可能暴露无鉴权的高权限 IOCTL，**只应在你有授权的测试环境中加载**，用完请立即卸载。
 
 ## English
 
@@ -40,8 +42,19 @@ authorization, and you bear full responsibility for your actions and their conse
 and contributors accept no liability for any direct or indirect damage arising from the use of this
 software.
 
-Third-party components bundled in the release packages (UPX, signed third-party drivers, etc.) are
-**not covered by the MIT license** and remain under their own terms — see
-[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). The bundled BYOVD driver has a known design flaw
-(it exposes an unauthenticated process-termination IOCTL): **load it only in environments you are
-authorized to test**, and unload it immediately afterwards.
+Third-party components bundled in the release packages (currently only UPX) are **not covered by
+the MIT license** and remain under their own terms — see
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). Since v1.3.3 the release packages bundle **no
+kernel driver at all**: the `.sys` files used for BYOVD are **supplied by the operator** (placed
+under the server's `drivers/` or `data/drivers/`), and their copyright, licensing, signature
+validity and compliance are the operator's own responsibility — the project merely relays and
+registers them and does not vouch for their legality. Such drivers may expose unauthenticated
+high-privilege IOCTLs: **load them only in environments you are authorized to test**, and unload
+them immediately afterwards.
+
+## 相关文档 / Related documents
+
+- [LICENSE](LICENSE) — MIT 许可全文 / full MIT license text
+- [SECURITY.md](SECURITY.md) — 支持版本、安全 / 滥用报告渠道与部署加固
+- [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) — 第三方组件与许可声明
+- [README.md](README.md) — 项目总览；[docs/EVASION.md](docs/EVASION.md) — 落地 / 动态免杀 / 静态降特征三类能力与验证状态

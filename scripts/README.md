@@ -72,13 +72,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipI
 本仓库 `.ps1` 必须是 **UTF-8 with BOM + CRLF**（`.gitattributes` 已规定 CRLF；PS 5.1 读无 BOM 的中文会乱码并报语法错误）。
 新增/改写 `.ps1` 后请检查首字节为 `EF BB BF`。脚本内不使用 `$args`。
 
-## CI 片段（手工接入，未自动改 workflow）
+## CI 片段
+
+`release.yml` 已接入发版门禁（`.github/workflows/release.yml` 的 `e2e-smoke` job，`build` 的 `needs` 为 `[web, e2e-smoke]`，用 Windows PowerShell 5.1 跑，固定 `-SkipImplant`）。
+第 1 段片段即仓库内 `release.yml` 的现状；第 2、3 段保留作为 `ci.yml` 与自托管 runner 的接入参考（`ci.yml` 目前**尚未**接入该 job）。
 
 ### 1) `release.yml`：tag 后的发版门禁（windows runner）
 
 ```yaml
   # ── 发版门禁：端到端冒烟（必须在打包发布前通过）─────────────────────────
-  # 接入后请把 build 的 needs 改为 [web, e2e-smoke]，否则它不会阻塞发版。
+  # 仓库内的 release.yml 已按本片段接入（含 build 的 needs: [web, e2e-smoke]）。
+  # 托管 runner 上不跑真实植入端（未签名载荷会被托管杀软拦），故固定 -SkipImplant；
+  # 真实"载荷上线 + 命令回显"闭环见第 3 段（自托管 runner）。
   e2e-smoke:
     runs-on: windows-latest
     needs: web
@@ -98,17 +103,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipI
           check-latest: true
 
       # 预热 Windows 载荷所需的 go1.20.14 工具链（builder 用 GOTOOLCHAIN 固定它）
-      - name: Prefetch implant toolchain
-        shell: pwsh
+      - name: Prefetch implant toolchain (Go 1.20.14)
+        shell: powershell
         run: |
           $env:GOTOOLCHAIN = 'go1.20.14'
           go version
 
-      - name: E2E smoke (server build + 3 payload builds + auth + routes)
-        # 托管 runner 上真实载荷通常会被 Defender 拦，故默认 -SkipImplant（只降级该环节）；
-        # 需要完整验证请改用自托管 Windows runner 并去掉 -SkipImplant（可加 -RequireImplant）。
-        shell: pwsh
-        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipImplant -KeepArtifacts
+      - name: E2E smoke (server build + 3 payload flavors + auth + routes)
+        # 用 Windows PowerShell 5.1 跑：脚本是按 5.1 语义编写与静态校验的
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipImplant -KeepArtifacts
 
       - name: Upload smoke artifacts
         if: always()
@@ -170,3 +174,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipI
 - `package_release.ps1`：本地按 CI 逻辑打 6 个平台发布包。
 - `smoke.sh`：轻量接口冒烟（面向已运行的服务端，不构建、不起进程）。
 - `reset_release_db.py`：清理发布用数据库。
+
+## 相关文档
+
+- [README.md](../README.md) — 项目总览与开发说明
+- [docs/EVASION.md](../docs/EVASION.md) — 落地 / 动态免杀 / 静态降特征三类能力与验证状态（冒烟脚本的验证思路与它一致）
+- [CHANGELOG.md](../CHANGELOG.md) ｜ [ROADMAP.md](../ROADMAP.md) — 版本变更与后续计划
+- [SECURITY.md](../SECURITY.md) — 支持版本与安全 / 滥用报告渠道

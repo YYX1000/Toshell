@@ -122,6 +122,10 @@ jobs:
           cp configs/server.yaml.example "$STAGE/configs/server.yaml.example"
           cp README.md "$STAGE/README.md"
           cp USAGE.md "$STAGE/USAGE.md"
+          # 文档目录必须随包分发：README/USAGE 里大量链接指向 docs/EVASION.md、
+          # docs/LOADERS.md、docs/DEPLOY-DOMAIN-CDN.md，不打包就是一堆死链
+          # （README 里的截图也在 docs/screenshots/ 下）。
+          cp -r docs "$STAGE/docs"
           # 许可与第三方声明：包里捆绑了 UPX(GPL) 与第三方签名驱动，必须随包分发
           cp LICENSE "$STAGE/LICENSE"
           cp DISCLAIMER.md "$STAGE/DISCLAIMER.md"
@@ -150,10 +154,11 @@ jobs:
 
       - name: Verify package layout
         run: |
-          # 包里必须带上"能直接跑起来"的最小集合（历史事故：漏了 implant 模板或配置样例）
+          # 包里必须带上"能直接跑起来"的最小集合（历史事故：漏了 implant 模板或配置样例），
+          # 以及 README/USAGE 里链到的文档（docs/ 不打包就会在包内变成死链）。
           unzip -l "${{ matrix.zip }}" > /tmp/ziplist.txt
           cat /tmp/ziplist.txt
-          for f in "toserver${{ matrix.ext }}" "implant/main.go" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE"; do
+          for f in "toserver${{ matrix.ext }}" "implant/main.go" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE" "docs/EVASION.md" "docs/LOADERS.md"; do
             grep -q "$f" /tmp/ziplist.txt || { echo "::error::package is missing $f"; exit 1; }
           done
 

@@ -180,9 +180,14 @@ func redirectExitImports(base uintptr, info *memPE) int {
 				break
 			}
 			if cur != 0 && targets[uintptr(cur)] {
-				// ExitThread(0)：载荷调用"退出进程"只结束自己所在线程
-				writeThunk(base, iatRVA, info.is64, exitThreadAddr)
-				redirected++
+				// ExitThread(0)：载荷调用"退出进程"只结束自己所在线程。
+				// 镜像映射完成后其节页已是 RX/RW（不再有 RWX），所以这里先临时把
+				// 该 IAT 项所在页改回 RW，写完立即还原原保护。
+				if werr := withWritable(base+uintptr(iatRVA), uintptr(step), func() {
+					writeThunk(base, iatRVA, info.is64, exitThreadAddr)
+				}); werr == nil {
+					redirected++
+				}
 			}
 			iatRVA += step
 		}

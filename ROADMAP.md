@@ -67,15 +67,20 @@
 - **已做（v1.3.4）**：启动阶段的"枚举全系统进程 + 比对 38 个杀软/分析工具进程名"默认关闭（`-tags evasionscan` 才编译）；启动随机延迟、心跳间隔/抖动可按载荷配置且服务端配置真正生效（示例配置默认改为 60s/20%）；pclntab 高信号标识符中性化；驱动加载失败回传具体 Win32 错误码；构建参数写入服务端日志便于核对。
 - **已做（v1.3.5，本版重点）**：
   1. ✅ **代码签名**（`sign.go`）：pfx / 证书存储指纹两种模式，签名栈优先 signtool、回退系统自带 PowerShell（密码走环境变量），签名后立刻复核并把 `signed/signer/sign_method/sign_status/sign_message` 回传前端；**本机实测已签上**（`SignatureType=Authenticode`、签名者与指纹一致、+1.4KB），自签证书因根未受信任为 `UnknownError`（已如实区分"已签名但链不受信任"与"未签名"）。
-  2. ✅ **加载器链**（`oneliner.go` + `docs/LOADERS.md`）：8 条（白加黑 DLL 侧加载 / 计划任务 + 已签名宿主 / rundll32 / mshta / regsvr32 Squiblydoo / certutil + 宿主 / 内存注入 shellcode / mshta+宿主注入骨架），每条带前置条件与风险等级；`LoaderAdvice()` 给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序。
-  3. ✅ **BOF 按需编译**：默认载荷 `beaconAPI=0`（勾选后 22），full 档案最后一项高信号明文消失。
-  4. ✅ **Go 构建期指纹擦除**：`\xff Go buildinf:` 魔数 / buildinfo 内版本串 / `Go build ID:` 前缀（长度不变、只置零），exe 与 dll 两条路径都接入，实测均归零。
+  2. ✅ **8 条加载器链**（`oneliner.go` + `docs/LOADERS.md`）：每条带前置条件与风险等级；`LoaderAdvice()` 给出"直接运行 → 计划任务 → 白加黑 → 内存加载"的降级顺序。
+  3. ✅ **真 DLL 载荷**：`-buildmode=c-shared` + mingw（要求架构一致），加载即启动、导出名可配（386 用 `--kill-at` 剥 `@16`）；静态实测 `IMAGE_FILE_DLL` + 导出表正确。
+  4. ✅ **BOF 按需编译**：默认载荷 `beaconAPI=0`（勾选后 22）。
+  5. ✅ **Go 构建期指纹擦除**：buildinfo 魔数 / 窗口内版本串 / `Go build ID:` 前缀（长度不变）。
+  6. ✅ **动态免杀第一批 —— 休眠期内存加密（sleep mask）**：空闲窗口对隧道 SM4 子密钥与任务结果缓存做 XOR 加密，休眠走 `NtDelayExecution` 分片（≤300ms + 抖动）；用密钥的路径先 `ensureUnmasked()` 提前还原（≤1 分片），缓存与发送缓冲用"加密副本"避免互相干扰。**如实说明**：加密不了整镜像/代码段（Go runtime 时刻在跑），C2 地址这类 string 也暂不在范围内。
+  7. ✅ **去 RWX**：注入/加载路径改为 RW 写 → RX 执行两段式保护。
+  8. ✅ **概念与验证文档**：新增 `docs/EVASION.md` —— 把「落地 / 动态免杀 / 静态降特征」分开，逐项标注验证状态与验证方法（含"一次只改一个变量 + ≥3 次重复 + 记录拦截原文"的纪律）。
 - **待做（按收益排序）**：
-  1. **真实证书落地**：目前只有自签名可用（目标机需导入受信任根）；后续可做"证书导入自检 + 目标机信任状态提示"，以及用 EV/受信任证书的完整验证记录；
-  2. **内存模块 build tag 化（剩下的一半）**：`injection/edr/stomp/memexe` 等仍随 full 编译（函数名已中性化），可按需 `-tags` 裁剪；
-  3. **EDR/杀软名单字符串外置**：`edr_windows.go` 的 `defaultAVProcesses` 改由服务端下发，去掉"大段杀软名单"这种高熵特征；
-  4. **网络侧节奏**：默认 `interval`/`jitter` 继续收敛（已有 60s/20%），UPX 默认关闭（压缩壳本身是被行为引擎重点标记的特征）；
-  5. **内存执行 hook**：`ExitProcess`/`RtlExitUserProcess` 运行时 hook + stdout 捕获（见 P0-2）。
+  1. **把 C2 地址/sessionID/关键配置改成 `[]byte` 存取**：让它们也能进 sleep mask 的加密范围（现在 string 可能位于只读段，无法安全原地加密）；
+  2. **启动即做 AMSI/ETW 用户态 patch**（现在 `edr_blind` 是任务级 + 需管理员，存在鸡生蛋问题）；**间接系统调用**替换裸 `syscall`；
+  3. **内存模块 build tag 化**：`injection/edr/stomp/imgexec` 等按需 `-tags` 裁剪；
+  4. **EDR/杀软名单字符串外置**：`edr_windows.go` 的 `defaultAVProcesses` 改由服务端下发；
+  5. **PE 版本资源/图标/时间戳**（"合法外观"，也为签名铺垫）；
+  6. **动态测试矩阵自动化**：把 `docs/EVASION.md` §3.1 的流程脚本化（记录 360 拦截记录 + Defender 1116/1117 + 是否上线），以后每项免杀改动都用它验收。
 - **验收**：在干净 VM（仅 Defender）里，默认载荷执行后 5 分钟内不触发 `Behavior:` 类拦截；在装有 360 的机器上给出"签名载荷可执行 / 白加黑链可执行"的实测记录（**需要目标机配合，本机因安全软件拦截无法执行任何新 PE**）。
 
 ---

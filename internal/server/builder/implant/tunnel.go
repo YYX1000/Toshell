@@ -19,7 +19,13 @@ const (
 
 	writeTimeout        = 30 * time.Second
 	maxTunnelGoroutines = 500  // 限制同时活动的 tunnel goroutine 数量，防止资源耗尽
-	maxTunnelConns      = 100  // 限制最大 tunnel 连接数
+	// maxTunnelConns 同时活动的隧道（SOCKS5 转发连接）上限。
+	// 原来是 100，实测**太容易打满**：浏览器对单域名就保活 6+ 条连接，一个测速站又会开
+	// 4~16 条并行流，两三个测速叠加就能把 100 条占满；占满后新连接一律被拒
+	// （sendAckMsg(ok=false,"too many connections") → 服务端 notifyClose → 浏览器表现为
+	// "代理崩了/下载 0"），要等 readLoop 的空闲回收（5s×120≈10 分钟）才慢慢恢复。
+	// 提到 300 后并发余量足够，同时仍远小于 maxTunnelGoroutines(500)。
+	maxTunnelConns = 300
 	writeChBufSize      = 8192 // 每连接写入缓冲（扩大以吸收测速等突发流量，减少背压阻塞）
 	// drainWait：收到服务端 OpClose（浏览器方向已结束）后，等待 readLoop 把目标
 	// 剩余数据（如 TLS 证书尾部）投完的窗口；目标挂起时由该超时兜底，避免

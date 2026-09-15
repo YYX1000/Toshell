@@ -110,6 +110,12 @@
 - 接入点：Go exe 与 DLL 两条编译路径（都在 UPX 之前），**实测**默认载荷 `Go buildinf=0`、`Go build ID:=0`。
 - 单测 `harden_test.go` 覆盖擦除/幂等/边界（窗口外版本串不动/非 Go 文件字节不变）。已知边界：函数**不能**用于服务端自身产物（服务端含 `pecheck.go` 的同类常量）。
 
+### 🩹 修复：SOCKS5 代理并发隧道上限 100 → 300
+- **现象（实测）**：同时开多个测速/多标签页时，代理会"看起来崩了"——新连接一律失败、下载 0。排查结果：植入端 `maxTunnelConns = 100` 被**打满**，`tunnelSem` 信号量为空后新隧道直接被拒（`sendAckMsg(ok=false,"too many connections")` → 服务端 `notifyClose` + `CloseTunnel` → 浏览器看到连接立即失败）。实测：隧道数钉在 100/100 时并发 12 条 100 KB 请求**全部失败**（`http_code=000`），回落到 79 条后单连接立刻恢复 200。
+- **为什么容易打满**：浏览器对单域名保活 6+ 条连接，一个测速站还会开 4~16 条并行流，两三个测速叠加就能占满 100；而隧道空闲回收要 `readLoop` 5s×120 ≈ **10 分钟**，期间一直占坑。**叠加今天修掉的那个 readLoop panic 缺陷时更致命** —— 每条卡死的下载会**永久占住一个坑**（readLoop 死了 → `writeLoop` 永远等 `<-e.readDone` → `finishClose/del` 不执行 → 信号量不释放），于是"越测越容易崩"；而植入端每次重连 `resetPool()` 清空残留，所以它又"自己恢复"。
+- **改动**：`release/implant/tunnel.go`（两个镜像目录同步）`maxTunnelConns 100 → 300`，仍远小于 `maxTunnelGoroutines(500)`。**需要重新生成载荷才生效。**
+- **实测（新载荷）**：并发隧道可稳定超过 100（旧的 100 上限下必然被拒），单连接下载正常。
+
 ### 🩹 修复：SOCKS5 代理「下载传几百 KB 后永久卡死」（上行正常）
 - **现象（实测）**：经代理下载 1 MB/5 MB 分别只到 302 KB/335 KB 就**彻底停住**，10 MB 在 120 s 内只到 172 KB；同一时刻 `tunnel.bytes_out` **零增长**、植入端 CPU 几乎不动、会话仍显示 active，而**上传完全正常**（5 MB / 485 KB/s）。表现为测速"延迟正常、下载 0 Mbps、上传正常"。
 - **根因**：`release/implant/tunnel.go` 的 `readLoop` 把"读入数据区"的上界写成了 `cap(fb)`。池缓冲容量公式是 `frameHdrLen+nonceLen+envHdrLen+maxRead+tagLen`，**cap 里那 16B 是留给 SM4-GCM tag 的**；按 cap 读会让单次 `Read` 最多返回 `maxRead+16` 字节，于是 ① `sm4GCMSeal` 的 `append(tag)` 越过 cap → 重新分配新数组而返回值被 `_ =` 丢弃（fb 里留下没有 tag 的密文）、② `fb[:frameHdrLen+nonceLen+envHdrLen+n+tagLen]` 越界 **panic**，被 `readLoop` 里**空的 `recover()` 静默吞掉** → 该隧道**唯一的下行产出 goroutine 直接消失**（`writeLoop` 还在等 `<-e.readDone`，隧道既不产出数据也永不收尾）。

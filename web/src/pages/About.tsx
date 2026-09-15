@@ -228,13 +228,27 @@ const dependencies: Array<{ k: string; v: ReactNode }> = [
   },
 ]
 
-/** 许可证与免责声明文档（随发布包分发；路径与仓库根目录同名文件一致） */
+/**
+ * 仓库地址。许可证与文档**一律给可在线访问的预览地址**（GitHub blob 链接）：
+ * 以前这里写的是 `/LICENSE`、`/USAGE.md` 这类同源相对路径，但这些文件只存在于
+ * 部署目录里、并不由控制台的静态资源提供 —— 点了就是 404，等于链接是坏的。
+ * 默认分支为 `main`（.github/workflows/ci.yml 的 push 分支）。
+ */
+const REPO = 'https://github.com/iQingshan/Toshell'
+const REPO_BLOB = `${REPO}/blob/main`
+
+/** 许可证与文档（在线预览地址；发布包内也带有同名文件） */
 const docLinks = [
-  { href: '/LICENSE', name: 'LICENSE', desc: 'MIT 许可证' },
-  { href: '/DISCLAIMER.md', name: 'DISCLAIMER.md', desc: '使用范围与免责声明' },
-  { href: '/THIRD-PARTY-NOTICES.md', name: 'THIRD-PARTY-NOTICES.md', desc: '第三方组件与许可证' },
-  { href: '/ROADMAP.md', name: 'ROADMAP.md', desc: '功能路线图' },
-  { href: '/USAGE.md', name: 'USAGE.md', desc: '部署与使用说明' },
+  { href: `${REPO_BLOB}/LICENSE`, name: 'LICENSE', desc: 'MIT 许可证' },
+  { href: `${REPO_BLOB}/DISCLAIMER.md`, name: 'DISCLAIMER.md', desc: '使用范围与免责声明' },
+  { href: `${REPO_BLOB}/THIRD-PARTY-NOTICES.md`, name: 'THIRD-PARTY-NOTICES.md', desc: '第三方组件与许可证' },
+  { href: `${REPO_BLOB}/USAGE.md`, name: 'USAGE.md', desc: '部署与使用说明' },
+  { href: `${REPO_BLOB}/docs/EVASION.md`, name: 'docs/EVASION.md', desc: '免杀能力与验证状态' },
+  { href: `${REPO_BLOB}/docs/LOADERS.md`, name: 'docs/LOADERS.md', desc: '加载器链与前置条件' },
+  { href: `${REPO_BLOB}/docs/DEPLOY-DOMAIN-CDN.md`, name: 'docs/DEPLOY-DOMAIN-CDN.md', desc: '域名 / CDN 上线' },
+  { href: `${REPO_BLOB}/ROADMAP.md`, name: 'ROADMAP.md', desc: '功能路线图' },
+  { href: `${REPO_BLOB}/CHANGELOG.md`, name: 'CHANGELOG.md', desc: '更新日志' },
+  { href: `${REPO_BLOB}/SECURITY.md`, name: 'SECURITY.md', desc: '安全披露与支持范围' },
 ]
 
 export function About() {
@@ -263,10 +277,10 @@ export function About() {
           <span className="about-author-tag">c0ffee · 核心开发者</span>
         </div>
         <div className="about-hero-links">
-          <a href="" className="about-hero-link">
+          <a href={REPO} className="about-hero-link" target="_blank" rel="noreferrer">
             <Github size={18} /> GitHub
           </a>
-          <a href="" className="about-hero-link">
+          <a href={`${REPO_BLOB}/README.md`} className="about-hero-link" target="_blank" rel="noreferrer">
             <Globe size={18} /> 官方文档
           </a>
         </div>
@@ -419,7 +433,9 @@ export function About() {
           ))}
         </div>
         <div className="about-docs-hint">
-          这些文件随发布包分发（位于服务端程序同级目录）。若通过控制台访问不到，请直接打开发布包中的同名文件。
+          以上都是 <b>GitHub 上的在线预览地址</b>（默认分支 <code>main</code>），点开即可阅读、无需登录。
+          发布包（zip）内也带有 <code>LICENSE</code> / <code>DISCLAIMER.md</code> / <code>THIRD-PARTY-NOTICES.md</code> /
+          <code>README.md</code> / <code>USAGE.md</code> 的同名文件，离线环境可直接看这些。
         </div>
       </Card>
 

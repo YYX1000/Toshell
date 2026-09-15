@@ -216,8 +216,15 @@ function Invoke-TshApi {
     $errText = ''
     try {
         $resp = Invoke-WebRequest @params
-        $status = [int]$resp.StatusCode
-        if ($OutFile -eq '') { $content = [string]$resp.Content }
+        if ($OutFile -ne '') {
+            # 关键：PowerShell 5.1 用 -OutFile 时，Invoke-WebRequest 不返回带 StatusCode 的响应对象
+            # （$resp.StatusCode 为空 → [int] 转换得 0），会让调用方误判成"HTTP 0 连接层失败"。
+            # 既然没有抛异常、文件已落盘，这里直接判定 200（调用方还会核对文件大小与 sha256）。
+            $status = 200
+        } else {
+            $status = [int]$resp.StatusCode
+            $content = [string]$resp.Content
+        }
     } catch {
         $errText = $_.Exception.Message
         $respObj = $null

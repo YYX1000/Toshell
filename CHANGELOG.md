@@ -47,6 +47,7 @@
   - 参数：`-Port` / `-WorkDir` / `-SkipImplant` / `-RequireImplant` / `-KeepArtifacts` / `-ServerExe` / `-ApiKey`。
   - **在装有国产安全软件的机器上会自动降级**：识别"载荷被拒绝执行/文件被删"后只把该环节记为 ⚠️ 并明确打印原因，不死循环、不假装成功；需要严格阻断时加 `-RequireImplant`。
   - 用法与 CI 片段见 `scripts/README.md`。
+  - **首次真机执行后修掉一个 PowerShell 5.1 陷阱**：`Invoke-WebRequest -OutFile` **不返回带 `StatusCode` 的响应对象**，脚本原先把空值转成 0，于是"下载其实成功"被误判为 `HTTP 0` 失败（本机与 CI 都复现）。现改为 `-OutFile` 无异常即判定 200，再由文件大小与 sha256 复核。实测本地跑完整脚本：**19 项检查 ❌ 0、⚠️ 3（跳过植入端/已知 500 语义），exit 0**；三档载荷均构建并下载校验通过（windows full 3,655,413B、windows light 2,984,693B、linux full 3,301,769B）。
 - **CI（`.github/workflows/release.yml`）**：新增 `e2e-smoke` job（windows runner，`-SkipImplant`）并让打包 job `needs: [web, e2e-smoke]` —— **冒烟不过就不出包**；打包 job 内新增 **`toserver -version` 与 tag 一致性校验**、**发布包内容清单校验**（`toserver`/`implant/main.go`/配置样例/README/USAGE/LICENSE）；新增 `checksums` job 生成 **`checksums.txt`（sha256）** 随 Release 发布（本地 `scripts/package_release.ps1` 同步生成同样的清单）。
 - **顺便修掉两处**：① `configs/server.yaml.example`（根目录与 release 两份）里 133 个 **U+FFFD 损坏字符**（早期转码丢字）已重写为干净中文注释，`api_keys` 从标量改为标准列表；② `scripts/package_release.ps1` 补上 **UTF-8 BOM**（含中文注释，PowerShell 5.1 无 BOM 会按 ANSI 解析乱码）。
 

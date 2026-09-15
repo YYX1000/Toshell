@@ -190,6 +190,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     steps:
+      # 必须先 checkout：下面 files 里要补发的 LICENSE/DISCLAIMER/THIRD-PARTY-NOTICES
+      # 都在仓库里，不 checkout 就会被 softprops 静默跳过（v1.3.4/1.3.5 实测如此）。
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           path: dist

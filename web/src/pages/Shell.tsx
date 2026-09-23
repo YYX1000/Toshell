@@ -70,6 +70,9 @@ export function Shell() {
           titleHighlight={session?.hostname}
           autoConnect
           followTheme
+          // PTY 后端（Linux/macOS）自带 readline 回显，输入裸送；Windows 管道仍由前端回显。
+          // 系统未知时保持本地回显（Windows 是更常见的靶机，裸送会变成"打字没反应"）。
+          remoteEcho={!!session?.os && !isWindows}
         />
       </div>
     </div>

@@ -52,6 +52,8 @@ const TAB_GROUPS: { title: string; keys: DetailTab[] }[] = [
 
 export function SessionDetail({ session, onClose }: SessionDetailProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('info')
+  // Shell 面板是否已经挂载过。挂载后**常驻不卸载**，切 tab 只隐藏（见下方渲染处）。
+  const [shellMounted, setShellMounted] = useState(false)
   // 「更多」下拉的展开状态（tab 太多时收纳用）
   const [moreOpen, setMoreOpen] = useState(false)
   // 下拉用 fixed 定位：按按钮实测坐标计算（top / 距右侧距离），避免被 tab 条的 overflow 裁掉
@@ -101,6 +103,16 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
 
   // activeTab 被过滤掉时自动回退到 'info'（避免渲染不存在的面板）
   const effectiveTab = availableTabs.some((t) => t.key === activeTab) ? activeTab : 'info'
+
+  // 首次切到 Shell 时挂载终端，之后一直留着（只隐藏），避免切 tab 把会话打断：
+  // 终端卸载 → WebSocket 关闭 → 服务端 defer CloseShell → **靶机上的 shell 进程被真实杀掉**。
+  useEffect(() => {
+    if (effectiveTab === 'shell') setShellMounted(true)
+  }, [effectiveTab])
+
+  // PTY 后端（Linux/macOS bash -i）自带 readline 回显与行编辑，输入必须裸送；
+  // Windows 走 cmd.exe /Q 管道无回显，仍需前端本地回显。详见 Terminal.tsx 的 remoteEcho。
+  const shellRemoteEcho = isLinux || isMac
 
   // 常驻 tab + 收纳 tab：**当前选中的 tab 永远放进可见区**（否则切到"更多"里的功能后
   // 看不出自己在哪一页）。菜单里仍然列出全部被收纳项（当前项高亮），计数不随选择变化。
@@ -249,14 +261,27 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
         {effectiveTab === 'files' && <FileManager session={session} />}
         {effectiveTab === 'process' && <ProcessList session={session} />}
         {effectiveTab === 'injection' && <ProcessInjectionTab session={session} />}
-        {effectiveTab === 'shell' && (
-          <TerminalComponent
-            wsPath={`/api/v1/sessions/${session.id}/shell`}
-            title={`Shell - ${session.hostname}`}
-            titleHighlight={session.hostname}
-            sessionId={session.id}
-            showNewTab
-          />
+        {/* Shell 终端常驻挂载：切到别的 tab 只隐藏、不卸载。
+            卸载会关闭 WebSocket，而服务端在 WS 关闭时 defer CloseShell(sessionID)，
+            那是真实杀掉靶机上的 shell 进程——切回来只能重开一个新 shell，
+            命令行历史与正在跑的程序全丢。
+            display:contents 让包装层不参与布局，终端仍按 .detail-content 的直接子元素排版。 */}
+        {shellMounted && (
+          <div
+            className="shell-pane"
+            style={{ display: effectiveTab === 'shell' ? 'contents' : 'none' }}
+            aria-hidden={effectiveTab !== 'shell'}
+          >
+            <TerminalComponent
+              wsPath={`/api/v1/sessions/${session.id}/shell`}
+              title={`Shell - ${session.hostname}`}
+              titleHighlight={session.hostname}
+              sessionId={session.id}
+              showNewTab
+              visible={effectiveTab === 'shell'}
+              remoteEcho={shellRemoteEcho}
+            />
+          </div>
         )}
         {effectiveTab === 'bof' && <SessionPluginTab session={session} />}
         {effectiveTab === 'persistence' && <PersistencePanel session={session} />}

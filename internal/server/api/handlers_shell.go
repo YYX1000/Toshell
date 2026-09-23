@@ -80,7 +80,18 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 		conn.WriteMessage(1, []byte(fmt.Sprintf("[错误: 无法打开Shell - %v]", err)))
 		return
 	}
-	defer controller.CloseShell(sessionID)
+	// 关键语义：**WS 断开 = 真实关闭靶机上的 shell 进程**，不是前端假断开。
+	// 所以前端切面板必须"只隐藏、不卸载"终端组件；一旦卸载就会走到这里把
+	// 靶机上的 bash 杀掉，切回来只能重开一条新 shell（历史与状态全丢）。
+	// 这条日志存在的意义就是把"前端假断开"和"后端真断开"在日志里区分开：
+	//   - 只看到 "WebSocket read error/close"，没有本行 → 会话通道仍然保持；
+	//   - 看到本行 → 靶机上的 shell 已被真实终止。
+	defer func() {
+		fmt.Printf("[INFO] [shell] WS closed -> tearing down remote shell for session: %s\n", sessionID)
+		if err := controller.CloseShell(sessionID); err != nil {
+			fmt.Printf("[WARN] [shell] CloseShell failed for session %s: %v\n", sessionID, err)
+		}
+	}()
 
 	fmt.Printf("[INFO] [shell] Shell opened for session: %s\n", sessionID)
 	conn.WriteMessage(1, []byte("[Shell已连接，等待输出...]"))

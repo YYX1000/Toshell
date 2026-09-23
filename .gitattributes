@@ -2,6 +2,8 @@
 *.sh text eol=lf
 # PowerShell 脚本用 CRLF（文件内已带 UTF-8 BOM，避免 PS 5.1 按 ANSI 解析中文）
 *.ps1 text eol=crlf
+# 批处理脚本用 CRLF：cmd 对 LF-only 的 label/goto 处理有坑，且控制台按 GBK 输出中文（Toshell.bat）
+*.bat text eol=crlf
 # 二进制驱动/工具不参与行尾转换
 *.sys binary
 *.exe binary

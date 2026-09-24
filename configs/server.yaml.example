@@ -44,6 +44,14 @@ implant:
     # 生成载荷时可在页面上覆盖（页面留 0 = 用这里的值；0 不会关闭延迟，想几乎零延迟填 1/1）。
     startup_delay_min: 2
     startup_delay_max: 10
+    # 植入端模板源码目录（生成载荷时现场编译用的源码）。留空 = 按下列顺序自动解析：
+    #   TOSHELL_IMPLANT_TEMPLATE_DIR 环境变量 → exe 同目录 implant/ →
+    #   exe 同目录 internal/server/builder/implant → 当前工作目录 internal/server/builder/implant
+    # 命中条件是该目录内存在 main.go。
+    # 发布包与本地开发都靠"exe 同目录 implant/"命中，所以通常**不需要**设置这一项；
+    # 仅当模板放在别处时才填（可填绝对路径，或相对服务端工作目录的路径）。
+    # 注意：C 植入端模板固定取该目录的**兄弟**目录 implant_c/，两者必须保持同级。
+    # template_dir: ""
 
 builder:
     # C 植入端（约 50KB）编译所需的 mingw-w64 gcc。留空时自动探测：

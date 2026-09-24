@@ -507,7 +507,7 @@ python scripts/reset_release_db.py --db release/data/toshell.db
 | 问题 | 解决方法 |
 |---|---|
 | 植入端无法回连 | 检查 `listener.public_host` 是否为公网可达地址、端口是否放行、加密密钥是否一致 |
-| 生成 Linux/macOS 载荷报错 `undefined: handleXxx` | 请使用本次修复后的版本(已为 Linux/macOS 补充功能 stub);同时更新 `release/implant/` 模板 |
+| 生成 Linux/macOS 载荷报错 `undefined: handleXxx` | 请使用本次修复后的版本(已为 Linux/macOS 补充功能 stub)。模板唯一源是 `internal/server/builder/implant/`；若本地生成的 `release/implant/` 落后于源码，执行 `Toshell.sh sync`（Windows 用 `Toshell.bat sync`）重新同步即可 |
 | 下载载荷很慢 | 已生成过的载荷再次下载直接从磁盘返回(不重新编译);首次生成因拉依赖/编译较慢属正常 |
 | 载荷体积与页面显示不符 / 体积翻倍 | **`shellcode`(.txt)格式保存的是 hex 文本,体积是原始字节的 2 倍属正常**。需要更小的请生成 `shellcode_bin`(原始二进制)或 `raw` 格式;页面显示已按实际下载文件大小修正 |
 | Windows 7 / Server 2008 R2 上 exe 无法启动 | 该问题已修复:服务端生成 Windows 载荷时自动使用 Go 1.20.14 工具链编译(见上文"老系统兼容")。若仍失败,确认使用的是最新版 `toserver` |

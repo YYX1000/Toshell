@@ -32,7 +32,7 @@
 
 图例：✅ = 有实测证据 ｜ ⚠️ = 只有编译验证 / 源码审计 / 命令生成验证，**运行期未实测**。
 
-植入端模板有**两份字节一致的镜像**：`internal/server/builder/implant/`（开发/构建源）与 `release/implant/`（发布包内随 `toserver` 分发，服务端会在 exe 同目录找 `implant/`）。模板目录解析顺序（`resolveImplantTemplateDir`，`internal/server/builder/builder.go`）：`implant.template_dir` 配置 → 环境变量 `TOSHELL_IMPLANT_TEMPLATE_DIR` → exe 同目录 `implant/` → exe 同目录 `internal/server/builder/implant` → 当前工作目录 `internal/server/builder/implant`（命中条件是该目录里存在 `main.go`）。下文实现位置以镜像内的同名文件为准；**只改一份会导致"开发能用、发布包失效"**。
+植入端模板有**唯一可信源**：`internal/server/builder/implant/`（C 植入端为同级的 `internal/server/builder/implant_c/`），随仓库入库、是唯一可编辑的地方。`release/implant/` 与 `release/implant_c/` 是**构建期生成物**（由 `Toshell.*` 的 `build`/`sync` 或打包流程从源码目录同步；已 gitignore，**不要手工编辑**，会被下次同步覆盖）：因为服务端会在 exe 同目录找 `implant/`，把生成物放在 `release/` 下就让**本地开发与发布包走完全相同的模板解析路径**。模板目录解析顺序（`resolveImplantTemplateDir`，`internal/server/builder/builder.go`）：`implant.template_dir` 配置 → 环境变量 `TOSHELL_IMPLANT_TEMPLATE_DIR` → exe 同目录 `implant/` → exe 同目录 `internal/server/builder/implant` → 当前工作目录 `internal/server/builder/implant`（命中条件是该目录里存在 `main.go`；C 模板固定取该目录的**兄弟**目录 `implant_c/`，两者必须同级）。下文实现位置统一以源码目录为准。
 
 ### 2.1 落地 delivery
 
@@ -42,7 +42,7 @@
 | 8 条加载器链 + 降级建议 | `internal/server/api/oneliner.go`（`loaderChainVariants` / `LoaderAdvice`）、`docs/LOADERS.md` | ⚠️ 命令生成已实测（含单测 `oneliner_loader_test.go`）；**端到端成功率未验证**（需要自备宿主 exe / 放行环境） |
 | 真 DLL（c-shared，加载即启动、导出名可配） | `internal/server/builder/dll.go`（`sharedGCC` / `compileSharedLibrary` / 胶水生成）；入口拆分 `internal/server/builder/implant/entry_exec.go` + `main.go` 的 `startImplant()` | ✅ **静态实测**：386 DLL `IMAGE_FILE_DLL=true` + 导出表含 `Start` / 自定义 `GetFileVersionInfoW`；**未验证**运行加载是否上线 |
 | PE 头解析 + 内存执行预检（`fileless-exec` 下发前） | `internal/server/builder/pecheck.go`（接线 `internal/server/api/handlers_fileless.go`，`CheckMemoryExec` / `DetectGoBinary`） | ✅ **静态实测**（`pecheck_test.go`）：Go 载荷、架构不符、带 CLR 目录 → 拒绝；TLS 回调 / 无重定位表 / DLL 误用 `exe_mem` → 警告。**未验证**目标机上的实际加载行为 |
-| 一份模板两处镜像（发布包不漏模板） | `internal/server/builder/implant/` ↔ `release/implant/` | ✅ 逐文件比对：两份目录各 61 个文件，**文件名集合与 SHA-256 全部相同**（含 `sleepmask_*`、`memprotect_*`、`main.go`、`gate_scan_*`） |
+| 模板单一源（发布包不漏模板，且门禁测的就是发货件） | 唯一源 `internal/server/builder/implant/` → 生成物 `release/implant/` | ✅ 逐文件比对：源码 61 个文件；生成物与源码 **SHA-256 全部相同**（含 `sleepmask_*`、`memprotect_*`、`main.go`、`gate_scan_*`）。**改动前这里有缺陷**：曾靠两份人工同步的镜像，而发版冒烟（`scripts/e2e_smoke.ps1`）把 `implant.template_dir` 指向 `internal/` 那份、开发与发布包实际读的却是 `release/` 那份——门禁校验的是**不发货的那一份**，只改发货件不会让它变红。现改为单源生成后，门禁与发货件是同一份 |
 
 > **如实说明（避免误读）**：`pecheck.go` 只做 **PE 头解析**（machine / 是否 DLL / TLS 目录 / CLR 目录 / 重定位表 / 节表属性），
 > 它**不判定 W^X**；"绝不请求 RWX"的实现在植入端 `memprotect_windows.go`（见 2.2）。两者不是同一件事，不要混着引用。
@@ -53,10 +53,10 @@
 
 | 手段 | 实现位置 | 验证到什么程度 |
 |---|---|---|
-| 休眠期内存加密（sleep mask） | `internal/server/builder/implant/sleepmask_windows.go`（镜像 `release/implant/sleepmask_windows.go`）；调用点 `internal/server/builder/implant/main.go`（`initSleepMask` / `registerSecret` / `sleepMaskHook` / `cacheResult` → `maskIfMaskedCopy` / `maskedSleep`） | ⚠️ **仅编译验证**（386/amd64/light/evasionscan 全通过）+ 并发设计人工审查；**运行期未实测**。验证方法见 §3.2 |
-| 去 RWX（RW 申请 → RX 执行） | `internal/server/builder/implant/memprotect_windows.go`（镜像 `release/implant/memprotect_windows.go`）；调用方 `imgexec_windows.go` / `injection_windows.go` / `bof_windows.go` 等 | ⚠️ 源码审计 + 编译验证；**未验证**改保护后注入/内存执行仍成功。验证方法见 §3.3 |
+| 休眠期内存加密（sleep mask） | `internal/server/builder/implant/sleepmask_windows.go`；调用点 `internal/server/builder/implant/main.go`（`initSleepMask` / `registerSecret` / `sleepMaskHook` / `cacheResult` → `maskIfMaskedCopy` / `maskedSleep`） | ⚠️ **仅编译验证**（386/amd64/light/evasionscan 全通过）+ 并发设计人工审查；**运行期未实测**。验证方法见 §3.2 |
+| 去 RWX（RW 申请 → RX 执行） | `internal/server/builder/implant/memprotect_windows.go`；调用方 `imgexec_windows.go` / `injection_windows.go` / `bof_windows.go` 等 | ⚠️ 源码审计 + 编译验证；**未验证**改保护后注入/内存执行仍成功。验证方法见 §3.3 |
 | `NtDelayExecution` 替代 `Sleep` | `internal/server/builder/implant/sleepmask_windows.go` 的 `rawSleep`（走 apihash 解析，不进 IAT 明文） | ⚠️ 编译验证；未实测（IAT 里不再出现 `Sleep` 可用 `dumpbin /imports` 复核） |
-| apihash / PEB 手工解析 API | `internal/server/builder/implant/apihash_windows.go`、`peb_windows.go`（镜像 `release/implant/` 同名文件） | ⚠️ 仓库既有能力；**未评估收益与代价**（手工解析本身也可能被 EDR 标记） |
+| apihash / PEB 手工解析 API | `internal/server/builder/implant/apihash_windows.go`、`peb_windows.go` | ⚠️ 仓库既有能力；**未评估收益与代价**（手工解析本身也可能被 EDR 标记） |
 | 直接系统调用（注入路径，amd64） | `internal/server/builder/implant/directsyscall_windows_amd64.go` + `.s`（DLL 构建走 `directsyscall_windows_amd64_shared.go` 回退） | ⚠️ 仓库既有能力；未实测 |
 | `evasion_scan`（枚举进程找杀软）**默认关闭** | `internal/server/builder/implant/gate_scan_windows.go`（`//go:build windows && evasionscan`），默认实现 `gate_scan_off_windows.go`；门控在 `internal/server/builder/builder.go` 的 `buildTagList` | ✅ 行为变化实测（构建标签与产物体积，`gate_scan_test.go`）；收益未量化 |
 

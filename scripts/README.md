@@ -171,7 +171,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipI
 
 ## 其他脚本
 
-- `package_release.ps1`：本地按 CI 逻辑打 6 个平台发布包。
+- 发布包改由 **`cmd/devtool package`** 产出（`go run ./cmd/devtool package --all`）：
+  本地与 CI 是**同一实现**，不再各写一遍。原先的 `scripts/package_release.ps1` 已删除。
+  可选参数：`--target goos/goarch` 只打一个平台、`--version X.Y.Z` 指定版本、
+  `--out DIR` 指定输出目录、`--keep-binaries` 保留中间二进制。
 - `smoke.sh`：轻量接口冒烟（面向已运行的服务端，不构建、不起进程）。
 - `reset_release_db.py`：清理发布用数据库。
 

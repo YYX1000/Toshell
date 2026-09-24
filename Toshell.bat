@@ -36,9 +36,6 @@ set "WEB_DIST=%ROOT%\web\dist"
 set "WEB_EMBED=%ROOT%\cmd\server\webdist"
 set "RELEASE_DIR=%ROOT%\release"
 set "IMPLANTS_DIR=%ROOT%\release\implants"
-rem 植入端模板唯一源；release\implant{,_c} 是构建期生成物（见 :sync_template）
-set "TEMPLATE_SRC=%ROOT%\internal\server\builder\implant"
-set "TEMPLATE_SRC_C=%ROOT%\internal\server\builder\implant_c"
 
 rem ── 主入口 ──────────────────────────────────────────────
 if "%~1"=="" goto :menu
@@ -156,52 +153,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "%ROOT%\web\package.json" goto :build_template
-where npm >nul 2>nul
-if errorlevel 1 (
-  rem 注意：这里不会构建成"纯 API 版"。是否带 -tags webui 取决于
-  rem cmd\server\webdist\index.html 是否存在（见 :build_server 段），而 webdist
-  rem 只在 clean 时删除。所以只要之前成功构建过一次前端，本次就会带着上一版
-  rem 前端产物构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
-  echo [警告] 未找到 npm，跳过前端构建 —— 将沿用 cmd\server\webdist 中已有的前端产物
-  call :web_asset_id
-  echo [警告]   若前端有改动，请安装 Node.js ^>= 20 后重新执行 build，否则界面仍是旧版本
-  goto :build_template
-)
-
-echo [信息] 构建前端（npm ci ^&^& npm run build）...
-pushd "%ROOT%\web"
-call npm ci
-if errorlevel 1 ( echo [错误] 前端依赖安装失败 & popd & exit /b 1 )
-call npm run build
-if errorlevel 1 ( echo [错误] 前端构建失败 & popd & exit /b 1 )
-popd
-
-echo [信息] 同步前端产物到 cmd\server\webdist
-if exist "%WEB_EMBED%" rmdir /s /q "%WEB_EMBED%"
-mkdir "%WEB_EMBED%"
-xcopy /e /y /q "%WEB_DIST%\*" "%WEB_EMBED%\"
-if errorlevel 1 ( echo [错误] 同步 webdist 失败 & exit /b 1 )
-
-:build_template
-call :sync_template
-if errorlevel 1 exit /b 1
-
-:build_server
-set "BUILD_TAGS="
-if exist "%WEB_EMBED%\index.html" set "BUILD_TAGS=-tags webui"
-set "COMMIT=dev"
-for /f "delims=" %%i in ('git -C "%ROOT%" rev-parse --short HEAD 2^>nul') do set "COMMIT=%%i"
-
-if not exist "%RELEASE_DIR%" mkdir "%RELEASE_DIR%"
-echo [信息] 编译服务端（go build %BUILD_TAGS% -o %SERVER_BIN%）...
+rem 前端构建 → webdist 同步 → 植入端模板同步 → 编译服务端：全部由 cmd/devtool 完成
 pushd "%ROOT%"
-go build %BUILD_TAGS% -ldflags "-s -w -X main.commit=%COMMIT%" -o "%SERVER_BIN%" ./cmd/server
+go run ./cmd/devtool build
 set "RC=%ERRORLEVEL%"
 popd
-if not "%RC%"=="0" ( echo [错误] 服务端构建失败 & exit /b 1 )
-if not exist "%SERVER_BIN%" ( echo [错误] 未生成产物: %SERVER_BIN% & exit /b 1 )
-echo [成功] 构建完成: %SERVER_BIN%（commit=%COMMIT%）
+if not "%RC%"=="0" ( echo [错误] 构建失败 ^& exit /b 1 )
+if not exist "%SERVER_BIN%" ( echo [错误] 未生成产物: %SERVER_BIN% ^& exit /b 1 )
+echo [成功] 构建完成: %SERVER_BIN%
+
 rem 构建 ≠ 生效：服务若还在跑，它跑的是内存里的旧二进制（构建不会自动重启它）
 call :is_running
 if errorlevel 1 exit /b 0
@@ -218,7 +178,7 @@ if /i "!RESTARTANS!"=="no" ( echo [信息] 已跳过重启。需要生效时执行: Toshell.bat
 call :do_stop
 if errorlevel 1 ( echo [错误] 停止服务失败，终止重启 & exit /b 1 )
 call :do_start
-exit /b
+exit /b 0
 
 rem ── 清理 ────────────────────────────────────────────────
 :do_clean
@@ -378,41 +338,19 @@ start /wait "" notepad "%CONFIG%"
 echo [信息] 已关闭编辑器。若修改了服务端口，需重启服务生效。
 exit /b 0
 
-rem ── 打印将嵌入的前端产物标识 ────────────────────────────
-rem 读 cmd\server\webdist\index.html 里引用的 vite 产物（带内容哈希）。
-rem 用途：npm 缺失时会沿用已有 webdist，把标识打出来才能看出"嵌入的是哪一版前端"。
-:web_asset_id
-set "ASSET_ID=(无前端产物)"
-if not exist "%WEB_EMBED%\index.html" (
-  echo [信息]   本次将嵌入的前端产物标识: !ASSET_ID!
-  exit /b 0
-)
-for /f "delims=" %%a in ('powershell -NoProfile -Command "$m=Select-String -Path '%WEB_EMBED%\index.html' -Pattern 'assets/index-[A-Za-z0-9_-]+\.js' -AllMatches ^| Select-Object -First 1; if($m){$m.Matches[0].Value}else{'(未找到 assets 引用)'}"') do set "ASSET_ID=%%a"
-echo [信息]   本次将嵌入的前端产物标识: !ASSET_ID!
-exit /b 0
-
-rem ── 同步植入端模板 ──────────────────────────────────────
-rem 把模板源同步到 release\，复刻发布包布局：服务端在 exe 同目录找 implant\，
-rem 所以这一步让本地开发与发布包走同一条解析路径。
-rem 用 xcopy 二进制复制：模板内是 CRLF，文本模式改写会破坏字节一致性。
+rem ── 同步植入端模板（委托 cmd/devtool）──────────────────
+rem 构建与模板同步的唯一实现在 cmd/devtool —— 本地与 CI 跑同一份。
+rem 本脚本只保留平台相关的 run / stop / logs 与"跑着旧二进制"的判定：
+rem 那部分并非重复（每个平台各一份、互不冗余），且是踩过真实事故才调对的，重写是净风险。
 :sync_template
-if not exist "%TEMPLATE_SRC%" (
-  echo [错误] 植入端模板源不存在: %TEMPLATE_SRC%
+where go >nul 2>nul
+if errorlevel 1 (
+  echo [错误] 未找到 Go 工具链（需要 Go ^>= 1.25）
   exit /b 1
 )
-if not exist "%TEMPLATE_SRC%\main.go" (
-  echo [错误] 模板源缺少 main.go（服务端以它判定目录是否有效）
-  exit /b 1
-)
-echo [信息] 同步植入端模板到 release\（exe 同目录解析用）
-if exist "%RELEASE_DIR%\implant" rmdir /s /q "%RELEASE_DIR%\implant"
-if exist "%RELEASE_DIR%\implant_c" rmdir /s /q "%RELEASE_DIR%\implant_c"
-xcopy /e /y /q /i "%TEMPLATE_SRC%" "%RELEASE_DIR%\implant" >nul
-if errorlevel 1 ( echo [错误] 同步 implant 模板失败 & exit /b 1 )
-rem implant_c 必须与 implant 同级：builder.go / toolchain.go 以 ..\implant_c 推导它
-if exist "%TEMPLATE_SRC_C%" (
-  xcopy /e /y /q /i "%TEMPLATE_SRC_C%" "%RELEASE_DIR%\implant_c" >nul
-  if errorlevel 1 ( echo [错误] 同步 implant_c 模板失败 & exit /b 1 )
-)
-echo [成功] 植入端模板已同步
+pushd "%ROOT%"
+go run ./cmd/devtool sync
+set "RC=%ERRORLEVEL%"
+popd
+if not "%RC%"=="0" ( echo [错误] 模板同步失败 ^& exit /b 1 )
 exit /b 0

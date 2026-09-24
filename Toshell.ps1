@@ -41,9 +41,6 @@ $WebDist = Join-Path $Root "web\dist"
 $WebEmbed = Join-Path $Root "cmd\server\webdist"
 $ReleaseDir = Join-Path $Root "release"
 $ImplantsDir = Join-Path $Root "release\implants"
-# 植入端模板唯一源；release\implant{,_c} 是构建期生成物（见 Sync-ImplantTemplate）
-$TemplateSrc = Join-Path $Root "internal\server\builder\implant"
-$TemplateSrcC = Join-Path $Root "internal\server\builder\implant_c"
 
 function Write-Info  { Write-Host "[信息] $args" -ForegroundColor Cyan }
 function Write-Ok    { Write-Host "[成功] $args" -ForegroundColor Green }
@@ -64,41 +61,25 @@ function Get-ApiPort {
     return $port
 }
 
-# 打印将被嵌入的前端产物标识（vite 在 index.html 里引用带内容哈希的 assets 文件）。
-# 用途：npm 缺失时会沿用已有的 webdist，把标识打出来才能看出"嵌入的是哪一版前端"，
-# 而不是默默编进一版旧界面后让人对着"界面怎么没变"排查半天。
-function Get-WebAssetId {
-    $idx = Join-Path $WebEmbed "index.html"
-    if (-not (Test-Path $idx)) { return "(无前端产物)" }
-    $m = Select-String -Path $idx -Pattern 'assets/index-[A-Za-z0-9_-]+\.(js|css)' -AllMatches |
-        Select-Object -First 1
-    if ($m -and $m.Matches.Count -gt 0) { return $m.Matches[0].Value }
-    return "未知（index.html 中未找到 assets 引用）"
+# 构建与模板同步都委托给 cmd/devtool —— 那是这些流程的**唯一实现**，本地与 CI 跑同一份。
+# 本脚本只保留平台相关的 run / stop / logs 与"跑着旧二进制"的判定：那部分并非重复
+# （每个平台各一份、互不冗余），且是踩过真实事故才调对的（见提交 98696c5），重写是净风险。
+function Invoke-Devtool {
+    param([string]$Command)
+    Push-Location $Root
+    try {
+        & go run ./cmd/devtool $Command
+        return ($LASTEXITCODE -eq 0)
+    }
+    finally { Pop-Location }
 }
 
-# 把植入端模板源同步到 release\，复刻发布包布局。
-# 服务端在 exe 同目录找 implant\，所以这一步让本地开发与发布包走同一条解析路径。
-# 用 Copy-Item 二进制复制：模板内是 CRLF，文本模式（Get-Content|Set-Content）会破坏字节一致。
 function Sync-ImplantTemplate {
-    if (-not (Test-Path $TemplateSrc)) {
-        Write-Err "植入端模板源不存在: $TemplateSrc"
+    if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
+        Write-Err "未找到 Go 工具链（需要 Go >= 1.25）"
         return $false
     }
-    if (-not (Test-Path (Join-Path $TemplateSrc "main.go"))) {
-        Write-Err "模板源缺少 main.go（服务端以它判定目录是否有效）: $TemplateSrc"
-        return $false
-    }
-    Write-Info "同步植入端模板到 release\（exe 同目录解析用）"
-    Remove-Item (Join-Path $ReleaseDir "implant")   -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item (Join-Path $ReleaseDir "implant_c") -Recurse -Force -ErrorAction SilentlyContinue
-    New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
-    Copy-Item $TemplateSrc (Join-Path $ReleaseDir "implant") -Recurse -Force
-    # implant_c 必须与 implant 同级：builder.go / toolchain.go 以 ..\implant_c 推导它
-    if (Test-Path $TemplateSrcC) {
-        Copy-Item $TemplateSrcC (Join-Path $ReleaseDir "implant_c") -Recurse -Force
-    }
-    $n = @(Get-ChildItem (Join-Path $ReleaseDir "implant") -Recurse -File -ErrorAction SilentlyContinue).Count
-    Write-Ok "模板已同步: $n 个文件"
+    if (-not (Invoke-Devtool sync)) { Write-Err "模板同步失败"; return $false }
     return $true
 }
 
@@ -147,61 +128,11 @@ function Invoke-Build {
         return $false
     }
 
-    if (Test-Path (Join-Path $Root "web\package.json")) {
-        if (Get-Command npm -ErrorAction SilentlyContinue) {
-            Write-Info "构建前端（npm ci && npm run build）..."
-            Push-Location (Join-Path $Root "web")
-            try {
-                npm ci
-                if ($LASTEXITCODE -ne 0) { throw "npm ci 失败" }
-                npm run build
-                if ($LASTEXITCODE -ne 0) { throw "npm run build 失败" }
-            }
-            finally { Pop-Location }
-
-            Write-Info "同步前端产物到 cmd\server\webdist"
-            Remove-Item $WebEmbed -Recurse -Force -ErrorAction SilentlyContinue
-            New-Item -ItemType Directory -Path $WebEmbed -Force | Out-Null
-            Copy-Item "$WebDist\*" "$WebEmbed\" -Recurse -Force
-            Write-Ok "前端已同步，产物标识: $(Get-WebAssetId)"
-        }
-        else {
-            # 注意：这里**不会**构建成"纯 API 版"。是否带 -tags webui 取决于
-            # cmd\server\webdist\index.html 是否存在（见下方 $hasWebui 判定），而 webdist
-            # 只在 clean 时删除。所以只要之前成功构建过一次前端，本次就会带着**上一版**
-            # 前端产物构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
-            Write-Warn "未找到 npm，跳过前端构建 —— 将沿用 cmd\server\webdist 中已有的前端产物"
-            Write-Warn "  本次将嵌入的前端产物标识: $(Get-WebAssetId)"
-            Write-Warn "  若前端有改动，请安装 Node.js >= 20 后重新执行 build，否则界面仍是旧版本"
-        }
-    }
-
-    if (-not (Sync-ImplantTemplate)) { return $false }
-
-    $commit = "dev"
-    $c = & git -C $Root rev-parse --short HEAD 2>$null
-    if ($LASTEXITCODE -eq 0 -and $c) { $commit = "$c".Trim() }
-
-    $buildTime = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-    $ldflags = "-s -w -X main.commit=$commit -X main.buildTime=$buildTime"
-
-    $hasWebui = Test-Path (Join-Path $WebEmbed "index.html")
-    $goArgs = @("build")
-    if ($hasWebui) { $goArgs += @("-tags", "webui") }
-    $goArgs += @("-ldflags", $ldflags, "-o", $ServerBin, "./cmd/server")
-
-    $tagsDesc = if ($hasWebui) { "-tags webui " } else { "" }
-    Write-Info "编译服务端（go build ${tagsDesc}-o $ServerBin）..."
-    New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
-    Push-Location $Root
-    try {
-        & go @goArgs
-        if ($LASTEXITCODE -ne 0) { throw "go build 失败" }
-    }
-    finally { Pop-Location }
-
+    # 前端构建 → webdist 同步 → 植入端模板同步 → 编译服务端：全部由 cmd/devtool 完成
+    if (-not (Invoke-Devtool build)) { Write-Err "构建失败"; return $false }
     if (-not (Test-Path $ServerBin)) { Write-Err "未生成产物: $ServerBin"; return $false }
-    Write-Ok "构建完成: $ServerBin（commit=$commit）"
+    Write-Ok "构建完成: $ServerBin"
+
     # 构建 ≠ 生效：服务还在跑的话，它跑的是内存里的旧二进制
     Restart-ForStaleBinary | Out-Null
     return $true

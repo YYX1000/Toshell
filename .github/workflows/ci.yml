@@ -62,7 +62,19 @@ jobs:
           go build -tags webui -ldflags "$LDFLAGS" -o toserver ./cmd/server
 
       - name: Vet
-        run: go vet ./internal/server/...
+        # 全量 vet：清理掉 24 个不可达包后，`./...` 才第一次真正可跑
+        # （此前只能 vet ./internal/server/...，其余包一旦失效无人察觉）
+        run: go vet ./...
+
+      - name: Invariants (devtool check)
+        # 门禁那些"不检查就会静默腐坏"的不变量：
+        #   · 植入端模板单一源、运行用生成物与源一致（曾因两份人工同步的镜像导致
+        #     发版门禁校验的是不发货的那一份 = 假绿灯）
+        #   · 两份 server.yaml.example 一致
+        #   · CI/本地打包与发版门禁都指向模板唯一源（防镜像以别的形式回归）
+        #   · CI 平台矩阵与 devtool 目标清单一致
+        #   · 文档相对链接有效（含包内 README 的包内布局链接）
+        run: go run ./cmd/devtool check
 
       - name: Run unit tests (non-embedded)
         # 除既有基础包外，跑本版新增的纯逻辑测试：

@@ -97,76 +97,19 @@ jobs:
           cache: true
           check-latest: true
 
-      - name: Build server
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+      # 构建 + 组装 + 自校验全部走 cmd/devtool —— 与本地 `go run ./cmd/devtool package`
+      # 是同一实现，CI 与本地不可能产出不同的包。
+      # 平台矩阵仍留在上面：CI 需要它做并行与按平台上传；它与 devtool 目标清单的一致性
+      # 由 `devtool check` 门禁（cmd/devtool/check.go 的 checkReleaseMatrix）。
+      #
+      # devtool 内部等价于原先被替换掉的三步：
+      #   1) Build server —— GOOS/GOARCH/CGO_ENABLED=0 + -tags webui + ldflags 注入 version/commit/buildTime
+      #   2) Package zip  —— 组装全部条目（implant/ implant_c/ configs/ docs/ README 用 release/README.md 等）
+      #   3) 自校验      —— 包布局（含 implant/main.go 与 implant_c/main.c）；并在目标平台等于当前
+      #                       运行平台时执行产物、断言自报版本与 tag 一致（原先只查 linux/amd64）
+      - name: Build + package (cmd/devtool)
         run: |
-          LDFLAGS="-s -w -X main.version=${GITHUB_REF_NAME#v} -X main.commit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          go build -tags webui -ldflags "$LDFLAGS" -o "toserver${{ matrix.ext }}" ./cmd/server
-
-      - name: Package zip
-        run: |
-          # 暂存目录必须用仓库里不存在的名字：以前用 pkg/，而仓库本身有 pkg/goroutine、
-          # pkg/rate 两个源码目录，导致它们被一起打进发布 zip。
-          STAGE="pkgstage"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE"
-          cp "toserver${{ matrix.ext }}" "$STAGE/toserver${{ matrix.ext }}"
-          # 完整可运行包：植入端模板 + 配置样例 + 依赖目录
-          # 模板唯一源是 internal/server/builder/implant{,_c}；release/ 下那两份是
-          # 构建期生成物（已 gitignore），不能作为打包来源。
-          cp -r internal/server/builder/implant "$STAGE/implant"
-          cp -r internal/server/builder/implant_c "$STAGE/implant_c"
-          # 配置：与 release/configs 布局一致（deploy.sh/bat 从 configs/ 读取）
-          mkdir -p "$STAGE/configs"
-          cp configs/server.yaml.example "$STAGE/configs/server.yaml.example"
-          # 包内 README 用 release/README.md（包内视角：本目录内容 / 停止服务端 / 三类能力），
-          # 不用仓库根 README.md —— 后者含多条指向"不随包分发"文档的链接，进包即死链。
-          cp release/README.md "$STAGE/README.md"
-          cp USAGE.md "$STAGE/USAGE.md"
-          # 文档目录必须随包分发：README/USAGE 里大量链接指向 docs/EVASION.md、
-          # docs/LOADERS.md、docs/DEPLOY-DOMAIN-CDN.md，不打包就是一堆死链
-          # （README 里的截图也在 docs/screenshots/ 下）。
-          cp -r docs "$STAGE/docs"
-          # 许可与第三方声明：包里捆绑了 UPX(GPL) 与第三方签名驱动，必须随包分发
-          cp LICENSE "$STAGE/LICENSE"
-          cp DISCLAIMER.md "$STAGE/DISCLAIMER.md"
-          cp THIRD-PARTY-NOTICES.md "$STAGE/THIRD-PARTY-NOTICES.md"
-          cp "${{ matrix.deploy }}" "$STAGE/"
-          # 一键部署脚本（傻瓜式：环境检测 + 按需在线安装 + 直接启动打包好的服务端）
-          cp release/install.sh "$STAGE/"
-          cp release/install.ps1 "$STAGE/"
-          # 运行时数据预设：data 目录 + 杀软指纹库（服务端必需，db 由首次启动自动创建）
-          mkdir -p "$STAGE/data"
-          cp data/av_fingerprints.json "$STAGE/data/av_fingerprints.json"
-          # upx/drivers/plugins 若存在于仓库则一并打包（可选依赖）
-          for d in upx drivers plugins; do if [ -d "release/$d" ]; then cp -r "release/$d" "$STAGE/$d"; fi; done
-          if [ "${{ matrix.goos }}" != "windows" ]; then chmod +x "$STAGE/deploy.sh"; fi
-          (cd "$STAGE" && zip -q -r "../${{ matrix.zip }}" .)
-          rm -rf "$STAGE"
-
-      - name: Verify version matches tag (linux/amd64 only)
-        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
-        run: |
-          chmod +x toserver
-          out=$(./toserver -version 2>&1 || true)
-          echo "$out"
-          want="${GITHUB_REF_NAME#v}"
-          echo "$out" | grep -q "$want" || { echo "::error::built binary reports a version that does not match tag $GITHUB_REF_NAME (want $want)"; exit 1; }
-
-      - name: Verify package layout
-        run: |
-          # 包里必须带上"能直接跑起来"的最小集合（历史事故：漏了 implant 模板或配置样例），
-          # 以及 README/USAGE 里链到的文档（docs/ 不打包就会在包内变成死链）。
-          unzip -l "${{ matrix.zip }}" > /tmp/ziplist.txt
-          cat /tmp/ziplist.txt
-          # implant_c/main.c 也要查：服务端运行期以 exe 同目录的 implant_c/main.c 编译 C 植入端
-          # （builder.go / toolchain.go 用 ../implant_c 推导），漏了它 C 植入端会在运行期才报错。
-          for f in "toserver${{ matrix.ext }}" "implant/main.go" "implant_c/main.c" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE" "docs/EVASION.md" "docs/LOADERS.md"; do
-            grep -q "$f" /tmp/ziplist.txt || { echo "::error::package is missing $f"; exit 1; }
-          done
+          go run ./cmd/devtool package             --target "${{ matrix.goos }}/${{ matrix.goarch }}"             --version "${GITHUB_REF_NAME#v}"             --out .
 
       - uses: actions/upload-artifact@v4
         with:

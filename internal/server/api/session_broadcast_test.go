@@ -32,6 +32,23 @@ func eventTypes(events []WSEvent) []string {
 	return out
 }
 
+// waitForEvents 轮询 hub 直到累计到 want 个事件，或超时后返回已收集到的事件。
+//
+// 用于等待延迟广播：不能以 PendingOfflineCount()==0 作为"已广播"的信号 ——
+// flushSessionOffline 先删除 pending 条目、释放锁，之后才把事件投递给 hub，
+// 两者之间存在时间窗。按计数等待会在事件入队前就返回（在单核/低配 CI runner 上稳定复现）。
+func waitForEvents(h *WSHub, want int, timeout time.Duration) []WSEvent {
+	var out []WSEvent
+	deadline := time.Now().Add(timeout)
+	for {
+		out = append(out, drainEvents(h)...)
+		if len(out) >= want || time.Now().After(deadline) {
+			return out
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func withShortGrace(t *testing.T, d time.Duration) {
 	t.Helper()
 	old := sessionOfflineGrace
@@ -104,11 +121,7 @@ func TestRealOfflineBroadcastAfterGrace(t *testing.T) {
 	drainEvents(hub)
 
 	s.BroadcastSessionOffline("sess-9")
-	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && s.PendingOfflineCount() > 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
-	events := drainEvents(hub)
+	events := waitForEvents(hub, 1, 2*time.Second)
 	if len(events) != 1 || events[0].Type != "session_offline" {
 		t.Fatalf("观察窗过期后应广播 offline，实际: %v", eventTypes(events))
 	}
@@ -151,11 +164,15 @@ func TestRepeatedOfflineKeepsOriginalDeadline(t *testing.T) {
 	s.BroadcastSessionOffline("sess-x")
 	time.Sleep(60 * time.Millisecond)
 	s.BroadcastSessionOffline("sess-x") // 重复判死：不应重置定时器
-	time.Sleep(80 * time.Millisecond)
 
-	events := drainEvents(hub)
+	events := waitForEvents(hub, 1, 2*time.Second)
 	if len(events) != 1 || events[0].Type != "session_offline" {
 		t.Fatalf("重复判死应保持原截止时间，实际: %v", eventTypes(events))
+	}
+	// 若第二次判死重置了定时器，第二个事件会在 (60ms + 观察窗) 才到；再等一段确认没有。
+	time.Sleep(150 * time.Millisecond)
+	if extra := drainEvents(hub); len(extra) != 0 {
+		t.Fatalf("重复判死不应顺延，出现额外事件: %v", eventTypes(extra))
 	}
 }
 

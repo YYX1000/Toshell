@@ -3,7 +3,18 @@
 > 自托管的 C2（命令与控制）远程管理平台，用于**授权红队演练、渗透测试与安全研究**。
 > **仅限获得授权后使用。** 严禁未授权的入侵 / 攻击 / 数据窃取。
 
-**v1.3.5** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
+**v1.3.5** · [MIT License](LICENSE) · [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) · 上游作者：青山 / Q1lintu / c0ffee · 联系：[qingshan@88.com](mailto:qingshan@88.com)
+
+> **本仓库是 [iQingshan/Toshell](https://github.com/iQingshan/Toshell) 的 fork**（fork 点 `54ca806`），
+> 独立演进。上游关系、本仓库相对上游的结构差异、以及如何按需取用上游修复，
+> 见 [docs/FORK.md](docs/FORK.md)。
+>
+> **问题反馈请提到本仓库的 Issue**，不要提到上游 —— 本仓库的构建与目录结构与上游已有差异，
+> 上游无法据此定位。
+>
+> 本仓库自建的产物可从两处获得：GitHub Release 的 `toshell-server-<os>-<arch>**-yyx1000**.zip`
+> （后缀标识来源仓库），或 `ghcr.io/yyx1000/toshell-server` 容器镜像（见「快速开始」）。
+> 自建版本号形如 `1.3.5-dev.yyx1`，可用 `toserver -version` 与上游的 `1.3.5` 区分。
 
 ---
 
@@ -24,8 +35,11 @@ ToShell 是一个轻量 C2 框架，由 **服务端（Team Server）+ Web 控制
 | [SECURITY.md](SECURITY.md) · [DISCLAIMER.md](DISCLAIMER.md) | 漏洞披露流程 · 授权与合规边界 |
 | [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) | 发布包内捆绑组件（UPX 等）与 Go 依赖的许可清单 |
 | [docs/skills/toshell-api/SKILL.md](docs/skills/toshell-api/SKILL.md) | 想用**脚本 / Agent 直接调 API**（不点界面）时的接口参考 |
+| [docs/FORK.md](docs/FORK.md) | **本仓库与上游的关系**：fork 点、分叉原因、结构差异、如何取用上游修复 |
+| [AGENT.md](AGENT.md) | **参与开发前先读**：开发红线、工作流、提交前门禁、注释规范、已知故障模式 |
 
 > 遇到问题先看 [USAGE.md](USAGE.md) 的「六、常见问题」章节；提 Issue 时附上**版本号、系统环境、复现步骤与服务端日志**，否则很难定位。
+> 版本号用 `toserver -version` 取（本仓库自建版本形如 `1.3.5-dev.yyx1`）。
 
 ## 核心特性
 
@@ -75,11 +89,11 @@ ToShell 是一个轻量 C2 框架，由 **服务端（Team Server）+ Web 控制
 
 **仪表盘**：会话/任务概览、图表与实时状态。
 
-<img src="docs/screenshots/dashboard.png" width="100%" alt="仪表盘">
+<img src="docs/screenshots/dashboard.png" width="2557" alt="仪表盘">
 
 **会话管理**：多平台会话、任务下发与状态跟踪。
 
-<img src="docs/screenshots/sessions.png" width="100%" alt="会话管理">
+<img src="docs/screenshots/sessions.png" width="2555" alt="会话管理">
 
 **交互式shell**：动态交互式shell独立标签页面。
 
@@ -160,6 +174,27 @@ cd release && chmod +x deploy.sh && ./deploy.sh   # Linux / macOS
 
 > **想用域名 + CDN 上线？** 见 [docs/DEPLOY-DOMAIN-CDN.md](docs/DEPLOY-DOMAIN-CDN.md)：CDN 回源、Nginx 反代、域前置（Domain Fronting）三种方式与排错 FAQ。
 
+### 容器（ghcr.io）
+
+```bash
+docker run -d --name toshell \
+  -p 18081:18081 -p 8080:8080 \
+  -v toshell-data:/app/data -v toshell-cache:/app/.cache \
+  ghcr.io/yyx1000/toshell-server:latest
+```
+
+控制台 `http://<host>:18081`。镜像同时提供 `linux/amd64` 与 `linux/arm64`。
+
+> 若拉取提示未授权，说明该包被设为私有，先登录再拉：
+> `echo <你的 PAT> | docker login ghcr.io -u YYX1000 --password-stdin`
+> （PAT 需要 `read:packages` 权限）。包的可见性可在仓库的 Packages 页面调整。
+
+> **镜像约 400MB，这不是可以优化掉的体积。** 服务端在**运行时现场编译植入端**（按模板
+> `go.mod` 切换 `GOTOOLCHAIN=go1.20.14` 以兼容 Win7），因此运行镜像必须自带 Go 工具链 ——
+> 多阶段构建消不掉。首次生成载荷还会按需下载 go1.20.14 与依赖模块，需要能访问模块代理；
+> `-v toshell-cache:/app/.cache` 保存的正是这部分缓存，挂上可避免容器重建后重复下载
+> （要完全离线，可在构建镜像时取消 Dockerfile 里预热那行的注释）。
+
 ### 默认启动方式
 
 服务端是一个**单一可执行文件**，无需安装任何服务，直接运行即可：
@@ -178,12 +213,37 @@ toserver.exe -config configs\server.yaml
 
 ### 从源码构建
 
+本仓库的开发流程封装在 `Toshell.*` 中（Windows 用 `.bat`，Linux/macOS 用 `.sh`）：
+
 ```bash
-# 在项目根目录，构建服务端（嵌入已构建的 Web 前端需先 npm run build）
-go build -tags webui -ldflags "-s -w" -o toserver ./cmd/server
+./Toshell.sh build      # 构建服务端 + Web 前端，并同步植入端模板
+./Toshell.sh start      # 启动（二进制、日志、数据都在 release/ 下）
+./Toshell.sh stop
+./Toshell.sh sync       # 只改了植入端模板时，免于完整构建
 ```
 
-> 仅构建后端、不带前端（纯 API/无 Web 控制台）可去掉 `-tags webui`。
+**产物落在 `release/` 而不是仓库根，这是有意的**：服务端按
+【`implant.template_dir` → 环境变量 `TOSHELL_IMPLANT_TEMPLATE_DIR` → exe 同目录 `implant/`
+→ exe 同目录 `internal/server/builder/implant` → 当前工作目录同路径】回退解析植入端模板。
+把 exe 放在 `release/` 下，exe 同目录就有 `implant/`，从而让**本地开发与发布包走完全相同的
+模板解析路径**，不会出现「本地能跑、发布包失效」。
+
+要手工构建（不用上述脚本）：
+
+```bash
+# 1) 前端 → webdist（-tags webui 的嵌入目标）
+npm --prefix web ci && npm --prefix web run build
+rm -rf cmd/server/webdist && mkdir -p cmd/server/webdist && cp -r web/dist/. cmd/server/webdist/
+
+# 2) 服务端
+go build -tags webui -ldflags "-s -w" -o release/toserver ./cmd/server
+```
+
+> 只构建后端、不带 Web 控制台：跳过第 1 步并去掉 `-tags webui`。
+> 打包 6 平台发布包用 `go run ./cmd/devtool package --all`；提交前的不变量检查用
+> `go run ./cmd/devtool check`。
+> **参与开发前请先读 [AGENT.md](AGENT.md)** —— 里面写了开发红线（编码约束、模板单一源、
+> 部署脚本不可改等）、提交前必跑的 4 条门禁与已知故障模式。
 
 ## 生成植入端
 
@@ -222,26 +282,31 @@ pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/e2e_smoke.ps1
 
 起临时服务端 → 校验鉴权/关键接口 → 构建 windows full / light / linux 三档载荷 → （可选）真植入端上线并下发一条任务 → 输出 ✅/⚠️/❌ 摘要，**有 ❌ 即非 0 退出**，可直接进 CI 作为发版门禁。
 
+日常提交前的门禁另有三条（`go vet ./...`、`go test ./...`、`go run ./cmd/devtool check`），
+完整清单与各自的用途见 [AGENT.md](AGENT.md) 的「3.4 提交前门禁」。
+
 ## 联系方式 / Contact
 
 | 渠道 / Channel | 地址 / Link |
 | :--- | :--- |
-| 作者 / Author | 青山（iQingshan） |
-| GitHub | [@iQingshan](https://github.com/iQingshan) |
-| 邮箱 / Email | [qingshan@88.com](mailto:qingshan@88.com) |
-| Issue / 功能建议 | [提交 Issue](https://github.com/iQingshan/Toshell/issues) |
+| 上游作者 / Upstream author | 青山（iQingshan） · [@iQingshan](https://github.com/iQingshan) · [qingshan@88.com](mailto:qingshan@88.com) |
+| **本仓库 / This fork** | [YYX1000/Toshell](https://github.com/YYX1000/Toshell) |
+| **Issue / 功能建议** | [**在本仓库提交 Issue**](https://github.com/YYX1000/Toshell/issues) |
 | 安全 / 滥用报告 | [SECURITY.md](SECURITY.md)（**不要**在公开 Issue 里贴可利用细节，可走邮件） |
-| 个人主页 / Profile | [github.com/iQingshan](https://github.com/iQingshan) |
 
-> 使用问题、配置排查、功能建议：优先提 Issue（附版本、系统环境、复现步骤与相关日志），这样别人也能搜到答案。
-> 商务合作 / 授权咨询 / 漏洞披露：邮件联系。
->
-> *Bug reports and feature requests: please open an issue with version, environment and reproduction steps.*
-> *Security disclosures / business & authorization enquiries: email [qingshan@88.com](mailto:qingshan@88.com).*
+> 使用问题、配置排查、功能建议：优先提到**本仓库**的 Issue（附 `toserver -version` 的输出、
+> 系统环境、复现步骤与相关日志）—— 本仓库的构建方式与目录结构已与上游有差异，提到上游
+> 无法据此定位。若问题在 v1.3.5 原版就存在、与本仓库改动无关，也可同时提给上游。
+> 商务合作 / 授权咨询 / 上游漏洞披露：邮件联系上游作者。
+
+> *Bug reports and feature requests: please open an issue **on this fork** with the output of
+> `toserver -version`, environment and reproduction steps.*
 
 ## 开源与授权
 
 - 使用说明：[USAGE.md](USAGE.md)
+- **参与开发**：[AGENT.md](AGENT.md) —— 开发红线、开发流程、提交前必跑的 4 条门禁、注释规范与已知故障模式
+- **与上游的关系**：[docs/FORK.md](docs/FORK.md) —— fork 点、分叉原因、本仓库相对上游的结构差异、如何按需取用上游修复
 - 后续优化路线：[ROADMAP.md](ROADMAP.md)（驱动能力分档与加载前自检、内存执行加固、屏幕流跨平台、动态查杀收敛、平台工具库与远程加载）
 - 安全披露：[SECURITY.md](SECURITY.md)
 - 一键部署：[release/install.ps1](release/install.ps1) / [release/install.sh](release/install.sh)（发布包内自带，环境检测 + 按需在线安装 + 直接启动）

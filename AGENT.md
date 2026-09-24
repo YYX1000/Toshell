@@ -99,13 +99,20 @@ remote 只读。分叉原因与上游修复的取用见 [docs/FORK.md](docs/FORK
 
 ## 3. 工作流
 
-**开发循环**（服务端二进制、日志与数据均在 `release/`）：
+**开发循环**（服务端二进制、日志与数据均在 `release/`；Windows 用 `.bat`）：
 
 ```
-./Toshell.sh build      # Windows: Toshell.bat build
-./Toshell.sh start / stop
-./Toshell.sh sync       # 仅同步植入端模板，跳过完整构建
+./Toshell.sh start            # 部署方式：带内嵌前端的单进程
+./Toshell.sh start --dev      # 开发方式：纯 API 后端 + Vite 热更新（界面走 Vite 端口）
+./Toshell.sh stop             # 两种都停（服务端 + Vite）
+./Toshell.sh status           # 构建产物、服务端、Vite 的当前状态
+./Toshell.sh build [--dev]    # 只构建；--dev 构建不带内嵌前端的版本
+./Toshell.sh sync             # 仅同步植入端模板，跳过完整构建
 ```
+
+两种方式的**二进制不同**（`dev` 不嵌入前端），构建方式记录在 `release/.build-mode`；
+`start` 发现产物方式与本次启动方式不符时会提示重建，避免"以为在开发态、实际跑的是
+带内嵌前端的部署态二进制"。
 
 **前端**：开发态 `cd web && npm run dev`（监听 3002，将 `/api` 代理至 `server.api_port`，
 默认 18081；用 `VITE_PROXY_TARGET` 覆盖目标）；生产态 `go run ./cmd/devtool build` 后访问 `:18081`。

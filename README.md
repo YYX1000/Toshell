@@ -213,14 +213,21 @@ toserver.exe -config configs\server.yaml
 
 ### 从源码构建
 
-本仓库的开发流程封装在 `Toshell.*` 中（Windows 用 `.bat`，Linux/macOS 用 `.sh`）：
+本仓库的开发流程封装在 `Toshell.*` 中（Windows 用 `.bat`，Linux/macOS 用 `.sh`）。
+两种启动方式：
 
 ```bash
-./Toshell.sh build      # 构建服务端 + Web 前端，并同步植入端模板
-./Toshell.sh start      # 启动（二进制、日志、数据都在 release/ 下）
-./Toshell.sh stop
-./Toshell.sh sync       # 只改了植入端模板时，免于完整构建
+./Toshell.sh start            # 部署方式：带内嵌前端的单进程，开 http://<host>:18081
+./Toshell.sh start --dev      # 开发方式：纯 API 后端 + Vite 热更新（改 web/src 即时生效）
+./Toshell.sh stop             # 两种都停
+./Toshell.sh status           # 看当前状态
+./Toshell.sh build [--dev]    # 只构建（--dev 构建不带内嵌前端的版本）
+./Toshell.sh sync             # 只改了植入端模板时，免于完整构建
 ```
+
+`--dev` 下界面走 Vite 的端口（默认 3002，`/api` 代理到后端），后端不嵌入前端 ——
+这样开发时**只有一个界面**（热更新那个），不会出现"改了前端但 18081 上还是旧界面"。
+两种方式的二进制不同，`start` 发现不匹配时会提示重建。
 
 **产物落在 `release/` 而不是仓库根，这是有意的**：服务端按
 【`implant.template_dir` → 环境变量 `TOSHELL_IMPLANT_TEMPLATE_DIR` → exe 同目录 `implant/`

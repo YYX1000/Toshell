@@ -16,6 +16,12 @@ import (
 	"time"
 )
 
+// pkgSuffix 发布包文件名后缀。
+//
+// 本仓库是 iQingshan/Toshell 的 fork，平台清单与包内布局与上游一致；若文件名也相同，
+// 两者的产物被下载到同一目录时无法分辨来源，故加后缀标识来源仓库。
+const pkgSuffix = "-yyx1000"
+
 // target 一个发布目标。targets 是平台清单的唯一来源：CI 与本地都经
 // `devtool package` 使用本表，CI 侧不再单独维护一份平台矩阵。
 type target struct {
@@ -23,16 +29,20 @@ type target struct {
 	GOARCH string
 	Ext    string // windows 为 .exe，其余为空
 	Deploy string // 随包的部署入口（release/deploy.{sh,bat}）
-	Zip    string
+}
+
+// zipName 该目标的发布包文件名，如 toshell-server-linux-amd64-yyx1000.zip。
+func (t target) zipName() string {
+	return "toshell-server-" + t.GOOS + "-" + t.GOARCH + pkgSuffix + ".zip"
 }
 
 var targets = []target{
-	{"windows", "amd64", ".exe", "release/deploy.bat", "toshell-server-windows-amd64.zip"},
-	{"windows", "386", ".exe", "release/deploy.bat", "toshell-server-windows-386.zip"},
-	{"linux", "amd64", "", "release/deploy.sh", "toshell-server-linux-amd64.zip"},
-	{"linux", "arm64", "", "release/deploy.sh", "toshell-server-linux-arm64.zip"},
-	{"darwin", "amd64", "", "release/deploy.sh", "toshell-server-darwin-amd64.zip"},
-	{"darwin", "arm64", "", "release/deploy.sh", "toshell-server-darwin-arm64.zip"},
+	{"windows", "amd64", ".exe", "release/deploy.bat"},
+	{"windows", "386", ".exe", "release/deploy.bat"},
+	{"linux", "amd64", "", "release/deploy.sh"},
+	{"linux", "arm64", "", "release/deploy.sh"},
+	{"darwin", "amd64", "", "release/deploy.sh"},
+	{"darwin", "arm64", "", "release/deploy.sh"},
 }
 
 // verifyLayoutEntries 打包后必须存在于 zip 内的路径，由 verifyZipLayout 校验。
@@ -258,7 +268,7 @@ func packageOne(p paths, t target, version, outDir, tmp string, keepBin bool) er
 	// 统一由 writeZip 写进 zip 条目头（见 target.execPaths）。
 
 	// ── 打 zip ──
-	zipPath := filepath.Join(outDir, t.Zip)
+	zipPath := filepath.Join(outDir, t.zipName())
 	execSet := make(map[string]bool, len(t.execPaths())+1)
 	for k, v := range t.execPaths() {
 		execSet[k] = v

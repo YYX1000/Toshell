@@ -3,49 +3,58 @@
 #  ToShell 开发管理脚本（Linux / macOS）—— 非部署入口
 #
 #  两种启动方式：
-#    deploy（默认）  构建**带内嵌前端**的服务端并启动，只起一个进程。
-#                    与发布包的行为一致：浏览器直接开 http://<host>:<api_port>。
-#    dev             构建**不带内嵌前端**的服务端（纯 API），同时起 Vite 开发
-#                    服务器。改 web/src/** 即时热更新，界面走 :3002，API 走 :api_port。
-#                    开发时用这种方式：唯一界面就是热更新那个，不会出现"改了前端
-#                    但端口上还是旧界面"的困惑。
+#    deploy（默认）  构建**带内嵌前端**的二进制并运行，单进程。
+#                    运行时目录 = release/（配置 release/configs/server.yaml）
+#    dev             用 `go run` 直接起**不带内嵌前端**的服务端，同时起 Vite 开发
+#                    服务器。改 web/src/** 即时热更新，改 Go 代码重启即生效（无需
+#                    先构建）；界面走 Vite 端口，后端只提供 API。
+#                    运行时目录 = 仓库根（配置 configs/server.yaml）
 #
 #    启动：./Toshell.sh start            部署方式
 #          ./Toshell.sh start --dev      开发方式
 #          ./Toshell.sh stop             两种都停（服务端 + Vite）
+#          ./Toshell.sh status           查看当前状态
 #          ./Toshell.sh clean            清理构建产物、日志、运行时状态
 #
 #  其余命令：build / sync / config / help（不带参数进入交互式菜单）。
 #
+#  ⚠️ 两种方式是**两个独立实例**：运行时目录不同（release/ vs 仓库根），因此
+#     配置、SQLite 库、载荷输出目录都不共享，且 API 端口默认都是 18081 —— **不能同时跑**。
+#
 #  部署（解压发布包后安装并运行）请用发布包内的 install.sh —— 它会在没有 Go 的
 #  机器上按需安装依赖，本脚本不做这件事。
 #
-#  为什么产物落在 release/ 而不是仓库根：
+#  为什么 deploy 的产物落在 release/ 而不是仓库根：
 #    release/ 是"复刻发布包布局"的目录。服务端解析植入端模板时按
 #    【配置 implant.template_dir → 环境变量 TOSHELL_IMPLANT_TEMPLATE_DIR →
 #      exe 同目录 implant/ → exe 同目录 internal/server/builder/implant →
-#      当前工作目录 internal/server/builder/implant】顺序回退。
-#    把 toserver 放在 release/ 下，exe 同目录就有 implant/，于是**本地开发与
-#    发布包走完全相同的模板解析路径**，不会出现"本地能跑、发布包失效"。
+#      当前工作目录同路径】顺序回退。把 toserver 放在 release/ 下，exe 同目录就有
+#    implant/，于是**deploy 与发布包走完全相同的模板解析路径**。
+#    dev 走最后一条回退（cwd = 仓库根 → internal/server/builder/implant，即模板源），
+#    所以改模板在 dev 下立刻生效、连 sync 都不用。
 # =====================================================================
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SERVER_BIN="$ROOT/release/toserver"
-CONFIG="$ROOT/release/configs/server.yaml"
-CONFIG_EXAMPLE="$ROOT/release/configs/server.yaml.example"
-LOG_OUT="$ROOT/release/server.log"
-LOG_ERR="$ROOT/release/server.err.log"
+# deploy 的运行时目录与配置
+RELEASE_DIR="$ROOT/release"
+CONFIG="$RELEASE_DIR/configs/server.yaml"
+CONFIG_EXAMPLE="$RELEASE_DIR/configs/server.yaml.example"
+LOG_OUT="$RELEASE_DIR/server.log"
+LOG_ERR="$RELEASE_DIR/server.err.log"
+IMPLANTS_DIR="$RELEASE_DIR/implants"
 WEB_DIST="$ROOT/web/dist"
 WEB_EMBED="$ROOT/cmd/server/webdist"
-RELEASE_DIR="$ROOT/release"
-IMPLANTS_DIR="$ROOT/release/implants"
+# dev 的运行时目录与配置（仓库根，与 deploy 完全独立）
+DEV_CONFIG="$ROOT/configs/server.yaml"
+DEV_CONFIG_EXAMPLE="$ROOT/configs/server.yaml.example"
+DEV_LOG_OUT="$RELEASE_DIR/dev-server.log"
+DEV_LOG_ERR="$RELEASE_DIR/dev-server.err.log"
 
-# 运行时状态（开发方式用）：构建方式标记 + Vite 的 PID 与日志。
-# 构建方式标记用于判断 release/toserver 是否与本次启动方式匹配 —— 两种方式的
-# 二进制不同（dev 不嵌入前端），不匹配就得重建，否则你以为在开发态、其实跑的是
-# 带内嵌前端的部署态二进制。
-BUILD_MODE_FILE="$RELEASE_DIR/.build-mode"
+# 运行时状态：服务端当前的启动方式（dev|deploy）。status 用它说明"现在跑的是哪种"，
+# "旧二进制"判定也只在 deploy 下有意义（dev 每次 go run 都用最新代码）。
+RUN_MODE_FILE="$RELEASE_DIR/.run-mode"
 VITE_PID="$RELEASE_DIR/vite.pid"
 VITE_LOG="$RELEASE_DIR/vite.log"
 
@@ -60,67 +69,24 @@ ok()   { printf "${GREEN}[成功]${NC} %s\n" "$*"; }
 warn() { printf "${YELLOW}[警告]${NC} %s\n" "$*"; }
 err()  { printf "${RED}[错误]${NC} %s\n" "$*" >&2; }
 
-# 返回正在运行的服务端进程 PID 列表
-running_pids() { pgrep -x toserver 2>/dev/null || true; }
-is_running() { [ -n "$(running_pids)" ]; }
+# ── 端口与进程 ───────────────────────────────────────────────────────
+# 服务端一律**按端口**定位，不按进程名：deploy 的进程叫 toserver，dev 是 go run
+# 出来的 server —— 后者名字太通用，按名字 pgrep 会误伤其它进程。
 
-# 从配置读取 api_port（默认 18081）
-api_port() {
+# 从给定配置读 api_port（默认 18081）
+port_of_config() {
   local p
-  p=$(sed -n 's/^[[:space:]]*api_port:[[:space:]]*\([0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -n1)
+  p=$(sed -n 's/^[[:space:]]*api_port:[[:space:]]*\([0-9]*\).*/\1/p' "$1" 2>/dev/null | head -n1)
   echo "${p:-18081}"
 }
 
-# Vite 监听端口：从 vite.config.ts 读，保持单一来源（不要在这里写死）
-vite_port() {
-  local p
-  p=$(sed -n 's/.*port:[[:space:]]*\([0-9]\{2,\}\).*/\1/p' "$ROOT/web/vite.config.ts" 2>/dev/null | head -n1)
-  echo "${p:-3002}"
-}
+deploy_api_port() { port_of_config "$CONFIG"; }
+dev_api_port()    { port_of_config "$DEV_CONFIG"; }
 
-# ── 构建与启动方式 ───────────────────────────────────────────────────
-
-build_mode() { cat "$BUILD_MODE_FILE" 2>/dev/null || echo ""; }
-
-# ensure_build <dev|deploy>：保证 release/toserver 是按该方式构建的，否则询问重建。
-ensure_build() {
-  local want="$1" have
-  if [ ! -f "$SERVER_BIN" ]; then
-    warn "未找到构建产物: $SERVER_BIN"
-    local ans
-    read -r -p "是否现在以 $want 方式构建？[Y/n] " ans || ans="n"
-    case "$ans" in
-      ""|[Yy]*) do_build "$want" || return 1 ;;
-      *) err "用户拒绝构建，终止启动"; return 1 ;;
-    esac
-    return 0
-  fi
-
-  have=$(build_mode)
-  [ "$have" = "$want" ] && return 0
-
-  if [ -z "$have" ]; then
-    warn "无法判定现有产物的构建方式（缺 $BUILD_MODE_FILE）"
-  else
-    warn "现有产物是 $have 方式构建的，与本次启动方式（$want）不符"
-  fi
-  warn "两种方式的二进制不同：dev 不嵌入前端（界面走 Vite），deploy 嵌入前端"
-  local ans
-  read -r -p "是否重新构建为 $want 方式？[Y/n] " ans || ans="n"
-  case "$ans" in
-    ""|[Yy]*) do_build "$want" || return 1 ;;
-    *) warn "继续使用现有产物 —— 实际运行方式可能与本次启动方式不一致" ;;
-  esac
-  return 0
-}
-
-# ── Vite 开发服务器 ─────────────────────────────────────────────────
-
-# 按端口找 Vite 的 PID。
-# 不依赖 PID 文件：npm run dev 会再 fork 出 vite 子进程，只杀 npm 的 PID 会留下
-# vite 继续占着端口（本机实测过）。按端口定位才可靠。
-vite_pids() {
-  local p; p=$(vite_port)
+# 列出监听指定端口的进程 PID
+pids_on_port() {
+  local p="$1"
+  [ -n "$p" ] || return 0
   if command -v lsof >/dev/null 2>&1; then
     lsof -ti "tcp:$p" 2>/dev/null
   elif command -v ss >/dev/null 2>&1; then
@@ -128,7 +94,27 @@ vite_pids() {
   fi
 }
 
+# 服务端进程：两种方式的端口都查（stop 时不知道在跑哪种）
+server_pids() {
+  local p
+  for p in $(printf '%s\n%s\n' "$(deploy_api_port)" "$(dev_api_port)" | sort -u); do
+    pids_on_port "$p"
+  done | sort -u
+}
+is_running() { [ -n "$(server_pids)" ]; }
+
+run_mode() { cat "$RUN_MODE_FILE" 2>/dev/null || echo ""; }
+
+# Vite 监听端口：从 vite.config.ts 读，保持单一来源（不要在这里写死）
+vite_port() {
+  local p
+  p=$(sed -n 's/.*port:[[:space:]]*\([0-9]\{2,\}\).*/\1/p' "$ROOT/web/vite.config.ts" 2>/dev/null | head -n1)
+  echo "${p:-3002}"
+}
+vite_pids() { pids_on_port "$(vite_port)"; }
 vite_running() { [ -n "$(vite_pids)" ]; }
+
+# ── Vite 开发服务器 ─────────────────────────────────────────────────
 
 start_vite() {
   local p; p=$(vite_port)
@@ -146,13 +132,13 @@ start_vite() {
   fi
 
   info "启动 Vite 开发服务器（端口 $p，日志 $VITE_LOG）..."
+  # 只杀 npm 的 PID 会留下 vite 子进程继续占着端口（实测过），所以停止时按端口定位
   ( cd "$ROOT/web" && nohup npm run dev >"$VITE_LOG" 2>&1 & echo $! >"$VITE_PID" )
   sleep 3
 
   if vite_running; then
     ok "Vite 已启动（PID: $(vite_pids | tr '\n' ' ')）"
     info "  前端（热更新）: http://127.0.0.1:$p"
-    info "  后端纯 API:     http://127.0.0.1:$(api_port)"
     info "  /api 由 Vite 代理到后端（改代理目标用环境变量 VITE_PROXY_TARGET）"
   else
     err "Vite 启动失败，见日志: $VITE_LOG"
@@ -160,7 +146,7 @@ start_vite() {
   fi
 }
 
-# 停止 Vite。未在运行时静默返回 —— stop 会无条件调用它。
+# 未在运行时静默返回 —— do_stop 会无条件调用它
 stop_vite() {
   vite_running || { rm -f "$VITE_PID"; return 0; }
   info "停止 Vite（PID: $(vite_pids | tr '\n' ' ')）..."
@@ -178,9 +164,8 @@ stop_vite() {
   ok "Vite 已停止"
 }
 
-# ── 构建 ≠ 生效：判断正在运行的进程是不是"构建前的旧二进制" ──────────────
-# 历史坑：构建成功后服务没重启，进程一直在内存里跑旧的 toserver，
-# 表现为"构建过了，但 Web 控制台和接口毫无变化"。所以必须能识别出这种状态。
+# ── 构建 ≠ 生效：判断正在运行的是不是"构建前的旧二进制" ────────────────
+# 仅对 deploy 有意义：dev 用 go run，每次都是最新代码。
 proc_start_epoch() {
   local pid="$1" s
   s=$(ps -o lstart= -p "$pid" 2>/dev/null) || return 1
@@ -193,10 +178,11 @@ proc_start_epoch() {
 }
 
 is_stale_run() {
+  [ "$(run_mode)" = "deploy" ] || return 1
   is_running || return 1
   [ -f "$SERVER_BIN" ] || return 1
   local pid bin_ts proc_ts
-  pid=$(running_pids | head -n1)
+  pid=$(server_pids | head -n1)
   [ -n "$pid" ] || return 1
   bin_ts=$(stat -c %Y "$SERVER_BIN" 2>/dev/null || stat -f %m "$SERVER_BIN" 2>/dev/null)
   proc_ts=$(proc_start_epoch "$pid") || return 1
@@ -207,22 +193,15 @@ is_stale_run() {
 
 restart_for_stale() {
   is_stale_run || return 1
-  warn "服务运行的是【构建前】的旧二进制（PID: $(running_pids | tr '\n' ' ')）"
-  info "  进程启动于: $(ps -o lstart= -p "$(running_pids | head -n1)" 2>/dev/null | tr -s ' ')"
+  warn "服务运行的是【构建前】的旧二进制（PID: $(server_pids | tr '\n' ' ')）"
+  info "  进程启动于: $(ps -o lstart= -p "$(server_pids | head -n1)" 2>/dev/null | tr -s ' ')"
   info "  产物生成于: $(date -r "$SERVER_BIN" '+%Y-%m-%d %H:%M:%S' 2>/dev/null)"
   warn "不重启的话，Web 控制台与接口仍然是旧版本。"
   local ans
   read -r -p "是否立即重启服务以加载新版本？会断开当前所有会话（植入端会在一个心跳周期内自动重连）[Y/n] " ans || ans="n"
   case "$ans" in
-    ""|[Yy]*)
-      do_stop || return 1
-      do_start "$(build_mode | grep -q dev && echo dev || echo deploy)"
-      return 0
-      ;;
-    *)
-      info "已跳过重启。需要生效时执行: ./Toshell.sh stop  然后  ./Toshell.sh start"
-      return 1
-      ;;
+    ""|[Yy]*) do_stop && do_start deploy; return 0 ;;
+    *) info "已跳过重启。需要生效时执行: ./Toshell.sh stop  然后  ./Toshell.sh start"; return 1 ;;
   esac
 }
 
@@ -236,22 +215,12 @@ sync_implant_template() {
 }
 
 do_build() {
-  local mode="${1:-deploy}"
-  info "构建服务端 + Web 前端（方式: $mode，根目录: $ROOT）"
+  info "构建服务端 + Web 前端（deploy 方式，根目录: $ROOT）"
   command -v go >/dev/null 2>&1 || { err "未找到 Go 工具链（需要 Go >= 1.25），请先安装"; return 1; }
-
-  # dev 方式用 --no-webui：不构建前端也不嵌入（不影响 cmd/server/webdist，
-  # 因此随时可以切回 deploy 而不必重新 npm build）。
-  if [ "$mode" = "dev" ]; then
-    devtool build --no-webui || { err "构建失败"; return 1; }
-  else
-    devtool build || { err "构建失败"; return 1; }
-  fi
-
+  devtool build || { err "构建失败"; return 1; }
   [ -f "$SERVER_BIN" ] || { err "未生成产物: $SERVER_BIN"; return 1; }
-  echo "$mode" >"$BUILD_MODE_FILE"
-  ok "构建完成: $SERVER_BIN（方式 $mode）"
-
+  ok "构建完成: $SERVER_BIN"
+  # 构建 ≠ 生效：服务还在跑的话，它跑的是内存里的旧二进制
   if is_stale_run; then
     restart_for_stale || true
   fi
@@ -260,7 +229,7 @@ do_build() {
 do_clean() {
   info "清理构建产物与日志文件..."
   if is_running; then
-    warn "服务端正在运行（PID: $(running_pids | tr '\n' ' ')），正在运行的二进制可能无法删除；建议先停止服务"
+    warn "服务端正在运行（PID: $(server_pids | tr '\n' ' ')）；建议先停止服务（本脚本不会自动停）"
   fi
   if vite_running; then
     warn "Vite 正在运行（PID: $(vite_pids | tr '\n' ' ')），先停止它"
@@ -268,13 +237,14 @@ do_clean() {
   fi
   rm -f "$SERVER_BIN" "$ROOT/toserver" 2>/dev/null
   rm -rf "$IMPLANTS_DIR"/* 2>/dev/null
-  # release/implant{,_c} 是 build 时从模板源生成的产物（不是源码），一并清理
+  # release/implant{,_c} 是 deploy 构建时从模板源生成的产物（不是源码），一并清理
   rm -rf "$RELEASE_DIR/implant" "$RELEASE_DIR/implant_c" 2>/dev/null
   rm -rf "$WEB_DIST" "$WEB_EMBED" 2>/dev/null
   rm -f "$ROOT/web/tsconfig.tsbuildinfo" "$ROOT/web/tsconfig.node.tsbuildinfo" 2>/dev/null
-  # 运行时状态：构建方式标记与 Vite 的 PID/日志
-  rm -f "$BUILD_MODE_FILE" "$VITE_PID" "$VITE_LOG" 2>/dev/null
-  rm -f "$LOG_OUT" "$LOG_ERR" "$ROOT/server.log" "$ROOT/server.err.log" 2>/dev/null
+  # 运行时状态：运行方式、Vite 的 PID/日志、两种方式的服务端日志
+  rm -f "$RUN_MODE_FILE" "$VITE_PID" "$VITE_LOG" 2>/dev/null
+  rm -f "$LOG_OUT" "$LOG_ERR" "$DEV_LOG_OUT" "$DEV_LOG_ERR" 2>/dev/null
+  rm -f "$ROOT/server.log" "$ROOT/server.err.log" 2>/dev/null
   ok "构建产物与日志已清理（node_modules 保留）"
 
   local ans
@@ -285,82 +255,153 @@ do_clean() {
         info "数据库清理需要先停止服务，正在停止..."
         do_stop || { err "停止服务失败，已跳过数据库清理"; return 1; }
       fi
-      rm -f "$ROOT/release/data/toshell.db" "$ROOT/release/data/toshell.db-wal" "$ROOT/release/data/toshell.db-shm" 2>/dev/null
+      # 两种方式各有自己的库（deploy: release/data；dev: ./data）
+      rm -f "$RELEASE_DIR/data/toshell.db" "$RELEASE_DIR/data/toshell.db-wal" "$RELEASE_DIR/data/toshell.db-shm" 2>/dev/null
       rm -f "$ROOT/data/toshell.db" "$ROOT/data/toshell.db-wal" "$ROOT/data/toshell.db-shm" 2>/dev/null
-      ok "数据库已清理（服务重启后将自动重建空库）"
+      ok "两处数据库均已清理（服务重启后将自动重建空库）"
       ;;
-    *)
-      info "已跳过数据库清理"
-      ;;
+    *) info "已跳过数据库清理" ;;
   esac
 }
 
-do_start() {
-  local mode="${1:-deploy}"
+# 轮询健康检查（dev 首次 go run 要编译，耗时可达数十秒，不能只 sleep 固定秒数）
+wait_healthy() {
+  local port="$1" i code
+  command -v curl >/dev/null 2>&1 || return 2
+  for i in $(seq 1 40); do
+    code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null)
+    [ "$code" = "200" ] && return 0
+    sleep 2
+  done
+  return 1
+}
 
+# ── 启动 ─────────────────────────────────────────────────────────────
+
+do_start_dev() {
+  if is_running; then
+    warn "服务端已在运行（PID: $(server_pids | tr '\n' ' ')），请先 stop（dev 与 deploy 端口相同，不能同时跑）"
+    return 0
+  fi
+  command -v go >/dev/null 2>&1 || { err "未找到 Go 工具链（需要 Go >= 1.25）"; return 1; }
+
+  # dev 用仓库根的配置（与 deploy 的 release/configs 是两份独立配置）
+  if [ ! -f "$DEV_CONFIG" ]; then
+    if [ -f "$DEV_CONFIG_EXAMPLE" ]; then
+      warn "dev 配置不存在，已从示例生成: $DEV_CONFIG"
+      cp "$DEV_CONFIG_EXAMPLE" "$DEV_CONFIG"
+    else
+      err "dev 配置不存在且无示例文件: $DEV_CONFIG"
+      return 1
+    fi
+  fi
+
+  local port; port=$(dev_api_port)
+  info "以 go run 启动服务端（开发方式，纯 API，cwd=$ROOT）..."
+  info "  首次运行需编译，可能等数十秒；改 Go 代码后重启即生效，无需先构建"
+  ( cd "$ROOT" && nohup go run ./cmd/server -config configs/server.yaml \
+      >"$DEV_LOG_OUT" 2>"$DEV_LOG_ERR" & )
+  echo "dev" >"$RUN_MODE_FILE"
+
+  info "等待服务端就绪（轮询 /api/v1/health，最多 80s）..."
+  if ! wait_healthy "$port"; then
+    if is_running; then
+      warn "进程在跑但健康检查未通过，可查看日志: $DEV_LOG_ERR"
+    else
+      err "启动失败，请检查日志: $DEV_LOG_ERR"
+      rm -f "$RUN_MODE_FILE"
+      return 1
+    fi
+  else
+    ok "服务端已就绪（PID: $(server_pids | tr '\n' ' ')）"
+  fi
+
+  info "后端纯 API: http://127.0.0.1:${port}（开发方式不嵌入前端，界面走 Vite）"
+  info "数据与日志在仓库根: 配置 configs/server.yaml、库 ./data/toshell.db、载荷 ./implants/"
+  info "  ⚠️ 这是**独立的开发实例**：监听器配置与 deploy 的 release/data 不共享"
+
+  start_vite || return 1
+}
+
+do_start_deploy() {
   if is_running; then
     # 跑着旧二进制时不能只警告就 return —— 那正是"构建完毫无变化"的根因。
     if is_stale_run && restart_for_stale; then
       return 0
     fi
-    warn "服务端已在运行（PID: $(running_pids | tr '\n' ' ')）"
-  else
-    ensure_build "$mode" || return 1
+    warn "服务端已在运行（PID: $(server_pids | tr '\n' ' ')），请先 stop"
+    return 0
+  fi
 
-    # 模板目录不在就不启动：否则服务端能起来，但生成载荷时才发现没有模板
-    if [ ! -d "$RELEASE_DIR/implant" ] || [ ! -f "$RELEASE_DIR/implant/main.go" ]; then
-      warn "植入端模板未同步到 $RELEASE_DIR/implant（服务端将无法生成载荷）"
-      sync_implant_template || { err "模板同步失败，终止启动"; return 1; }
-    fi
-    if [ ! -f "$CONFIG" ]; then
-      if [ -f "$CONFIG_EXAMPLE" ]; then
-        warn "配置不存在，已从示例生成: $CONFIG"
-        cp "$CONFIG_EXAMPLE" "$CONFIG"
-      else
-        err "配置不存在且无示例文件: $CONFIG"
-        return 1
-      fi
-    fi
+  if [ ! -f "$SERVER_BIN" ]; then
+    warn "未找到构建产物: $SERVER_BIN"
+    local ans
+    read -r -p "是否现在构建？[Y/n] " ans || ans="n"
+    case "$ans" in
+      ""|[Yy]*) do_build || { err "构建失败，终止启动"; return 1 ; } ;;
+      *) err "用户拒绝构建，终止启动"; return 1 ;;
+    esac
+  fi
 
-    info "启动服务端（$mode 方式）..."
-    ( cd "$RELEASE_DIR" && nohup ./toserver -config configs/server.yaml > server.log 2> server.err.log & )
-    sleep 2
-    if ! is_running; then
-      err "启动失败，请检查日志: $LOG_ERR"
+  # 模板目录不在就不启动：否则服务端能起来，但生成载荷时才发现没有模板
+  if [ ! -d "$RELEASE_DIR/implant" ] || [ ! -f "$RELEASE_DIR/implant/main.go" ]; then
+    warn "植入端模板未同步到 $RELEASE_DIR/implant（服务端将无法生成载荷）"
+    sync_implant_template || { err "模板同步失败，终止启动"; return 1; }
+  fi
+  if [ ! -f "$CONFIG" ]; then
+    if [ -f "$CONFIG_EXAMPLE" ]; then
+      warn "配置不存在，已从示例生成: $CONFIG"
+      cp "$CONFIG_EXAMPLE" "$CONFIG"
+    else
+      err "配置不存在且无示例文件: $CONFIG"
       return 1
     fi
-    local port; port=$(api_port)
-    ok "服务端已启动（PID: $(running_pids | tr '\n' ' ')）"
-    if [ "$mode" = "deploy" ]; then
-      info "Web 控制台: http://127.0.0.1:${port}"
-    else
-      info "后端 API: http://127.0.0.1:${port}（开发方式不嵌入前端，界面走 Vite）"
-    fi
-    if command -v curl >/dev/null 2>&1; then
-      local code
-      code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${port}/api/v1/health" 2>/dev/null)
-      if [ "$code" = "200" ]; then ok "健康检查通过（/api/v1/health → 200）"; else warn "健康检查返回 HTTP ${code:-无响应}，可查看 $LOG_ERR"; fi
-    fi
   fi
 
-  if [ "$mode" = "dev" ]; then
-    start_vite || return 1
+  local port; port=$(deploy_api_port)
+  info "启动服务端（部署方式，带内嵌前端）..."
+  ( cd "$RELEASE_DIR" && nohup ./toserver -config configs/server.yaml > server.log 2> server.err.log & )
+  echo "deploy" >"$RUN_MODE_FILE"
+  sleep 2
+
+  if ! is_running; then
+    err "启动失败，请检查日志: $LOG_ERR"
+    rm -f "$RUN_MODE_FILE"
+    return 1
   fi
+  ok "服务端已启动（PID: $(server_pids | tr '\n' ' ')）"
+  info "Web 控制台: http://127.0.0.1:${port}"
+  if wait_healthy "$port"; then
+    ok "健康检查通过（/api/v1/health → 200）"
+  else
+    warn "健康检查未通过，可查看 $LOG_ERR"
+  fi
+}
+
+do_start() {
+  case "${1:-deploy}" in
+    dev)     do_start_dev ;;
+    deploy)  do_start_deploy ;;
+    *) err "未知启动方式: $1（可用: --dev）"; return 1 ;;
+  esac
 }
 
 do_stop() {
   local rc=0
   if is_running; then
-    info "发现服务端进程: $(running_pids | tr '\n' ' ')"
+    info "发现服务端进程: $(server_pids | tr '\n' ' ')（方式: $(run_mode)）"
     info "正在停止..."
-    kill $(running_pids) 2>/dev/null
+    # dev 的进程是 go run 的子进程，kill 父进程可能留下它；两种方式都按端口定位到
+    # 真正监听的进程，再连它的子进程一起收掉
+    local pids; pids=$(server_pids)
+    kill $pids 2>/dev/null
     sleep 1
     if is_running; then
-      kill -9 $(running_pids) 2>/dev/null
+      kill -9 $(server_pids) 2>/dev/null
       sleep 1
     fi
     if is_running; then
-      err "服务端停止失败，进程仍在: $(running_pids | tr '\n' ' ')"
+      err "服务端停止失败，进程仍在: $(server_pids | tr '\n' ' ')"
       rc=1
     else
       ok "服务端已停止"
@@ -368,35 +409,47 @@ do_stop() {
   else
     warn "服务端未在运行"
   fi
+  rm -f "$RUN_MODE_FILE"
   stop_vite || rc=1
   return $rc
 }
 
 do_config() {
-  if [ ! -f "$CONFIG" ]; then
-    if [ -f "$CONFIG_EXAMPLE" ]; then
-      cp "$CONFIG_EXAMPLE" "$CONFIG"
-      info "已从示例生成配置: $CONFIG"
+  local f="$CONFIG"
+  if [ "${1:-deploy}" = "dev" ]; then f="$DEV_CONFIG"; fi
+  if [ ! -f "$f" ]; then
+    local ex="$CONFIG_EXAMPLE"; [ "$f" = "$DEV_CONFIG" ] && ex="$DEV_CONFIG_EXAMPLE"
+    if [ -f "$ex" ]; then
+      cp "$ex" "$f"
+      info "已从示例生成配置: $f"
     else
-      err "配置不存在: $CONFIG"
+      err "配置不存在且无示例: $f"
       return 1
     fi
   fi
   info "常用配置项: server.api_port（服务端口）、server.public_host（回连地址）、auth.admin_password、auth.api_keys"
-  "${EDITOR:-vi}" "$CONFIG"
+  "${EDITOR:-vi}" "$f"
   info "已退出编辑器。若修改了服务端口，需重启服务生效。"
 }
 
 do_status() {
-  local mode; mode=$(build_mode)
-  printf "  构建产物: %s\n" "$([ -f "$SERVER_BIN" ] && echo "$SERVER_BIN（方式 ${mode:-未知}）" || echo "未构建")"
-  printf "  服务端:   %s\n" "$(is_running && echo "运行中（PID: $(running_pids | tr '\n' ' ')）" || echo "未运行")"
-  printf "  Vite:     %s\n" "$(vite_running && echo "运行中（端口 $(vite_port)，PID: $(vite_pids | tr '\n' ' ')）" || echo "未运行")"
+  local m; m=$(run_mode)
+  if [ -f "$SERVER_BIN" ]; then
+    printf "  构建产物: %s\n" "$SERVER_BIN"
+  else
+    printf "  构建产物: 未构建（deploy 方式需要；dev 方式用 go run，不需要）\n"
+  fi
   if is_running; then
-    printf "  入口:     http://127.0.0.1:%s\n" "$(api_port)"
+    printf "  服务端:   运行中（方式 %s，PID: %s）\n" "${m:-未知}" "$(server_pids | tr '\n' ' ')"
+    printf "  入口:     http://127.0.0.1:%s\n" "$([ "$m" = "dev" ] && dev_api_port || deploy_api_port)"
+  else
+    printf "  服务端:   未运行\n"
   fi
   if vite_running; then
+    printf "  Vite:     运行中（端口 %s，PID: %s）\n" "$(vite_port)" "$(vite_pids | tr '\n' ' ')"
     printf "  开发入口: http://127.0.0.1:%s（热更新，/api 代理到后端）\n" "$(vite_port)"
+  else
+    printf "  Vite:     未运行\n"
   fi
 }
 
@@ -405,21 +458,21 @@ usage() {
 ToShell 开发管理脚本（本仓库源码构建用；部署请用发布包内 install.sh）
 
 用法:
-  $0 start [--dev]     启动。默认 deploy 方式（带内嵌前端）
-                       --dev 为开发方式：纯 API 后端 + Vite 热更新（端口 $(vite_port)）
+  $0 start [--dev]     启动。默认 deploy（构建带内嵌前端的二进制并运行）
+                       --dev 用 go run 起纯 API 后端 + Vite 热更新（端口 $(vite_port)）
   $0 stop              停止服务端与 Vite
   $0 status            查看构建产物、服务端与 Vite 的当前状态
-  $0 build [--dev]     构建（--dev 构建不带内嵌前端的纯 API 版本）
+  $0 build             构建 deploy 方式的二进制（dev 方式用 go run，无需构建）
   $0 clean             清理构建产物、日志与运行时状态
   $0 sync              仅把植入端模板同步到 release/（改模板后免于完整构建）
-  $0 config            修改项目配置（编辑配置文件）
+  $0 config [--dev]    修改配置（默认 deploy 的 release/configs/server.yaml）
   $0 help              显示本帮助
   $0                   进入交互式菜单
 
-两种启动方式产出的二进制不同（dev 不嵌入前端），切换方式时会提示重建。
-
-产物位置：release/（复刻发布包布局，使本地与发布包的模板解析路径一致）
-植入端模板唯一源：internal/server/builder/implant（+ implant_c）
+两种方式是**两个独立实例**，运行时目录不同，因此配置/SQLite 库/载荷目录都不共享，
+且 API 端口默认都是 18081 —— 不能同时跑：
+  deploy  release/configs/server.yaml + release/data/toshell.db，单进程带内嵌前端
+  dev     configs/server.yaml        + ./data/toshell.db，      go run + Vite 热更新
 EOF
 }
 
@@ -432,16 +485,16 @@ interactive_menu() {
     echo "  [1] 构建（deploy 方式，带内嵌前端）"
     echo "  [2] 清理全部构建产物与日志"
     echo "  [3] 启动（deploy 方式）"
-    echo "  [4] 启动（dev 方式，含 Vite 热更新）"
+    echo "  [4] 启动（dev 方式，go run + Vite 热更新）"
     echo "  [5] 停止（服务端 + Vite）"
     echo "  [6] 查看状态"
-    echo "  [7] 修改项目配置"
+    echo "  [7] 修改配置"
     echo "  [8] 退出"
     echo "=============================="
     local choice
     read -r -p "请选择 [1-8]: " choice
     case "$choice" in
-      1) do_build deploy ;;
+      1) do_build ;;
       2) do_clean ;;
       3) do_start deploy ;;
       4) do_start dev ;;
@@ -454,27 +507,32 @@ interactive_menu() {
   done
 }
 
-# 解析 <命令> [--dev|--deploy]
-mode_arg() {
-  case "${1:-}" in
-    --dev) echo "dev" ;;
-    ""|--deploy) echo "deploy" ;;
-    *) err "未知参数: $1（可用: --dev）"; return 1 ;;
-  esac
-}
-
 if [ $# -eq 0 ]; then
   interactive_menu
 else
-  m=""
   case "$1" in
-    start|--start|-s) m=$(mode_arg "${2:-}") || exit 1; do_start "$m" ;;
-    build|--build|-b) m=$(mode_arg "${2:-}") || exit 1; do_build "$m" ;;
+    start|--start|-s)
+      case "${2:-}" in
+        --dev) do_start dev ;;
+        ""|--deploy) do_start deploy ;;
+        *) err "未知参数: $2（可用: --dev）"; exit 1 ;;
+      esac ;;
     stop|--stop|-t)   do_stop ;;
     status|--status)  do_status ;;
+    build|--build|-b)
+      case "${2:-}" in
+        ""|--deploy) do_build ;;
+        --dev) info "dev 方式用 go run 启动，不需要构建 —— 直接 ./Toshell.sh start --dev" ;;
+        *) err "未知参数: $2"; exit 1 ;;
+      esac ;;
     clean|--clean|-c) do_clean ;;
     sync|--sync)      sync_implant_template ;;
-    config|--config|--edit-config|-e) do_config ;;
+    config|--config|--edit-config|-e)
+      case "${2:-}" in
+        --dev) do_config dev ;;
+        ""|--deploy) do_config deploy ;;
+        *) err "未知参数: $2（可用: --dev）"; exit 1 ;;
+      esac ;;
     help|--help|-h)   usage ;;
     *) err "未知参数: $1"; usage; exit 1 ;;
   esac

@@ -24,6 +24,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"golang.org/x/text/encoding/simplifiedchinese"
 	"golang.org/x/text/transform"
@@ -167,4 +168,15 @@ func (p paths) templateGenC() string { return p.join("release", "implant_c") }
 func (p paths) releaseDir() string { return p.join("release") }
 func (p paths) webDist() string    { return p.join("web", "dist") }
 func (p paths) webEmbed() string   { return p.join("cmd", "server", "webdist") }
-func (p paths) serverBin() string  { return p.join("release", "toserver") }
+// serverBin 本地构建产物路径。
+//
+// Windows 上必须是 .exe：`go build -o release/toserver` 不会自动补扩展名，而
+// Toshell.ps1 / Toshell.bat 找的是 release\toserver.exe（与发布包内的命名一致）。
+// 若这里产出无扩展名的文件，Windows 上就会出现"build 成功了但 start 说未找到构建产物"。
+func (p paths) serverBin() string {
+	name := "toserver"
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+	}
+	return p.join("release", name)
+}

@@ -11,8 +11,8 @@ release/toserver.exe
 release/toserver
 release/implants/
 release/data/
-# Toshell.* 的运行时状态：构建方式标记（dev|deploy）与 Vite 的 PID 文件
-release/.build-mode
+# Toshell.* 的运行时状态：服务端的启动方式标记（dev|deploy）与 Vite 的 PID 文件
+release/.run-mode
 release/vite.pid
 # 植入端模板生成物：唯一源在 internal/server/builder/implant{,_c}，
 # 由 build / 打包同步到这里，以使本地运行与发布包的模板解析路径完全一致。

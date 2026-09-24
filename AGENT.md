@@ -110,9 +110,15 @@ remote 只读。分叉原因与上游修复的取用见 [docs/FORK.md](docs/FORK
 ./Toshell.sh sync             # 仅同步植入端模板，跳过完整构建
 ```
 
-两种方式的**二进制不同**（`dev` 不嵌入前端），构建方式记录在 `release/.build-mode`；
-`start` 发现产物方式与本次启动方式不符时会提示重建，避免"以为在开发态、实际跑的是
-带内嵌前端的部署态二进制"。
+两种方式是**两个独立实例**，运行时目录不同，因此配置、SQLite 库、载荷输出目录都
+不共享，且 API 端口默认相同 —— 不能同时跑：
+
+| | 运行时目录 | 配置 | 启动方式 | 模板来源 |
+|---|---|---|---|---|
+| `deploy` | `release/` | `release/configs/server.yaml` | 构建出的二进制 | `release/implant/`（构建期同步） |
+| `dev` | 仓库根 | `configs/server.yaml` | `go run ./cmd/server` | `internal/server/builder/implant/`（源码，改完即生效） |
+
+`dev` 不构建产物，所以改 Go 代码只需重启、改前端即时热更新、改模板连 `sync` 都不用。
 
 **前端**：开发态 `cd web && npm run dev`（监听 3002，将 `/api` 代理至 `server.api_port`，
 默认 18081；用 `VITE_PROXY_TARGET` 覆盖目标）；生产态 `go run ./cmd/devtool build` 后访问 `:18081`。

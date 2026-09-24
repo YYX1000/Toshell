@@ -263,12 +263,13 @@ func (l *MQTTListener) handleRegister(sid string, packet *protocol.Packet) {
 	info := buildSessionInfo(packet, reg, "mqtt", l.cfg.ID, "mqtt:"+sid)
 	if l.sessionMgr != nil {
 		if existing, gerr := l.sessionMgr.Get(sid); gerr == nil && existing != nil {
-			wasDead := existing.Info == nil || existing.Info.Status == "dead" || existing.Info.Status == "asleep"
 			info.RemoteAddr = "mqtt:" + sid
 			info.LastSeen = time.Now()
 			_ = l.sessionMgr.RefreshInfo(sid, info)
-			// 死亡会话重连复活：广播上线事件，前端即时点亮
-			if wasDead && l.onSessionOnline != nil {
+			// 无条件通知（原因见 tcp_listener.handleRegister 的注释）：
+			// 重复广播由 BroadcastSessionOnline 自己按在线状态去重，
+			// 但取消待发的 session_offline 只有被调用到才会发生。
+			if l.onSessionOnline != nil {
 				l.onSessionOnline(info)
 			}
 		} else {

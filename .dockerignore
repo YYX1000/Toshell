@@ -1,0 +1,32 @@
+# 构建上下文瘦身。镜像里用不到的一律排除。
+#
+# 注意：不要排除 Dockerfile 的 COPY 来源 —— web/（前端源码）、internal/、cmd/、
+# go.mod/go.sum、internal/server/builder/implant{,_c}（模板）、configs/*.example、
+# data/av_fingerprints.json、release/upx、docs/ 与几个许可文件都必须在上下文里。
+
+.git
+.github
+.idea
+.mcp.json
+AGENT.md
+.vscode
+
+# 运行/构建残留
+**/*.log
+**/*.exe~
+release/toserver
+release/toserver.exe
+release/implants
+release/data
+release/release-zips
+release/.playwright-mcp
+
+# 生成物：模板用源目录那份（internal/server/builder/implant），前端在镜像内现构建
+release/implant
+release/implant_c
+cmd/server/webdist
+web/dist
+**/node_modules
+
+# 容器内无用的大文件
+docs/screenshots

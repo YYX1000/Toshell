@@ -128,6 +128,9 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	defer close(done)
 
+	// 输入通道是否处于"收发不出去"的状态：用于把每键盘一次的报错收敛成每次中断一条
+	inputBroken := false
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -135,8 +138,26 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
+		// 靶机链路中断期间（植入体在重连空窗里没有 writer），**每一次按键**都会让
+		// SendShellInput 失败。原先是每次失败都往终端写一条且不带换行符，
+		// 于是用户只敲了 6 个字符就糊出一整行 "[错误: no writer for session xxx]" ×6。
+		// 改为"每次中断只提示一次"：首次失败给出原因，后续失败静默丢弃，
+		// 链路恢复后再告知一次。Shell 进程本身不会因此丢失（植入体重连后照常可用）。
 		if err := controller.SendShellInput(sessionID, string(msg)); err != nil {
-			conn.WriteMessage(1, []byte(fmt.Sprintf("[错误: %v]", err)))
+			if !inputBroken {
+				inputBroken = true
+				fmt.Printf("[WARN] [shell] session %s 输入未送达: %v（后续失败不再重复提示）\n", sessionID, err)
+				conn.WriteMessage(1, []byte(fmt.Sprintf(
+					"\r\n\x1b[33m[ 输入未送达靶机：%v ]\x1b[0m\r\n"+
+						"\x1b[33m[ 植入体正在重连，这期间的按键会被丢弃；恢复后可继续输入，Shell 进程不会丢 ]\x1b[0m\r\n",
+					err)))
+			}
+			continue
+		}
+		if inputBroken {
+			inputBroken = false
+			fmt.Printf("[INFO] [shell] session %s 输入通道已恢复\n", sessionID)
+			conn.WriteMessage(1, []byte("\r\n\x1b[32m[ 靶机链路已恢复 ]\x1b[0m\r\n"))
 		}
 	}
 

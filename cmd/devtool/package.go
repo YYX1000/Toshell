@@ -13,10 +13,11 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"time"
 )
 
-// target 一个发布目标。矩阵必须与 .github/workflows/release.yml 的 matrix 一致 ——
-// 本工具就是那份内嵌 bash 的唯一实现，两者不再各写一遍。
+// target 一个发布目标。targets 是平台清单的唯一来源：CI 与本地都经
+// `devtool package` 使用本表，CI 侧不再单独维护一份平台矩阵。
 type target struct {
 	GOOS   string
 	GOARCH string
@@ -34,8 +35,7 @@ var targets = []target{
 	{"darwin", "arm64", "", "release/deploy.sh", "toshell-server-darwin-arm64.zip"},
 }
 
-// verifyLayoutEntries 打包后必须存在于 zip 内的路径。
-// 与 release.yml 的 "Verify package layout" 保持同一份清单，避免两处漂移。
+// verifyLayoutEntries 打包后必须存在于 zip 内的路径，由 verifyZipLayout 校验。
 var verifyLayoutEntries = []string{
 	"implant/main.go",   // 服务端解析模板的命中判据
 	"implant_c/main.c",  // 运行期编译 C 植入端要用（builder.go 以 ../implant_c 推导）
@@ -175,7 +175,7 @@ func packageOne(p paths, t target, version, outDir, tmp string, keepBin bool) er
 	binPath := filepath.Join(tmp, binName)
 
 	ldflags := fmt.Sprintf("-s -w -X main.version=%s -X main.commit=%s -X main.buildTime=%s",
-		version, gitShort(p.root), nowUTC())
+		version, gitShort(p.root), time.Now().UTC().Format("2006-01-02T15:04:05Z"))
 
 	c := exec.Command("go", "build", "-tags", "webui", "-ldflags", ldflags, "-o", binPath, "./cmd/server")
 	c.Dir = p.root
@@ -207,7 +207,7 @@ func packageOne(p paths, t target, version, outDir, tmp string, keepBin bool) er
 		return err
 	}
 
-	// ── 组装包内容（与 release.yml 的 Package zip 逐项对应）──
+	// ── 组装包内容 ──
 	type item struct{ src, dst string }
 	fileItems := []item{
 		{binPath, binName},
@@ -267,8 +267,7 @@ func packageOne(p paths, t target, version, outDir, tmp string, keepBin bool) er
 		return err
 	}
 
-	// ── 自校验：包内必须有能直接跑起来的最小集合 ──
-	// （把 release.yml 的 Verify 步骤前移到这里，本地打包同样受检）
+	// 自校验：包内必须有能直接跑起来的最小集合。本地打包与 CI 同样受此校验。
 	if err := verifyZipLayout(zipPath); err != nil {
 		return err
 	}
@@ -396,7 +395,7 @@ func verifyZipLayout(zipPath string) error {
 }
 
 // writeChecksums 对输出目录内的所有 zip 求 sha256，按文件名排序写入 checksums.txt。
-// 与 CI 的 checksums job 产物同名同格式，便于发布时直接比对。
+// 格式与 `sha256sum` 输出一致，便于用 sha256sum -c 校验。
 func writeChecksums(dir string) error {
 	entries, err := os.ReadDir(dir)
 	if err != nil {

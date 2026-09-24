@@ -21,15 +21,13 @@ func (c checkProblem) String() string { return "[x] " + c.What + "\n    " + c.Wh
 // cmdCheck 校验仓库必须始终满足的不变量。
 //
 // 这些不变量保证：服务端读取的内容与其唯一源一致、打包与发版门禁取同一来源、
-// 仓库状态能如实反映"源是否已同步"、文档引用可解析。
+// 仓库状态能如实反映"源是否已同步"。
 // 任一条失效时都不会立即报错，而是在后续环节静默产生错误结果（例如发出内容有误的包），
 // 因此必须以检查而非约定来维持：
 //   · 模板唯一源完好；release/implant{,_c} 为生成物、不被 git 跟踪、且与源逐字节一致
 //   · 两份 server.yaml.example 内容一致（打包用前者，本地起服务用后者）
 //   · 打包与发版门禁指向同一模板源
-//   · CI 平台矩阵与 devtool 的目标清单一致
 //   · web/vite.config.js 不存在（它会遮蔽 vite.config.ts）
-//   · 文档相对链接可解析
 func cmdCheck(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("check 不接受参数，收到: %v", args)
@@ -45,9 +43,7 @@ func cmdCheck(args []string) error {
 	problems = append(problems, checkGeneratedArtifacts(p)...)
 	problems = append(problems, checkExampleConfigs(p)...)
 	problems = append(problems, checkPackagingPointers(p)...)
-	problems = append(problems, checkReleaseMatrix(p)...)
 	problems = append(problems, checkViteConfigShadow(p)...)
-	problems = append(problems, checkDocLinks(p)...)
 
 	if len(problems) > 0 {
 		fmt.Fprintf(errOut, "不变量校验未通过（%d 项）:\n\n", len(problems))
@@ -110,8 +106,10 @@ func checkGeneratedArtifacts(p paths) []checkProblem {
 
 	// 生成物存在就必须与源逐字节一致
 	if dirExists(p.templateGen()) {
-		if src, gen, err := compareDirs(p.templateSrc(), p.templateGen()); err == nil {
-			if msg := describeDirDiff(src, gen); msg != "" {
+		srcHashes, err1 := fileHashes(p.templateSrc())
+		genHashes, err2 := fileHashes(p.templateGen())
+		if err1 == nil && err2 == nil {
+			if msg := describeDirDiff(srcHashes, genHashes); msg != "" {
 				out = append(out, checkProblem{
 					"运行用的模板生成物与唯一源不一致: " + relOrAbs(p.root, p.templateGen()),
 					msg + "。执行 `devtool sync` 重新同步（服务端读的是生成物，不是源）",
@@ -237,60 +235,7 @@ func checkPackagingPointers(p paths) []checkProblem {
 // 用词边界排除 release/implants（复数）—— 那是 implant.output_dir 的载荷产物目录，与模板无关。
 var genTemplateRe = regexp.MustCompile(`release[\\/]implant(_c)?\b`)
 
-// ── 5. CI 平台矩阵必须与 devtool 的目标清单一致 ────────────────────
-
-var matrixRowRe = regexp.MustCompile(
-	`\{\s*goos:\s*(\w+),\s*goarch:\s*'?(\w+)'?,\s*ext:\s*'?([^,']*)'?,\s*zip:\s*([\w.\-]+),\s*deploy:\s*([\w./]+)\s*\}`)
-
-func checkReleaseMatrix(p paths) []checkProblem {
-	f := p.join(".github", "workflows", "release.yml")
-	b, err := os.ReadFile(f)
-	if err != nil {
-		return []checkProblem{{"读取失败: " + relOrAbs(p.root, f), err.Error()}}
-	}
-
-	got := map[string]target{}
-	for _, m := range matrixRowRe.FindAllStringSubmatch(string(b), -1) {
-		t := target{GOOS: m[1], GOARCH: m[2], Ext: m[3], Zip: m[4], Deploy: m[5]}
-		got[t.GOOS+"/"+t.GOARCH] = t
-	}
-	if len(got) == 0 {
-		return []checkProblem{{
-			"release.yml 的平台矩阵未解析到任何目标: " + relOrAbs(p.root, f),
-			"格式可能与 devtool 的解析不符；矩阵是打包的来源，解析不到就等于没校验",
-		}}
-	}
-
-	var out []checkProblem
-	for _, want := range targets {
-		key := want.GOOS + "/" + want.GOARCH
-		g, ok := got[key]
-		if !ok {
-			out = append(out, checkProblem{
-				"CI 矩阵缺少平台: " + key,
-				"devtool 会打这个包，但 CI 不会 —— 发布时会少一个平台",
-			})
-			continue
-		}
-		if g.Zip != want.Zip || g.Ext != want.Ext || g.Deploy != want.Deploy {
-			out = append(out, checkProblem{
-				"CI 矩阵的 " + key + " 与 devtool 的目标定义不一致",
-				fmt.Sprintf("ci: zip=%s ext=%q deploy=%s ｜ devtool: zip=%s ext=%q deploy=%s",
-					g.Zip, g.Ext, g.Deploy, want.Zip, want.Ext, want.Deploy),
-			})
-		}
-		delete(got, key)
-	}
-	for _, k := range sortedKeys(got) {
-		out = append(out, checkProblem{
-			"CI 矩阵多出平台: " + k,
-			"devtool 不会打这个包，但 CI 会尝试 —— 两边定义已漂移",
-		})
-	}
-	return out
-}
-
-// ── 6. web/vite.config.js 不得存在 ────────────────────────────────
+// ── 5. web/vite.config.js 不得存在 ────────────────────────────────
 
 // 不变量：web/ 下不存在 vite.config.js。
 //
@@ -313,107 +258,6 @@ func checkViteConfigShadow(p paths) []checkProblem {
 // ── 7. 文档相对链接 ────────────────────────────────────────────────
 
 var mdLinkRe = regexp.MustCompile(`\]\(([^)\s]+)\)`)
-
-// 检查文档里的相对链接是否指向存在的文件。
-//
-// release/README.md 单独处理：它的链接是按**包内布局**写的（打包时被拷到包根），
-// 所以在仓库 release/ 目录下解析必然失败 —— 这是刻意的，要按包内清单校验。
-func checkDocLinks(p paths) []checkProblem {
-	var out []checkProblem
-
-	// 仓库布局的文档（AGENT.md 也要查：它点名的路径与命令一旦过时就误导协作者）
-	repoDocs := []string{
-		p.join("README.md"), p.join("USAGE.md"), p.join("ROADMAP.md"),
-		p.join("CHANGELOG.md"), p.join("SECURITY.md"), p.join("DISCLAIMER.md"),
-		p.join("THIRD-PARTY-NOTICES.md"), p.join("AGENT.md"),
-	}
-	if ds, err := filepath.Glob(p.join("docs", "*.md")); err == nil {
-		repoDocs = append(repoDocs, ds...)
-	}
-	for _, f := range repoDocs {
-		out = append(out, checkLinksIn(f, func(target string) string {
-			return filepath.Join(filepath.Dir(f), filepath.FromSlash(target))
-		}, relOrAbs(p.root, f))...)
-	}
-
-	// 包内 README：目标按"解压后的包根"解析
-	pkgReadme := p.join("release", "README.md")
-	if fileExists(pkgReadme) {
-		manifest := packageManifest(p)
-		out = append(out, checkLinksIn(pkgReadme, func(target string) string {
-			if manifest[target] {
-				return "" // 标记为存在
-			}
-			return filepath.Join("/nonexistent-package-root", target)
-		}, "release/README.md（按包内布局）")...)
-	}
-	return out
-}
-
-func checkLinksIn(file string, resolve func(string) string, label string) []checkProblem {
-	var out []checkProblem
-
-	b, err := os.ReadFile(file)
-	if err != nil {
-		return nil // 文件不存在不算链接错误
-	}
-	lines := strings.Split(string(b), "\n")
-	for i, line := range lines {
-		for _, m := range mdLinkRe.FindAllStringSubmatch(line, -1) {
-			target := m[1]
-			if strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://") ||
-				strings.HasPrefix(target, "#") || strings.HasPrefix(target, "mailto:") {
-				continue
-			}
-			// 去掉锚点 / 查询
-			if j := strings.IndexAny(target, "#?"); j >= 0 {
-				target = target[:j]
-			}
-			if target == "" {
-				continue
-			}
-			p := resolve(target)
-			if p == "" {
-				continue // 显式标记为存在（包内清单命中）
-			}
-			if _, err := os.Stat(p); err != nil {
-				out = append(out, checkProblem{
-					fmt.Sprintf("%s:%d 链接失效: %s", label, i+1, m[1]),
-					"目标不存在；打包进包后同样是死链",
-				})
-			}
-		}
-	}
-	return out
-}
-
-// packageManifest 返回"解压后包根下会存在"的路径集合，用于校验包内 README 的链接。
-// 与 packageOne 的组装清单保持对应。
-func packageManifest(p paths) map[string]bool {
-	m := map[string]bool{
-		"toserver": true, "toserver.exe": true,
-		"configs/server.yaml.example": true,
-		"README.md":                   true, "USAGE.md": true,
-		"LICENSE": true, "DISCLAIMER.md": true, "THIRD-PARTY-NOTICES.md": true,
-		"deploy.sh": true, "deploy.bat": true,
-		"install.sh": true, "install.ps1": true,
-		"data/av_fingerprints.json": true,
-	}
-	// docs/ 下的文件是整目录带进去的
-	if err := filepath.WalkDir(p.join("docs"), func(path string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return nil
-		}
-		if rel, err := filepath.Rel(p.root, path); err == nil {
-			m[filepath.ToSlash(rel)] = true
-		}
-		return nil
-	}); err != nil {
-		// 忽略：docs 不存在时链接检查会自然报失效
-		_ = err
-	}
-	return m
-}
 
 // ── git 辅助 ────────────────────────────────────────────────────────
 

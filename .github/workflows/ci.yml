@@ -67,13 +67,12 @@ jobs:
         run: go vet ./...
 
       - name: Invariants (devtool check)
-        # 门禁那些"不检查就会静默腐坏"的不变量：
-        #   · 植入端模板单一源、运行用生成物与源一致（曾因两份人工同步的镜像导致
-        #     发版门禁校验的是不发货的那一份 = 假绿灯）
-        #   · 两份 server.yaml.example 一致
-        #   · CI/本地打包与发版门禁都指向模板唯一源（防镜像以别的形式回归）
-        #   · CI 平台矩阵与 devtool 目标清单一致
-        #   · 文档相对链接有效（含包内 README 的包内布局链接）
+        # 校验 cmd/devtool/check.go 中定义的 5 条不变量：
+        #   · 模板唯一源完好（含 main.go；implant_c 与其同级且有 main.c）
+        #   · release/implant{,_c} 为生成物：不被 git 跟踪，且与唯一源逐字节一致
+        #   · 两份 server.yaml.example 内容一致（打包用前者，本地起服务用后者）
+        #   · 打包与发版门禁指向同一模板源，且不引用生成物
+        #   · web/vite.config.js 不存在（它会遮蔽 vite.config.ts）
         run: go run ./cmd/devtool check
 
       - name: Run unit tests

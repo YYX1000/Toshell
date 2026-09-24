@@ -36,12 +36,22 @@ var (
 	errOut io.Writer = os.Stderr
 )
 
-// initOutput 按控制台代码页决定是否需要转码输出。
+// initOutput 决定是否需要把输出转码到控制台代码页。
+//
+// 仅在 stdout 是终端、且该终端代码页不是 UTF-8 时转码。输出被重定向或经管道传递时
+// 不转码：此时消费方（文件、grep、CI 日志）按 UTF-8 读取，转成 GBK 会得到乱码。
 func initOutput() {
-	if consoleNeedsGBK() {
-		out = transform.NewWriter(os.Stdout, simplifiedchinese.GBK.NewEncoder())
-		errOut = transform.NewWriter(os.Stderr, simplifiedchinese.GBK.NewEncoder())
+	if !stdoutIsTerminal() || !consoleNeedsGBK() {
+		return
 	}
+	out = transform.NewWriter(os.Stdout, simplifiedchinese.GBK.NewEncoder())
+	errOut = transform.NewWriter(os.Stderr, simplifiedchinese.GBK.NewEncoder())
+}
+
+// stdoutIsTerminal 报告 stdout 是否为字符设备（终端 / 控制台）。
+func stdoutIsTerminal() bool {
+	fi, err := os.Stdout.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 const usage = `ToShell 开发/发版管线工具

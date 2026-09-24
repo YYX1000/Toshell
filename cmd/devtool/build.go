@@ -184,11 +184,7 @@ func syncTemplate(p paths) error {
 		}
 	}
 
-	n, err := countFiles(p.templateGen())
-	if err != nil {
-		return err
-	}
-	ok("模板已同步: %d 个文件", n)
+	ok("模板已同步")
 	return nil
 }
 
@@ -298,43 +294,12 @@ func fileHashes(dir string) (map[string]string, error) {
 	return m, err
 }
 
-func countFiles(dir string) (int, error) {
-	n := 0
-	err := filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if !d.IsDir() {
-			n++
-		}
-		return nil
-	})
-	return n, err
-}
-
 func gitShort(root string) string {
 	out, err := exec.Command("git", "-C", root, "rev-parse", "--short", "HEAD").Output()
 	if err != nil {
 		return "dev"
 	}
 	return strings.TrimSpace(string(out))
-}
-
-// nowUTC 构建时间戳，与 CI 的 `date -u +'%Y-%m-%dT%H:%M:%SZ'` 同格式
-// （注入 main.buildTime，服务端 -version 会打印它）。
-func nowUTC() string { return time.Now().UTC().Format("2006-01-02T15:04:05Z") }
-
-// compareDirs 返回两个目录的 相对路径→SHA-256 映射，供调用方自行比对。
-func compareDirs(a, b string) (map[string]string, map[string]string, error) {
-	ha, err := fileHashes(a)
-	if err != nil {
-		return nil, nil, err
-	}
-	hb, err := fileHashes(b)
-	if err != nil {
-		return nil, nil, err
-	}
-	return ha, hb, nil
 }
 
 func runIn(dir, name string, args ...string) error {

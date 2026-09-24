@@ -71,21 +71,23 @@ jobs:
           retention-days: 7
 
   # 多平台交叉编译 + 打包 + 上传 GitHub Release
+  # 单 job 构建全部 6 个平台，不再用 matrix：
+  #   · 平台清单只在 cmd/devtool/package.go 定义一处，CI 与本地是同一实现
+  #   · 发布原子性 —— 矩阵配 fail-fast:false 时，某个平台失败仍会把其余 zip 与基于
+  #     它们算出的 checksums 传上 Release，留下没有失败信号的残缺发布
+  #   · 全部文件由单 job 上传，不再有"矩阵并发向同一 Release 追加"的冲突
+  #     （原先 LICENSE/DISCLAIMER/THIRD-PARTY-NOTICES 正是因该冲突被挪到独立的 checksums job）
+  #
+  # devtool 内部依次完成：GOOS/GOARCH + CGO_ENABLED=0 + -tags webui 编译；组装
+  # implant/ implant_c/ configs/ docs/ 等全部条目；写 zip 条目执行位；校验包布局；
+  # 对当前运行平台执行产物并断言自报版本与 tag 一致。
+  # 输出：6 个 zip + checksums.txt（sha256，按文件名排序）
   build:
     runs-on: ubuntu-latest
     needs: [ web, e2e-smoke ]
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: windows, goarch: amd64, ext: .exe, zip: toshell-server-windows-amd64.zip, deploy: release/deploy.bat }
-          - { goos: windows, goarch: '386', ext: .exe, zip: toshell-server-windows-386.zip, deploy: release/deploy.bat }
-          - { goos: linux,   goarch: amd64, ext: '', zip: toshell-server-linux-amd64.zip, deploy: release/deploy.sh }
-          - { goos: linux,   goarch: arm64, ext: '', zip: toshell-server-linux-arm64.zip, deploy: release/deploy.sh }
-          - { goos: darwin,  goarch: amd64, ext: '', zip: toshell-server-darwin-amd64.zip, deploy: release/deploy.sh }
-          - { goos: darwin,  goarch: arm64, ext: '', zip: toshell-server-darwin-arm64.zip, deploy: release/deploy.sh }
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: webdist
@@ -97,34 +99,31 @@ jobs:
           cache: true
           check-latest: true
 
-      # 构建 + 组装 + 自校验全部走 cmd/devtool —— 与本地 `go run ./cmd/devtool package`
-      # 是同一实现，CI 与本地不可能产出不同的包。
-      # 平台矩阵仍留在上面：CI 需要它做并行与按平台上传；它与 devtool 目标清单的一致性
-      # 由 `devtool check` 门禁（cmd/devtool/check.go 的 checkReleaseMatrix）。
-      #
-      # devtool 内部等价于原先被替换掉的三步：
-      #   1) Build server —— GOOS/GOARCH/CGO_ENABLED=0 + -tags webui + ldflags 注入 version/commit/buildTime
-      #   2) Package zip  —— 组装全部条目（implant/ implant_c/ configs/ docs/ README 用 release/README.md 等）
-      #   3) 自校验      —— 包布局（含 implant/main.go 与 implant_c/main.c）；并在目标平台等于当前
-      #                       运行平台时执行产物、断言自报版本与 tag 一致（原先只查 linux/amd64）
       - name: Build + package (cmd/devtool)
         run: |
-          go run ./cmd/devtool package             --target "${{ matrix.goos }}/${{ matrix.goarch }}"             --version "${GITHUB_REF_NAME#v}"             --out .
+          go run ./cmd/devtool package --all             --version "${GITHUB_REF_NAME#v}"             --out .
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.zip }}
-          path: ${{ matrix.zip }}
+          name: release-zips
+          path: |
+            toshell-server-*.zip
+            checksums.txt
           if-no-files-found: error
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.zip }}
+          files: |
+            toshell-server-*.zip
+            checksums.txt
+            LICENSE
+            DISCLAIMER.md
+            THIRD-PARTY-NOTICES.md
           # 版本号跟随 tag（v1.3.x）；标题也用 tag 名
           name: ${{ github.ref_name }}
-          # 固定正文：不要用 generate_release_notes —— 它会在每次重跑（多平台矩阵 / 重打 tag）
-          # 时重复追加一行 "Full Changelog: ..."，导致正文被刷屏。
+          # 固定正文：不要用 generate_release_notes —— 它会在每次重跑时重复追加一行
+          # "Full Changelog: ..."，导致正文被刷屏。
           body: |
             Toshell ${{ github.ref_name }}
 
@@ -137,35 +136,3 @@ jobs:
             使用说明：[使用说明](https://github.com/${{ github.repository }}/blob/main/USAGE.md)
 
             Bug或者建议请提交issue。
-
-  # 全部 zip 汇总后生成校验清单（sha256），随 Release 一起发布。
-  # 单独一个 job 是因为矩阵里每个 job 只知道自己那一个 zip。
-  checksums:
-    runs-on: ubuntu-latest
-    needs: build
-    steps:
-      # 必须先 checkout：下面 files 里要补发的 LICENSE/DISCLAIMER/THIRD-PARTY-NOTICES
-      # 都在仓库里，不 checkout 就会被 softprops 静默跳过（v1.3.4/1.3.5 实测如此）。
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Generate checksums.txt
-        run: |
-          cd dist
-          # 只对发布 zip 求哈希，顺序固定便于比对
-          ls -1 *.zip | sort | xargs sha256sum > checksums.txt
-          cat checksums.txt
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          # 只补发 checksums.txt + 许可与声明（不传 name/body，避免覆盖已写好的 Release 标题与正文）。
-          # 这三个文件由单个 job 上传（矩阵里每个 job 都传会并发冲突）。
-          files: |
-            dist/checksums.txt
-            LICENSE
-            DISCLAIMER.md
-            THIRD-PARTY-NOTICES.md

@@ -58,7 +58,8 @@ const usage = `ToShell 开发/发版管线工具
 
 用法:
   devtool build              构建服务端（前端 → webdist → 模板同步 → go build → release/）
-  devtool build --no-web     同上，但跳过前端构建（沿用 cmd/server/webdist 现有产物）
+  devtool build --no-web     跳过前端构建，但若 cmd/server/webdist 已存在仍嵌入它
+  devtool build --no-webui   不嵌入前端（构建纯 API 服务端）。不影响 webdist 自身
   devtool sync               仅同步植入端模板到 release/implant{,_c}/
   devtool package [选项]     组装发布包（zip + checksums.txt）
   devtool check              校验不变量（模板单源、生成物与源一致、配置镜像、

@@ -18,7 +18,8 @@ import (
 // ── 构建 ────────────────────────────────────────────────────────────
 
 type buildOpts struct {
-	skipWeb bool
+	skipWeb bool // 跳过前端构建，但若 webdist 已存在仍会嵌入（只改后端代码时用）
+	noWebui bool // 不嵌入前端（开发方式用）。不影响 webdist 自身
 }
 
 func parseBuildArgs(args []string) (buildOpts, error) {
@@ -27,8 +28,11 @@ func parseBuildArgs(args []string) (buildOpts, error) {
 		switch a {
 		case "--no-web":
 			o.skipWeb = true
+		case "--no-webui":
+			o.noWebui = true
+			o.skipWeb = true // 不嵌入就无需构建前端
 		default:
-			return o, fmt.Errorf("未知参数: %s（可用: --no-web）", a)
+			return o, fmt.Errorf("未知参数: %s（可用: --no-web / --no-webui）", a)
 		}
 	}
 	return o, nil
@@ -66,7 +70,7 @@ func cmdBuild(args []string) error {
 	}
 
 	// ③ 服务端
-	hasWebui := fileExists(filepath.Join(p.webEmbed(), "index.html"))
+	hasWebui := !opts.noWebui && fileExists(filepath.Join(p.webEmbed(), "index.html"))
 	tags := ""
 	if hasWebui {
 		tags = "webui"
@@ -92,7 +96,11 @@ func cmdBuild(args []string) error {
 	if !fileExists(p.serverBin()) {
 		return fmt.Errorf("未生成产物: %s", p.serverBin())
 	}
-	ok("构建完成: %s（commit=%s，前端 %s）", relOrAbs(p.root, p.serverBin()), commit, assetID(p))
+	frontend := assetID(p)
+	if !hasWebui {
+		frontend = "未嵌入（纯 API）"
+	}
+	ok("构建完成: %s（commit=%s，前端 %s）", relOrAbs(p.root, p.serverBin()), commit, frontend)
 	return nil
 }
 

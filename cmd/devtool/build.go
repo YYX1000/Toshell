@@ -98,9 +98,10 @@ func cmdBuild(args []string) error {
 
 // buildFrontend 跑 npm ci && npm run build 并把 web/dist 同步到 cmd/server/webdist。
 //
-// npm 缺失时**不会**构建成"纯 API 版"：是否带 -tags webui 取决于 webdist/index.html
-// 是否存在，而 webdist 只在 clean 时删除。所以只要之前成功构建过一次前端，本次就会带
-// 着**上一版**前端产物构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
+// npm 缺失时不构建"纯 API 版"：是否带 -tags webui 取决于 webdist/index.html 是否存在，
+// 而 webdist 仅由 clean 删除。因此只要此前成功构建过一次前端，本次就会嵌入**上一版**
+// 前端产物。构建完成后打印所嵌入产物的标识（vite 的 assets/index-<hash>.js），
+// 使嵌入版本可直接核对。
 func buildFrontend(p paths) error {
 	if !fileExists(filepath.Join(p.root, "web", "package.json")) {
 		info("未找到 web/package.json，跳过前端构建")

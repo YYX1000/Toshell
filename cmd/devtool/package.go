@@ -145,8 +145,8 @@ func cmdPackage(args []string) error {
 		return err
 	}
 
-	// 打包用的暂存与二进制都放临时目录，不污染仓库（历史事故：曾用仓库内 pkg/ 作暂存名，
-	// 而仓库本身有 pkg/goroutine、pkg/rate 两个源码目录，导致它们被一起打进 zip）。
+	// 暂存目录与中间二进制置于系统临时目录，不落在仓库内：仓库内暂存目录若与既有
+	// 源码目录重名，打包时会把该目录一并收进 zip。
 	tmp, err := os.MkdirTemp("", "toshell-pkg-")
 	if err != nil {
 		return err

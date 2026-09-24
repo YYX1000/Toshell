@@ -18,14 +18,18 @@ type checkProblem struct {
 
 func (c checkProblem) String() string { return "[x] " + c.What + "\n    " + c.Why }
 
-// cmdCheck 校验那些"不检查就会静默腐坏"的不变量。
+// cmdCheck 校验仓库必须始终满足的不变量。
 //
-// 这里每一条都对应一个真实踩过的坑或本次修掉的缺陷 —— 不是泛泛的 lint：
-//   · 模板单源：曾靠两份人工同步的镜像，且发版门禁测的是不发货的那份（假绿灯）
-//   · 生成物在库外：release/implant{,_c} 是生成物，误入库会让"改了源没同步"看起来正常
-//   · 打包指向：三处打包实现必须都取唯一源，否则镜像会以别的形式回归
-//   · 配置镜像：两份 server.yaml.example 也靠人工同步，同样没有门禁
-//   · 文档链接：包内 README 的相对链接按包内布局解析，改错就是给用户死链
+// 这些不变量保证：服务端读取的内容与其唯一源一致、打包与发版门禁取同一来源、
+// 仓库状态能如实反映"源是否已同步"、文档引用可解析。
+// 任一条失效时都不会立即报错，而是在后续环节静默产生错误结果（例如发出内容有误的包），
+// 因此必须以检查而非约定来维持：
+//   · 模板唯一源完好；release/implant{,_c} 为生成物、不被 git 跟踪、且与源逐字节一致
+//   · 两份 server.yaml.example 内容一致（打包用前者，本地起服务用后者）
+//   · 打包与发版门禁指向同一模板源
+//   · CI 平台矩阵与 devtool 的目标清单一致
+//   · web/vite.config.js 不存在（它会遮蔽 vite.config.ts）
+//   · 文档相对链接可解析
 func cmdCheck(args []string) error {
 	if len(args) > 0 {
 		return fmt.Errorf("check 不接受参数，收到: %v", args)
@@ -176,15 +180,13 @@ func checkExampleConfigs(p paths) []checkProblem {
 	return nil
 }
 
-// ── 4. 打包实现必须都取唯一源（防镜像以别的形式回归）────────────────
+// ── 4. 打包与门禁必须取同一模板源 ─────────────────────────────────
 
-// 打包与门禁都不能回到生成物上：
-//   · .github/workflows/release.yml —— 必须走 `cmd/devtool package`（本地与 CI 同一实现），
-//     且不得直接引用 release/implant（那是生成物）
-//   · scripts/e2e_smoke.ps1 —— 必须直接指向唯一源 internal/server/builder/implant
+// 不变量：打包（.github/workflows/release.yml，经 cmd/devtool package）与发版门禁
+// （scripts/e2e_smoke.ps1）取同一模板源 internal/server/builder/implant{,_c}，
+// 且都不得引用生成物 release/implant。
 //
-// 为什么这条重要：改动前正是"门禁指向 internal/ 那份、而开发与发布包实际读 release/ 那份"，
-// 于是门禁校验的是**不发货的那一份**，只改发货件不会让它变红（假绿灯）。
+// 违反后果：门禁校验的不是实际分发的产物，只改发货件不会使门禁失败。
 func checkPackagingPointers(p paths) []checkProblem {
 	var out []checkProblem
 
@@ -288,16 +290,14 @@ func checkReleaseMatrix(p paths) []checkProblem {
 	return out
 }
 
-// ── 6. web/vite.config.js 不得存在（会静默遮蔽 vite.config.ts）──────
+// ── 6. web/vite.config.js 不得存在 ────────────────────────────────
 
-// Vite 解析配置时优先加载 vite.config.js —— 若源目录里存在一个由 tsc 编译出来的
-// vite.config.js，那么对 vite.config.ts 的任何修改都会被**静默忽略**，直到下次
-// npm run build 重新生成 .js 才"突然生效"。
+// 不变量：web/ 下不存在 vite.config.js。
 //
-// 本仓库被这个坑过：代理目标写在 .ts 里改成 18081，实际仍按旧 .js 的 8081 走，
-// 表现为"改了配置没反应 / 每次开发都得手动设 VITE_PROXY_TARGET"。
-// 已把 tsconfig.node.json 改为 emitDeclarationOnly，从源头不再产出 .js；
-// 这条检查负责兜住"万一又出现"（例如手动跑过别的 tsc 命令）。
+// Vite 解析配置时优先加载 vite.config.js。该文件若由 tsc 从 vite.config.ts 编译而来
+// 并留在源目录，对 vite.config.ts 的修改将不会生效，直到下次 npm run build 重新生成 .js。
+// tsconfig.node.json 已设 emitDeclarationOnly，从源头不再产出 .js；本检查用于兜住
+// 其他途径（如手动执行 tsc）产生的同名文件。
 func checkViteConfigShadow(p paths) []checkProblem {
 	shadow := p.join("web", "vite.config.js")
 	if !fileExists(shadow) {

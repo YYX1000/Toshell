@@ -1,10 +1,23 @@
 #!/usr/bin/env bash
 # =====================================================================
-#  ToShell 管理脚本（Linux / macOS）
+#  ToShell 开发管理脚本（Linux / macOS）—— 非部署入口
+#
+#  用途：在本仓库里构建 / 启停服务端，面向"从源码开发"。
+#  部署（解压发布包后安装并运行）请用发布包内的 install.sh —— 它会在没有 Go 的
+#  机器上按需安装依赖，本脚本不做这件事。
 #
 #  两种使用模式：
-#    1) 交互式菜单：不带任何参数直接运行      ./Toshell.sh
+#    1) 交互式菜单：不带参数直接运行      ./Toshell.sh
 #    2) 命令行参数：./Toshell.sh <build|clean|start|stop|config|help>
+#
+#  为什么产物落在 release/ 而不是仓库根：
+#    release/ 是"复刻发布包布局"的目录。服务端解析植入端模板时按
+#    【配置 implant.template_dir → 环境变量 TOSHELL_IMPLANT_TEMPLATE_DIR →
+#      exe 同目录 implant/ → exe 同目录 internal/server/builder/implant →
+#      当前工作目录 internal/server/builder/implant】顺序回退。
+#    把 toserver 放在 release/ 下，exe 同目录就有 implant/，于是**本地开发与
+#    发布包走完全相同的模板解析路径**，不会出现"本地能跑、发布包失效"。
+#    因此本脚本 build 时会把模板源同步到 release/implant{,_c}/。
 # =====================================================================
 set -u
 
@@ -18,6 +31,9 @@ WEB_DIST="$ROOT/web/dist"
 WEB_EMBED="$ROOT/cmd/server/webdist"
 RELEASE_DIR="$ROOT/release"
 IMPLANTS_DIR="$ROOT/release/implants"
+# 植入端模板唯一源；release/implant{,_c} 是构建期生成物（见 sync_implant_template）
+TEMPLATE_SRC="$ROOT/internal/server/builder/implant"
+TEMPLATE_SRC_C="$ROOT/internal/server/builder/implant_c"
 
 if [ -t 1 ]; then
   RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'; NC='\033[0m'
@@ -39,6 +55,42 @@ api_port() {
   local p
   p=$(sed -n 's/^[[:space:]]*api_port:[[:space:]]*\([0-9]*\).*/\1/p' "$CONFIG" 2>/dev/null | head -n1)
   echo "${p:-18081}"
+}
+
+# 打印将被嵌入的前端产物标识（vite 在 index.html 里引用带内容哈希的 assets 文件）。
+# 用途：npm 缺失时会沿用已有的 webdist，把标识打出来才能看出"嵌入的是哪一版前端"，
+# 而不是默默编进一版旧界面后让人对着"界面怎么没变"排查半天。
+web_asset_id() {
+  local idx="$WEB_EMBED/index.html" h
+  if [ ! -f "$idx" ]; then
+    echo "(无前端产物)"
+    return
+  fi
+  h=$(grep -oE 'assets/index-[A-Za-z0-9_-]+\.(js|css)' "$idx" 2>/dev/null | head -n1)
+  echo "${h:-未知（index.html 中未找到 assets 引用）}"
+}
+
+# 把植入端模板源同步到 release/，复刻发布包布局。
+# 服务端在 exe 同目录找 implant/，所以这一步让本地开发与发布包走同一条解析路径。
+# 必须用二进制复制（cp -R）：模板内是 CRLF，文本模式改写会破坏字节一致性。
+sync_implant_template() {
+  if [ ! -d "$TEMPLATE_SRC" ]; then
+    err "植入端模板源不存在: $TEMPLATE_SRC"
+    return 1
+  fi
+  if [ ! -f "$TEMPLATE_SRC/main.go" ]; then
+    err "模板源缺少 main.go（服务端以它判定目录是否有效）: $TEMPLATE_SRC"
+    return 1
+  fi
+  info "同步植入端模板到 release/（exe 同目录解析用）"
+  rm -rf "$RELEASE_DIR/implant" "$RELEASE_DIR/implant_c"
+  mkdir -p "$RELEASE_DIR"
+  cp -R "$TEMPLATE_SRC" "$RELEASE_DIR/implant" || { err "同步 implant 模板失败"; return 1; }
+  # implant_c 必须与 implant 同级：builder.go / toolchain.go 以 ../implant_c 推导它
+  if [ -d "$TEMPLATE_SRC_C" ]; then
+    cp -R "$TEMPLATE_SRC_C" "$RELEASE_DIR/implant_c" || { err "同步 implant_c 模板失败"; return 1; }
+  fi
+  ok "模板已同步: $(find "$RELEASE_DIR/implant" -type f 2>/dev/null | wc -l | tr -d ' ') 个文件"
 }
 
 # ── 构建 ≠ 生效：判断正在运行的进程是不是"构建前的旧二进制" ──────────────
@@ -92,7 +144,8 @@ restart_for_stale() {
 }
 
 do_build() {
-  info "开始从源码构建项目（根目录: $ROOT）"
+  info "构建服务端 + Web 前端（根目录: $ROOT）"
+  info "  植入端不在此构建 —— 由服务端生成载荷时按需编译（go1.20 工具链）"
   command -v go >/dev/null 2>&1 || { err "未找到 Go 工具链（需要 Go >= 1.25），请先安装"; return 1; }
 
   if [ -f "$ROOT/web/package.json" ]; then
@@ -103,10 +156,19 @@ do_build() {
       rm -rf "$WEB_EMBED"
       mkdir -p "$WEB_EMBED"
       cp -R "$WEB_DIST/." "$WEB_EMBED/" || { err "同步 webdist 失败"; return 1; }
+      ok "前端已同步，产物标识: $(web_asset_id)"
     else
-      warn "未找到 npm，跳过前端构建（服务端将以纯 API / 无 Web 控制台方式构建）"
+      # 注意：这里**不会**构建成"纯 API 版"。是否带 -tags webui 取决于
+      # cmd/server/webdist/index.html 是否存在（见下方 tags 判定），而 webdist 只在
+      # clean 时删除。所以只要之前成功构建过一次前端，本次就会带着**上一版**前端产物
+      # 构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
+      warn "未找到 npm，跳过前端构建 —— 将沿用 cmd/server/webdist 中已有的前端产物"
+      warn "  本次将嵌入的前端产物标识: $(web_asset_id)"
+      warn "  若前端有改动，请安装 Node.js >= 20 后重新执行 build，否则界面仍是旧版本"
     fi
   fi
+
+  sync_implant_template || return 1
 
   local commit buildtime tags ldflags
   commit=$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo dev)
@@ -133,6 +195,8 @@ do_clean() {
   fi
   rm -f "$SERVER_BIN" "$ROOT/toserver" 2>/dev/null
   rm -rf "$IMPLANTS_DIR"/* 2>/dev/null
+  # release/implant{,_c} 是 build 时从模板源生成的产物（不是源码），一并清理
+  rm -rf "$RELEASE_DIR/implant" "$RELEASE_DIR/implant_c" 2>/dev/null
   rm -rf "$WEB_DIST" "$WEB_EMBED" 2>/dev/null
   rm -f "$ROOT/web/tsconfig.tsbuildinfo" "$ROOT/web/tsconfig.node.tsbuildinfo" 2>/dev/null
   rm -f "$LOG_OUT" "$LOG_ERR" "$ROOT/server.log" "$ROOT/server.err.log" 2>/dev/null
@@ -174,6 +238,11 @@ do_start() {
       ""|[Yy]*) do_build || { err "构建失败，终止启动"; return 1; } ;;
       *) err "用户拒绝构建，终止启动"; return 1 ;;
     esac
+  fi
+  # 模板目录不在就不启动：否则服务端能起来，但生成载荷时才发现没有模板
+  if [ ! -d "$RELEASE_DIR/implant" ] || [ ! -f "$RELEASE_DIR/implant/main.go" ]; then
+    warn "植入端模板未同步到 $RELEASE_DIR/implant（服务端将无法生成载荷）"
+    sync_implant_template || { err "模板同步失败，终止启动"; return 1; }
   fi
   if [ ! -f "$CONFIG" ]; then
     if [ -f "$CONFIG_EXAMPLE" ]; then
@@ -240,16 +309,20 @@ do_config() {
 
 usage() {
   cat <<EOF
-ToShell 管理脚本
+ToShell 开发管理脚本（本仓库源码构建用；部署请用发布包内 install.sh）
 
 用法:
   $0                   进入交互式菜单
-  $0 build             从源码构建项目
+  $0 build             构建服务端 + Web 前端，并同步植入端模板到 release/
   $0 clean             清理全部构建产物、日志文件
   $0 start             启动服务（未构建时会询问是否先构建）
   $0 stop              停止正在运行的服务
   $0 config            修改项目配置（编辑配置文件）
+  $0 sync              仅把植入端模板同步到 release/（改模板后免于完整构建）
   $0 help              显示本帮助
+
+产物位置：release/（复刻发布包布局，使本地与发布包的模板解析路径一致）
+植入端模板唯一源：internal/server/builder/implant（+ implant_c）
 EOF
 }
 
@@ -259,7 +332,7 @@ interactive_menu() {
     echo "=============================="
     echo "  ToShell 管理菜单"
     echo "=============================="
-    echo "  [1] 从源码构建项目"
+    echo "  [1] 构建服务端 + Web 前端"
     echo "  [2] 清理全部构建产物、日志文件"
     echo "  [3] 启动服务"
     echo "  [4] 停止正在运行的服务"
@@ -289,6 +362,7 @@ else
     start|--start|-s) do_start ;;
     stop|--stop|-t) do_stop ;;
     config|--config|--edit-config|-e) do_config ;;
+    sync|--sync) sync_implant_template ;;
     help|--help|-h) usage ;;
     *) err "未知参数: $1"; usage; exit 1 ;;
   esac

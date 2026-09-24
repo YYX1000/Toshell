@@ -1,5 +1,9 @@
 ﻿# =====================================================================
-#  ToShell 管理脚本（Windows PowerShell 5.1+）
+#  ToShell 开发管理脚本（Windows PowerShell 5.1+）—— 非部署入口
+#
+#  用途：在本仓库里构建 / 启停服务端，面向"从源码开发"。
+#  部署（解压发布包后安装并运行）请用发布包内的 install.ps1 —— 它会在没有 Go 的
+#  机器上按需安装依赖，本脚本不做这件事。
 #
 #  两种使用模式：
 #    1) 交互式菜单：不带参数直接运行      .\Toshell.ps1
@@ -7,6 +11,18 @@
 #
 #  若被执行策略阻止，可用：
 #    powershell -NoProfile -ExecutionPolicy Bypass -File .\Toshell.ps1
+#
+#  为什么产物落在 release\ 而不是仓库根：
+#    release\ 是"复刻发布包布局"的目录。服务端解析植入端模板时按
+#    【配置 implant.template_dir → 环境变量 TOSHELL_IMPLANT_TEMPLATE_DIR →
+#      exe 同目录 implant\ → exe 同目录 internal\server\builder\implant →
+#      当前工作目录 internal\server\builder\implant】顺序回退。
+#    把 toserver.exe 放在 release\ 下，exe 同目录就有 implant\，于是**本地开发与
+#    发布包走完全相同的模板解析路径**，不会出现"本地能跑、发布包失效"。
+#    因此本脚本 build 时会把模板源同步到 release\implant{,_c}\。
+#
+#  编码：本文件必须是 UTF-8 with BOM + CRLF。丢了 BOM 会让 PS 5.1 按 ANSI 解析，
+#        中文全部乱码甚至语法报错。
 # =====================================================================
 [CmdletBinding()]
 param(
@@ -25,6 +41,9 @@ $WebDist = Join-Path $Root "web\dist"
 $WebEmbed = Join-Path $Root "cmd\server\webdist"
 $ReleaseDir = Join-Path $Root "release"
 $ImplantsDir = Join-Path $Root "release\implants"
+# 植入端模板唯一源；release\implant{,_c} 是构建期生成物（见 Sync-ImplantTemplate）
+$TemplateSrc = Join-Path $Root "internal\server\builder\implant"
+$TemplateSrcC = Join-Path $Root "internal\server\builder\implant_c"
 
 function Write-Info  { Write-Host "[信息] $args" -ForegroundColor Cyan }
 function Write-Ok    { Write-Host "[成功] $args" -ForegroundColor Green }
@@ -43,6 +62,44 @@ function Get-ApiPort {
         if ($m -and $m.Matches[0].Groups[1].Success) { $port = [int]$m.Matches[0].Groups[1].Value }
     }
     return $port
+}
+
+# 打印将被嵌入的前端产物标识（vite 在 index.html 里引用带内容哈希的 assets 文件）。
+# 用途：npm 缺失时会沿用已有的 webdist，把标识打出来才能看出"嵌入的是哪一版前端"，
+# 而不是默默编进一版旧界面后让人对着"界面怎么没变"排查半天。
+function Get-WebAssetId {
+    $idx = Join-Path $WebEmbed "index.html"
+    if (-not (Test-Path $idx)) { return "(无前端产物)" }
+    $m = Select-String -Path $idx -Pattern 'assets/index-[A-Za-z0-9_-]+\.(js|css)' -AllMatches |
+        Select-Object -First 1
+    if ($m -and $m.Matches.Count -gt 0) { return $m.Matches[0].Value }
+    return "未知（index.html 中未找到 assets 引用）"
+}
+
+# 把植入端模板源同步到 release\，复刻发布包布局。
+# 服务端在 exe 同目录找 implant\，所以这一步让本地开发与发布包走同一条解析路径。
+# 用 Copy-Item 二进制复制：模板内是 CRLF，文本模式（Get-Content|Set-Content）会破坏字节一致。
+function Sync-ImplantTemplate {
+    if (-not (Test-Path $TemplateSrc)) {
+        Write-Err "植入端模板源不存在: $TemplateSrc"
+        return $false
+    }
+    if (-not (Test-Path (Join-Path $TemplateSrc "main.go"))) {
+        Write-Err "模板源缺少 main.go（服务端以它判定目录是否有效）: $TemplateSrc"
+        return $false
+    }
+    Write-Info "同步植入端模板到 release\（exe 同目录解析用）"
+    Remove-Item (Join-Path $ReleaseDir "implant")   -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $ReleaseDir "implant_c") -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -ItemType Directory -Path $ReleaseDir -Force | Out-Null
+    Copy-Item $TemplateSrc (Join-Path $ReleaseDir "implant") -Recurse -Force
+    # implant_c 必须与 implant 同级：builder.go / toolchain.go 以 ..\implant_c 推导它
+    if (Test-Path $TemplateSrcC) {
+        Copy-Item $TemplateSrcC (Join-Path $ReleaseDir "implant_c") -Recurse -Force
+    }
+    $n = @(Get-ChildItem (Join-Path $ReleaseDir "implant") -Recurse -File -ErrorAction SilentlyContinue).Count
+    Write-Ok "模板已同步: $n 个文件"
+    return $true
 }
 
 # ── 构建 ≠ 生效：判断正在运行的进程是不是"构建前的旧二进制" ──────────────
@@ -83,7 +140,8 @@ function Restart-ForStaleBinary {
 }
 
 function Invoke-Build {
-    Write-Info "开始从源码构建项目（根目录: $Root）"
+    Write-Info "构建服务端 + Web 前端（根目录: $Root）"
+    Write-Info "  植入端不在此构建 —— 由服务端生成载荷时按需编译（go1.20 工具链）"
     if (-not (Get-Command go -ErrorAction SilentlyContinue)) {
         Write-Err "未找到 Go 工具链（需要 Go >= 1.25），请先安装"
         return $false
@@ -105,11 +163,20 @@ function Invoke-Build {
             Remove-Item $WebEmbed -Recurse -Force -ErrorAction SilentlyContinue
             New-Item -ItemType Directory -Path $WebEmbed -Force | Out-Null
             Copy-Item "$WebDist\*" "$WebEmbed\" -Recurse -Force
+            Write-Ok "前端已同步，产物标识: $(Get-WebAssetId)"
         }
         else {
-            Write-Warn "未找到 npm，跳过前端构建（服务端将以纯 API / 无 Web 控制台方式构建）"
+            # 注意：这里**不会**构建成"纯 API 版"。是否带 -tags webui 取决于
+            # cmd\server\webdist\index.html 是否存在（见下方 $hasWebui 判定），而 webdist
+            # 只在 clean 时删除。所以只要之前成功构建过一次前端，本次就会带着**上一版**
+            # 前端产物构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
+            Write-Warn "未找到 npm，跳过前端构建 —— 将沿用 cmd\server\webdist 中已有的前端产物"
+            Write-Warn "  本次将嵌入的前端产物标识: $(Get-WebAssetId)"
+            Write-Warn "  若前端有改动，请安装 Node.js >= 20 后重新执行 build，否则界面仍是旧版本"
         }
     }
+
+    if (-not (Sync-ImplantTemplate)) { return $false }
 
     $commit = "dev"
     $c = & git -C $Root rev-parse --short HEAD 2>$null
@@ -148,6 +215,9 @@ function Invoke-Clean {
     Remove-Item $ServerBin -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Root "toserver.exe") -Force -ErrorAction SilentlyContinue
     if (Test-Path $ImplantsDir) { Remove-Item "$ImplantsDir\*" -Recurse -Force -ErrorAction SilentlyContinue }
+    # release\implant{,_c} 是 build 时从模板源生成的产物（不是源码），一并清理
+    Remove-Item (Join-Path $ReleaseDir "implant")   -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item (Join-Path $ReleaseDir "implant_c") -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $WebDist -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item $WebEmbed -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item (Join-Path $Root "web\tsconfig.tsbuildinfo") -Force -ErrorAction SilentlyContinue
@@ -198,6 +268,11 @@ function Invoke-Start {
             Write-Err "用户拒绝构建，终止启动"
             return
         }
+    }
+    # 模板目录不在就不启动：否则服务端能起来，但生成载荷时才发现没有模板
+    if (-not (Test-Path (Join-Path $ReleaseDir "implant\main.go"))) {
+        Write-Warn "植入端模板未同步到 $ReleaseDir\implant（服务端将无法生成载荷）"
+        if (-not (Sync-ImplantTemplate)) { Write-Err "模板同步失败，终止启动"; return }
     }
     if (-not (Test-Path $Config)) {
         if (Test-Path $ConfigExample) {
@@ -273,16 +348,20 @@ function Invoke-Config {
 
 function Show-Usage {
     @"
-ToShell 管理脚本
+ToShell 开发管理脚本（本仓库源码构建用；部署请用发布包内 install.ps1）
 
 用法:
   .\Toshell.ps1                    进入交互式菜单
-  .\Toshell.ps1 build              从源码构建项目
+  .\Toshell.ps1 build              构建服务端 + Web 前端，并同步植入端模板到 release\
   .\Toshell.ps1 clean              清理全部构建产物、日志文件
   .\Toshell.ps1 start              启动服务（未构建时会询问是否先构建）
   .\Toshell.ps1 stop               停止正在运行的服务
   .\Toshell.ps1 config             修改项目配置（编辑配置文件）
+  .\Toshell.ps1 sync               仅把植入端模板同步到 release\（改模板后免于完整构建）
   .\Toshell.ps1 help               显示本帮助
+
+产物位置：release\（复刻发布包布局，使本地与发布包的模板解析路径一致）
+植入端模板唯一源：internal\server\builder\implant（+ implant_c）
 "@
 }
 
@@ -292,7 +371,7 @@ function Show-Menu {
         Write-Host "=============================="
         Write-Host "  ToShell 管理菜单"
         Write-Host "=============================="
-        Write-Host "  [1] 从源码构建项目"
+        Write-Host "  [1] 构建服务端 + Web 前端"
         Write-Host "  [2] 清理全部构建产物、日志文件"
         Write-Host "  [3] 启动服务"
         Write-Host "  [4] 停止正在运行的服务"
@@ -323,6 +402,7 @@ else {
         '^(start|--start|-s)$'                { Invoke-Start }
         '^(stop|--stop|-t)$'                  { Invoke-Stop }
         '^(config|--config|--edit-config|-e)$' { Invoke-Config }
+        '^(sync|--sync)$'                     { Sync-ImplantTemplate | Out-Null }
         '^(help|--help|-h)$'                  { Show-Usage }
         default                               { Write-Err "未知参数: $Action"; Show-Usage; exit 1 }
     }

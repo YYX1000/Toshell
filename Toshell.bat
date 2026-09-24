@@ -2,10 +2,26 @@
 chcp 936 >nul
 setlocal enabledelayedexpansion
 rem =====================================================================
-rem  ToShell 管理脚本（Windows CMD）
+rem  ToShell 开发管理脚本（Windows CMD）—— 非部署入口
+rem
+rem  用途：在本仓库里构建 / 启停服务端，面向"从源码开发"。
+rem  部署（解压发布包后安装并运行）请用发布包内的 install.ps1，它会在没有 Go 的
+rem  机器上按需安装依赖，本脚本不做这件事。
+rem
 rem  两种使用模式：
 rem    1) 交互式菜单：不带参数直接运行 Toshell.bat
 rem    2) 命令行参数：Toshell.bat 后接 build / clean / start / stop / config / help
+rem
+rem  为什么产物落在 release\ 而不是仓库根：
+rem    release\ 是"复刻发布包布局"的目录。服务端解析植入端模板时按
+rem    【配置 implant.template_dir → 环境变量 TOSHELL_IMPLANT_TEMPLATE_DIR →
+rem      exe 同目录 implant\ → exe 同目录 internal\server\builder\implant →
+rem      当前工作目录 internal\server\builder\implant】顺序回退。
+rem    把 toserver.exe 放在 release\ 下，exe 同目录就有 implant\，于是本地开发与
+rem    发布包走完全相同的模板解析路径，不会出现"本地能跑、发布包失效"。
+rem    因此本脚本 build 时会把模板源同步到 release\implant{,_c}\。
+rem
+rem  编码：本文件必须是 GBK + CRLF。cmd 控制台按 GBK 输出中文。
 rem =====================================================================
 
 set "ROOT=%~dp0"
@@ -20,6 +36,9 @@ set "WEB_DIST=%ROOT%\web\dist"
 set "WEB_EMBED=%ROOT%\cmd\server\webdist"
 set "RELEASE_DIR=%ROOT%\release"
 set "IMPLANTS_DIR=%ROOT%\release\implants"
+rem 植入端模板唯一源；release\implant{,_c} 是构建期生成物（见 :sync_template）
+set "TEMPLATE_SRC=%ROOT%\internal\server\builder\implant"
+set "TEMPLATE_SRC_C=%ROOT%\internal\server\builder\implant_c"
 
 rem ── 主入口 ──────────────────────────────────────────────
 if "%~1"=="" goto :menu
@@ -38,6 +57,8 @@ if /i "%~1"=="-t" goto :run_stop
 if /i "%~1"=="config" goto :run_config
 if /i "%~1"=="--config" goto :run_config
 if /i "%~1"=="-e" goto :run_config
+if /i "%~1"=="sync" goto :run_sync
+if /i "%~1"=="--sync" goto :run_sync
 if /i "%~1"=="help" goto :run_help
 if /i "%~1"=="--help" goto :run_help
 if /i "%~1"=="-h" goto :run_help
@@ -66,6 +87,10 @@ exit /b %errorlevel%
 call :do_config
 exit /b %errorlevel%
 
+:run_sync
+call :sync_template
+exit /b %errorlevel%
+
 :run_help
 call :usage
 exit /b 0
@@ -76,7 +101,7 @@ echo.
 echo ==============================
 echo   ToShell 管理菜单
 echo ==============================
-echo   [1] 从源码构建项目
+echo   [1] 构建服务端 + Web 前端
 echo   [2] 清理全部构建产物、日志文件
 echo   [3] 启动服务
 echo   [4] 停止正在运行的服务
@@ -96,15 +121,16 @@ goto :menu
 
 rem ── 帮助 ────────────────────────────────────────────────
 :usage
-echo ToShell 管理脚本
+echo ToShell 开发管理脚本（本仓库源码构建用；部署请用发布包内 install.ps1）
 echo.
 echo 用法:
 echo   Toshell.bat                   进入交互式菜单
-echo   Toshell.bat build             从源码构建项目
+echo   Toshell.bat build             构建服务端 + Web 前端，并同步植入端模板到 release\implant
 echo   Toshell.bat clean             清理全部构建产物、日志文件
 echo   Toshell.bat start             启动服务（未构建时会询问是否先构建）
 echo   Toshell.bat stop              停止正在运行的服务
 echo   Toshell.bat config            修改项目配置（编辑配置文件）
+echo   Toshell.bat sync              仅同步植入端模板到 release\（改模板后免于完整构建）
 echo   Toshell.bat help              显示本帮助
 exit /b 0
 
@@ -122,18 +148,25 @@ exit /b
 
 rem ── 构建 ────────────────────────────────────────────────
 :do_build
-echo [信息] 开始从源码构建项目（根目录: %ROOT%）
+echo [信息] 构建服务端 + Web 前端（根目录: %ROOT%）
+echo [信息]   植入端不在此构建 —— 由服务端生成载荷时按需编译（go1.20 工具链）
 where go >nul 2>nul
 if errorlevel 1 (
   echo [错误] 未找到 Go 工具链（需要 Go ^>= 1.25），请先安装
   exit /b 1
 )
 
-if not exist "%ROOT%\web\package.json" goto :build_server
+if not exist "%ROOT%\web\package.json" goto :build_template
 where npm >nul 2>nul
 if errorlevel 1 (
-  echo [警告] 未找到 npm，跳过前端构建（服务端将以纯 API / 无 Web 控制台方式构建）
-  goto :build_server
+  rem 注意：这里不会构建成"纯 API 版"。是否带 -tags webui 取决于
+  rem cmd\server\webdist\index.html 是否存在（见 :build_server 段），而 webdist
+  rem 只在 clean 时删除。所以只要之前成功构建过一次前端，本次就会带着上一版
+  rem 前端产物构建。把产物标识打出来，避免"界面怎么没变"却查不出原因。
+  echo [警告] 未找到 npm，跳过前端构建 —— 将沿用 cmd\server\webdist 中已有的前端产物
+  call :web_asset_id
+  echo [警告]   若前端有改动，请安装 Node.js ^>= 20 后重新执行 build，否则界面仍是旧版本
+  goto :build_template
 )
 
 echo [信息] 构建前端（npm ci ^&^& npm run build）...
@@ -149,6 +182,10 @@ if exist "%WEB_EMBED%" rmdir /s /q "%WEB_EMBED%"
 mkdir "%WEB_EMBED%"
 xcopy /e /y /q "%WEB_DIST%\*" "%WEB_EMBED%\"
 if errorlevel 1 ( echo [错误] 同步 webdist 失败 & exit /b 1 )
+
+:build_template
+call :sync_template
+if errorlevel 1 exit /b 1
 
 :build_server
 set "BUILD_TAGS="
@@ -194,6 +231,9 @@ if exist "%SERVER_BIN%" del /f /q "%SERVER_BIN%" 2>nul
 if exist "%ROOT%\toserver.exe" del /f /q "%ROOT%\toserver.exe" 2>nul
 if exist "%IMPLANTS_DIR%" del /f /q "%IMPLANTS_DIR%\*" 2>nul
 if exist "%IMPLANTS_DIR%" for /d %%d in ("%IMPLANTS_DIR%\*") do rmdir /s /q "%%d" 2>nul
+rem release\implant{,_c} 是 build 时从模板源生成的产物（不是源码），一并清理
+if exist "%RELEASE_DIR%\implant" rmdir /s /q "%RELEASE_DIR%\implant" 2>nul
+if exist "%RELEASE_DIR%\implant_c" rmdir /s /q "%RELEASE_DIR%\implant_c" 2>nul
 if exist "%WEB_DIST%" rmdir /s /q "%WEB_DIST%" 2>nul
 if exist "%WEB_EMBED%" rmdir /s /q "%WEB_EMBED%" 2>nul
 if exist "%ROOT%\web\tsconfig.tsbuildinfo" del /f /q "%ROOT%\web\tsconfig.tsbuildinfo" 2>nul
@@ -260,6 +300,12 @@ if not exist "%SERVER_BIN%" (
   if /i "!BUILDANS!"=="no" ( echo [错误] 用户拒绝构建，终止启动 & exit /b 1 )
   call :do_build
   if errorlevel 1 ( echo [错误] 构建失败，终止启动 & exit /b 1 )
+)
+rem 模板目录不在就不启动：否则服务端能起来，但生成载荷时才发现没有模板
+if not exist "%RELEASE_DIR%\implant\main.go" (
+  echo [警告] 植入端模板未同步到 %RELEASE_DIR%\implant（服务端将无法生成载荷）
+  call :sync_template
+  if errorlevel 1 ( echo [错误] 模板同步失败，终止启动 & exit /b 1 )
 )
 if not exist "%CONFIG%" (
   if exist "%CONFIG_EXAMPLE%" (
@@ -330,4 +376,43 @@ if not exist "%CONFIG%" (
 echo [信息] 常用配置项: server.api_port（服务端口）、server.public_host（回连地址）、auth.admin_password、auth.api_keys
 start /wait "" notepad "%CONFIG%"
 echo [信息] 已关闭编辑器。若修改了服务端口，需重启服务生效。
+exit /b 0
+
+rem ── 打印将嵌入的前端产物标识 ────────────────────────────
+rem 读 cmd\server\webdist\index.html 里引用的 vite 产物（带内容哈希）。
+rem 用途：npm 缺失时会沿用已有 webdist，把标识打出来才能看出"嵌入的是哪一版前端"。
+:web_asset_id
+set "ASSET_ID=(无前端产物)"
+if not exist "%WEB_EMBED%\index.html" (
+  echo [信息]   本次将嵌入的前端产物标识: !ASSET_ID!
+  exit /b 0
+)
+for /f "delims=" %%a in ('powershell -NoProfile -Command "$m=Select-String -Path '%WEB_EMBED%\index.html' -Pattern 'assets/index-[A-Za-z0-9_-]+\.js' -AllMatches ^| Select-Object -First 1; if($m){$m.Matches[0].Value}else{'(未找到 assets 引用)'}"') do set "ASSET_ID=%%a"
+echo [信息]   本次将嵌入的前端产物标识: !ASSET_ID!
+exit /b 0
+
+rem ── 同步植入端模板 ──────────────────────────────────────
+rem 把模板源同步到 release\，复刻发布包布局：服务端在 exe 同目录找 implant\，
+rem 所以这一步让本地开发与发布包走同一条解析路径。
+rem 用 xcopy 二进制复制：模板内是 CRLF，文本模式改写会破坏字节一致性。
+:sync_template
+if not exist "%TEMPLATE_SRC%" (
+  echo [错误] 植入端模板源不存在: %TEMPLATE_SRC%
+  exit /b 1
+)
+if not exist "%TEMPLATE_SRC%\main.go" (
+  echo [错误] 模板源缺少 main.go（服务端以它判定目录是否有效）
+  exit /b 1
+)
+echo [信息] 同步植入端模板到 release\（exe 同目录解析用）
+if exist "%RELEASE_DIR%\implant" rmdir /s /q "%RELEASE_DIR%\implant"
+if exist "%RELEASE_DIR%\implant_c" rmdir /s /q "%RELEASE_DIR%\implant_c"
+xcopy /e /y /q /i "%TEMPLATE_SRC%" "%RELEASE_DIR%\implant" >nul
+if errorlevel 1 ( echo [错误] 同步 implant 模板失败 & exit /b 1 )
+rem implant_c 必须与 implant 同级：builder.go / toolchain.go 以 ..\implant_c 推导它
+if exist "%TEMPLATE_SRC_C%" (
+  xcopy /e /y /q /i "%TEMPLATE_SRC_C%" "%RELEASE_DIR%\implant_c" >nul
+  if errorlevel 1 ( echo [错误] 同步 implant_c 模板失败 & exit /b 1 )
+)
+echo [成功] 植入端模板已同步
 exit /b 0

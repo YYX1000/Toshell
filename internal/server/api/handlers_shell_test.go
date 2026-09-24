@@ -137,9 +137,9 @@ func TestShellInputFailureReportedOncePerOutage(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	if got := collectUntilSub("输入未送达", 5*time.Second, 400*time.Millisecond); countContains(got, "输入未送达") != 1 {
+	if got := collectUntilSub("输入已丢弃", 5*time.Second, 400*time.Millisecond); countContains(got, "输入已丢弃") != 1 {
 		t.Fatalf("链路中断提示应恰好 1 条，实际 %d 条。帧=%v",
-			countContains(got, "输入未送达"), got)
+			countContains(got, "输入已丢弃"), got)
 	}
 
 	// 链路恢复后应提示一次"已恢复"
@@ -147,9 +147,9 @@ func TestShellInputFailureReportedOncePerOutage(t *testing.T) {
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("y")); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	if got := collectUntilSub("靶机链路已恢复", 5*time.Second, 400*time.Millisecond); countContains(got, "靶机链路已恢复") != 1 {
+	if got := collectUntilSub("靶机连接已恢复", 5*time.Second, 400*time.Millisecond); countContains(got, "靶机连接已恢复") != 1 {
 		t.Fatalf("恢复提示应恰好 1 条，实际 %d 条。帧=%v",
-			countContains(got, "靶机链路已恢复"), got)
+			countContains(got, "靶机连接已恢复"), got)
 	}
 
 	// 再次中断 = 新的一轮 → 应再提示一次（而不是从此永久静默）
@@ -159,9 +159,9 @@ func TestShellInputFailureReportedOncePerOutage(t *testing.T) {
 			t.Fatalf("write: %v", err)
 		}
 	}
-	if got := collectUntilSub("输入未送达", 5*time.Second, 400*time.Millisecond); countContains(got, "输入未送达") != 1 {
+	if got := collectUntilSub("输入已丢弃", 5*time.Second, 400*time.Millisecond); countContains(got, "输入已丢弃") != 1 {
 		t.Fatalf("新一轮中断应恰好 1 条提示，实际 %d 条。帧=%v",
-			countContains(got, "输入未送达"), got)
+			countContains(got, "输入已丢弃"), got)
 	}
 }
 

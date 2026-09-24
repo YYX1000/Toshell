@@ -256,9 +256,12 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
 
   /** 粘贴：优先异步 API 读取，读不到就引导用户用浏览器原生粘贴（Ctrl+V）。 */
   const pasteInto = useCallback(async (terminal: XTerm) => {
+    // 提示只给用户一句可操作的话；底层原因（浏览器权限、非安全上下文）留在控制台。
+    const PASTE_HINT = '无法读取剪贴板，请按 Ctrl+V 粘贴'
+
     // 明文 HTTP（非安全上下文）下没有 navigator.clipboard，只能靠浏览器原生粘贴
     if (!canReadClipboard()) {
-      showNotice('当前页面非安全上下文（非 HTTPS/localhost），脚本读不到剪贴板 —— 请用 Ctrl+V 或右键菜单「粘贴」', 'warn')
+      showNotice(PASTE_HINT)
       return
     }
     try {
@@ -266,9 +269,9 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
       // terminal.paste() 会按需加上 bracketed-paste 包裹，并触发 onData 走正常上行通道
       if (text) terminal.paste(text)
     } catch (err) {
-      // 常见于浏览器未授予剪贴板读取权限（NotAllowedError）。原生 Ctrl+V 不受此限制。
-      const msg = err instanceof Error ? err.message : String(err)
-      showNotice(`读取剪贴板被拒（${msg}）—— 请改用 Ctrl+V 或右键菜单「粘贴」`, 'error')
+      // 常见于剪贴板读取权限被拒（NotAllowedError）。Ctrl+V 走浏览器原生粘贴，不受此限制。
+      console.warn('[Terminal] 读取剪贴板失败:', err)
+      showNotice(PASTE_HINT)
     }
   }, [showNotice])
 

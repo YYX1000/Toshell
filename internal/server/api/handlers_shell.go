@@ -22,6 +22,16 @@ type ShellController interface {
 	CloseShell(sessionID string) error
 }
 
+// sendShellNotice 下发一条**系统级**提示（NOTICE 标记）。
+//
+// 这类信息属于 UI 外壳，前端拦截后显示在状态栏，**绝不写进终端正文**：
+// 终端里应该只有靶机会话的内容 —— 往里写会污染回滚缓冲，而且本地 write 会推进
+// xterm 的光标与缓冲区，远端 readline 并不知道，之后远端输出会把这一行盖乱。
+// 底层错误原因只写服务端日志，不下发给用户。
+func sendShellNotice(conn *websocket.Conn, tone, text string) {
+	_ = conn.WriteMessage(websocket.TextMessage, []byte("\x00NOTICE\x00"+tone+"|"+text))
+}
+
 func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	sessionID := vars["id"]
@@ -71,13 +81,13 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	controller, ok := s.listener.(ShellController)
 	if !ok {
 		fmt.Printf("[ERROR] [shell] Listener does not implement ShellController\n")
-		conn.WriteMessage(1, []byte("[错误: 服务端不支持交互式Shell]"))
+		conn.WriteMessage(1, []byte("\x00NOTICE\x00error|当前监听器不支持交互式 Shell"))
 		return
 	}
 
 	if err := controller.OpenShell(sessionID, ""); err != nil {
 		fmt.Printf("[ERROR] [shell] Failed to open shell: %v\n", err)
-		conn.WriteMessage(1, []byte(fmt.Sprintf("[错误: 无法打开Shell - %v]", err)))
+		conn.WriteMessage(1, []byte("\x00NOTICE\x00error|无法打开 Shell：靶机链路不可用，请稍后重试"))
 		return
 	}
 	// 关键语义：**WS 断开 = 真实关闭靶机上的 shell 进程**，不是前端假断开。
@@ -152,14 +162,14 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 				inputBroken = true
 				fmt.Printf("[WARN] [shell] session %s 输入未送达: %v（后续失败不再重复提示）\n", sessionID, err)
 				conn.WriteMessage(1, []byte(
-					"\x00NOTICE\x00warn|输入未送达靶机 —— 植入体正在重连，这期间的按键会被丢弃；恢复后可继续输入（Shell 进程不会丢）"))
+					"\x00NOTICE\x00warn|靶机连接中断，输入已丢弃（恢复后可继续）"))
 			}
 			continue
 		}
 		if inputBroken {
 			inputBroken = false
 			fmt.Printf("[INFO] [shell] session %s 输入通道已恢复\n", sessionID)
-			conn.WriteMessage(1, []byte("\x00NOTICE\x00info|靶机链路已恢复"))
+			conn.WriteMessage(1, []byte("\x00NOTICE\x00info|靶机连接已恢复"))
 		}
 	}
 

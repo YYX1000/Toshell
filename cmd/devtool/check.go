@@ -321,11 +321,11 @@ var mdLinkRe = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 func checkDocLinks(p paths) []checkProblem {
 	var out []checkProblem
 
-	// 仓库布局的文档
+	// 仓库布局的文档（AGENT.md 也要查：它点名的路径与命令一旦过时就误导协作者）
 	repoDocs := []string{
 		p.join("README.md"), p.join("USAGE.md"), p.join("ROADMAP.md"),
 		p.join("CHANGELOG.md"), p.join("SECURITY.md"), p.join("DISCLAIMER.md"),
-		p.join("THIRD-PARTY-NOTICES.md"),
+		p.join("THIRD-PARTY-NOTICES.md"), p.join("AGENT.md"),
 	}
 	if ds, err := filepath.Glob(p.join("docs", "*.md")); err == nil {
 		repoDocs = append(repoDocs, ds...)

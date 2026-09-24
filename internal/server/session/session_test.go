@@ -3,6 +3,8 @@ package session
 import (
 	"testing"
 	"time"
+
+	"toshell/internal/common/types"
 )
 
 // withTimeoutConfig 临时设置判活基准与默认心跳间隔（测试用）。
@@ -145,5 +147,70 @@ func TestObserveHeartbeatIgnoresUnchangedLastSeen(t *testing.T) {
 	}
 	if s.observedInterval != 60*time.Second {
 		t.Fatalf("心跳未推进不应改变采样: %v", s.observedInterval)
+	}
+}
+
+// 回归（2026-09-24 实测事故）：下发任务不能把"事实上已失联"的会话复活成在线。
+//
+// 现场：植入体 15:44:17 后消失；操作员在 15:45:35 / 15:46:13 / 15:47:37 各点了一次
+// 命令，三次下发全部失败（no writer），但 Create() 每次仍无条件 MarkSessionBusy(0)
+// → 忙期 = 2×180s = 6min；忙期内判活放宽 BusyGrace 倍，界面因此一直显示"在线"，
+// 直到 15:53:41 忙期自然过期才翻成离线 —— 期间每条命令、每次 Shell 都发不出去。
+func TestMarkBusyCannotResurrectDeadSession(t *testing.T) {
+	withTimeoutConfig(t, 180*time.Second, 60*time.Second)
+
+	now := time.Now()
+	// 已静默 300s：远超正常窗口（observedInterval 60s → 阈值 180s）
+	s := &Session{LastSeen: now.Add(-300 * time.Second), observedInterval: 60 * time.Second}
+	if s.isAliveAt(now) {
+		t.Fatal("前置条件错误：静默 300s 应已判离线")
+	}
+
+	s.MarkBusy(0) // 模拟 Create() 的无条件标记
+
+	if s.isAliveAt(now) {
+		t.Fatal("给已失联会话标记忙期后仍被判存活 —— 界面会一直显示在线，但命令发不出去")
+	}
+	if !s.BusyUntil.IsZero() {
+		t.Fatalf("失联会话不应被写入忙期，BusyUntil=%v", s.BusyUntil)
+	}
+}
+
+// 忙期"延长活着的会话"这条语义必须保留（长任务期间心跳可能停顿）。
+func TestMarkBusyStillExtendsLiveSession(t *testing.T) {
+	withTimeoutConfig(t, 180*time.Second, 60*time.Second)
+
+	now := time.Now()
+	s := &Session{LastSeen: now, observedInterval: 60 * time.Second}
+	s.MarkBusy(0) // 标记时存活 → 忙期 = 2×180s = 360s
+
+	s.LastSeen = now.Add(-300 * time.Second) // 已过正常窗口 180s
+	if !s.isAliveAt(now) {
+		t.Fatal("存活时标记的忙期应继续放宽判活窗口（180s×3=540s 内）")
+	}
+}
+
+// 下发失败必须清掉忙期，否则每点一次命令就续一次"假在线"。
+func TestClearSessionBusyRestoresNormalWindow(t *testing.T) {
+	withTimeoutConfig(t, 180*time.Second, 60*time.Second)
+
+	now := time.Now()
+	m := &Manager{sessions: make(map[string]*Session)}
+	sess := &Session{
+		Info:             &types.SessionInfo{ID: "s1", Status: "active", LastSeen: now},
+		LastSeen:         now,
+		observedInterval: 60 * time.Second,
+	}
+	m.sessions["s1"] = sess
+
+	m.MarkSessionBusy("s1", 0)
+	sess.LastSeen = now.Add(-300 * time.Second)
+	if !sess.isAliveAt(now) {
+		t.Fatal("忙期应放宽判活窗口")
+	}
+
+	m.ClearSessionBusy("s1") // 模拟下发失败时的清理
+	if sess.isAliveAt(now) {
+		t.Fatal("清忙期后应回到正常窗口（300s > 180s → 判离线）")
 	}
 }

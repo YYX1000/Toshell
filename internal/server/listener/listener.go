@@ -162,6 +162,10 @@ func (l *Listener) PushTask(sessionID string, taskInfo *types.TaskInfo) error {
 
 	if err := wsConn.WriteMessage(encrypted); err != nil {
 		l.sessionMgr.ClearConnection(sessionID)
+		// 下发失败 == 任务根本没到植入端，必须一并清掉 Create() 时设下的忙期。
+		// 否则操作员每点一次命令，就给一个已失联的会话续一次忙期，
+		// 判活窗口被放宽 BusyGrace 倍 —— 界面一直显示"在线"但命令全都发不出去。
+		l.sessionMgr.ClearSessionBusy(sessionID)
 		return fmt.Errorf("failed to send task: %w", err)
 	}
 

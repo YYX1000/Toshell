@@ -1,4 +1,4 @@
-# =====================================================================
+﻿# =====================================================================
 #  ToShell v1.3.5 local packaging: mirrors .github/workflows/release.yml
 #  Output: release/release-zips/toshell-server-<os>-<arch>.zip (6 targets)
 # =====================================================================
@@ -40,11 +40,14 @@ foreach ($m in $matrix) {
   if (Test-Path $pkg) { Remove-Item -Recurse -Force $pkg }
   New-Item -ItemType Directory -Force -Path $pkg | Out-Null
   Copy-Item $bin (Join-Path $pkg ('toserver' + $m.ext))
-  Copy-Item -Recurse (Join-Path $base 'release\implant')  (Join-Path $pkg 'implant')
-  Copy-Item -Recurse (Join-Path $base 'release\implant_c') (Join-Path $pkg 'implant_c')
+  # 植入端模板唯一源是 internal\server\builder\implant{,_c}；release\ 下的是构建期生成物
+  Copy-Item -Recurse (Join-Path $base 'internal\server\builder\implant')   (Join-Path $pkg 'implant')
+  Copy-Item -Recurse (Join-Path $base 'internal\server\builder\implant_c') (Join-Path $pkg 'implant_c')
   New-Item -ItemType Directory -Force -Path (Join-Path $pkg 'configs') | Out-Null
   Copy-Item (Join-Path $base 'configs\server.yaml.example') (Join-Path $pkg 'configs\server.yaml.example')
-  Copy-Item (Join-Path $base 'README.md') (Join-Path $pkg 'README.md')
+  # 包内 README 用 release\README.md（包内视角：本目录内容 / 停止服务端 / 三类能力），
+  # 不是仓库根 README.md（那是项目总览，含大量指向未打包文档的链接）
+  Copy-Item (Join-Path $base 'release\README.md') (Join-Path $pkg 'README.md')
   Copy-Item (Join-Path $base 'USAGE.md')  (Join-Path $pkg 'USAGE.md')
   # 文档目录必须随包分发：README/USAGE 里大量链接指向 docs\EVASION.md、
   # docs\LOADERS.md、docs\DEPLOY-DOMAIN-CDN.md（截图也在 docs\screenshots 下），

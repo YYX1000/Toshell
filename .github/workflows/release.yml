@@ -115,12 +115,16 @@ jobs:
           mkdir -p "$STAGE"
           cp "toserver${{ matrix.ext }}" "$STAGE/toserver${{ matrix.ext }}"
           # 完整可运行包：植入端模板 + 配置样例 + 依赖目录
-          cp -r release/implant "$STAGE/implant"
-          cp -r release/implant_c "$STAGE/implant_c"
+          # 模板唯一源是 internal/server/builder/implant{,_c}；release/ 下那两份是
+          # 构建期生成物（已 gitignore），不能作为打包来源。
+          cp -r internal/server/builder/implant "$STAGE/implant"
+          cp -r internal/server/builder/implant_c "$STAGE/implant_c"
           # 配置：与 release/configs 布局一致（deploy.sh/bat 从 configs/ 读取）
           mkdir -p "$STAGE/configs"
           cp configs/server.yaml.example "$STAGE/configs/server.yaml.example"
-          cp README.md "$STAGE/README.md"
+          # 包内 README 用 release/README.md（包内视角：本目录内容 / 停止服务端 / 三类能力），
+          # 不用仓库根 README.md —— 后者含多条指向"不随包分发"文档的链接，进包即死链。
+          cp release/README.md "$STAGE/README.md"
           cp USAGE.md "$STAGE/USAGE.md"
           # 文档目录必须随包分发：README/USAGE 里大量链接指向 docs/EVASION.md、
           # docs/LOADERS.md、docs/DEPLOY-DOMAIN-CDN.md，不打包就是一堆死链
@@ -158,7 +162,9 @@ jobs:
           # 以及 README/USAGE 里链到的文档（docs/ 不打包就会在包内变成死链）。
           unzip -l "${{ matrix.zip }}" > /tmp/ziplist.txt
           cat /tmp/ziplist.txt
-          for f in "toserver${{ matrix.ext }}" "implant/main.go" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE" "docs/EVASION.md" "docs/LOADERS.md"; do
+          # implant_c/main.c 也要查：服务端运行期以 exe 同目录的 implant_c/main.c 编译 C 植入端
+          # （builder.go / toolchain.go 用 ../implant_c 推导），漏了它 C 植入端会在运行期才报错。
+          for f in "toserver${{ matrix.ext }}" "implant/main.go" "implant_c/main.c" "configs/server.yaml.example" "README.md" "USAGE.md" "LICENSE" "docs/EVASION.md" "docs/LOADERS.md"; do
             grep -q "$f" /tmp/ziplist.txt || { echo "::error::package is missing $f"; exit 1; }
           done
 

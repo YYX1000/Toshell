@@ -11,6 +11,11 @@ release/toserver.exe
 release/toserver
 release/implants/
 release/data/
+# 植入端模板生成物：唯一源在 internal/server/builder/implant{,_c}，
+# 由 build / 打包同步到这里，以使本地运行与发布包的模板解析路径完全一致。
+# 不要手工编辑，会被下次同步覆盖。
+release/implant/
+release/implant_c/
 implants/
 *.exe
 *.dll

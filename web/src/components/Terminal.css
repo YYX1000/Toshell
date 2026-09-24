@@ -67,6 +67,37 @@
   font-weight: 700;
 }
 
+/* 状态栏提示：本地/系统级信息（粘贴失败、链路中断…）走这里，**不写进终端正文**。
+   终端里只应出现靶机会话的内容；往里写还会打乱本地光标与远端 readline 的对应关系。 */
+.terminal-notice {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-notice-info {
+  color: #64b5f6;
+  background: color-mix(in srgb, #64b5f6 14%, transparent);
+}
+
+.terminal-notice-warn {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+}
+
+.terminal-notice-error {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
+}
+
 .terminal-actions {
   display: flex;
   align-items: center;

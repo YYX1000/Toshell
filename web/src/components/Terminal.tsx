@@ -184,6 +184,8 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
   const visibleRef = useRef(visible)
   // 管道后端（Windows）的行缓冲；连接建立/断开时清空，避免残留上一轮没提交的半行命令
   const resetInputBufRef = useRef<() => void>(() => {})
+  // 状态栏提示的 setter（供 ws.onmessage 里的 NOTICE 标记调用，避免把 connect 的依赖搅动）
+  const showNoticeRef = useRef<(text: string, tone?: 'info' | 'warn' | 'error', ms?: number) => void>(() => {})
 
   useEffect(() => { onCWDChangeRef.current = onCWDChange }, [onCWDChange])
   useEffect(() => { themeModeRef.current = themeMode }, [themeMode])
@@ -237,13 +239,26 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
     }
   }, [])
 
-  /** 粘贴：优先异步 API 读取，非安全上下文给出可操作提示（而不是静默失败）。 */
+  // 本地/系统级提示（粘贴失败、链路中断等）一律走状态栏，**不能 terminal.write**：
+  // 终端里显示的应当是靶机会话的内容。往终端写会污染回滚缓冲，而且本地 write 会推进
+  // xterm 的光标与缓冲区，远端 readline 并不知道，之后远端输出会把这一行覆盖得乱七八糟。
+  const [notice, setNotice] = useState<{ text: string; tone: 'info' | 'warn' | 'error' } | null>(null)
+  const noticeTimerRef = useRef<number | null>(null)
+  const showNotice = useCallback((text: string, tone: 'info' | 'warn' | 'error' = 'warn', ms = 6000) => {
+    setNotice({ text, tone })
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current)
+    noticeTimerRef.current = window.setTimeout(() => setNotice(null), ms)
+  }, [])
+  useEffect(() => () => {
+    if (noticeTimerRef.current) window.clearTimeout(noticeTimerRef.current)
+  }, [])
+  useEffect(() => { showNoticeRef.current = showNotice }, [showNotice])
+
+  /** 粘贴：优先异步 API 读取，读不到就引导用户用浏览器原生粘贴（Ctrl+V）。 */
   const pasteInto = useCallback(async (terminal: XTerm) => {
+    // 明文 HTTP（非安全上下文）下没有 navigator.clipboard，只能靠浏览器原生粘贴
     if (!canReadClipboard()) {
-      terminal.write(
-        '\r\n\x1b[33m[ 当前页面不是安全上下文（非 HTTPS/localhost），浏览器禁止脚本读剪贴板：' +
-        '请直接用 Ctrl+V，或右键选「粘贴」 ]\x1b[0m\r\n',
-      )
+      showNotice('当前页面非安全上下文（非 HTTPS/localhost），脚本读不到剪贴板 —— 请用 Ctrl+V 或右键菜单「粘贴」', 'warn')
       return
     }
     try {
@@ -251,11 +266,11 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
       // terminal.paste() 会按需加上 bracketed-paste 包裹，并触发 onData 走正常上行通道
       if (text) terminal.paste(text)
     } catch (err) {
-      terminal.write(
-        `\r\n\x1b[31m[ 粘贴失败：${err instanceof Error ? err.message : String(err)} ]\x1b[0m\r\n`,
-      )
+      // 常见于浏览器未授予剪贴板读取权限（NotAllowedError）。原生 Ctrl+V 不受此限制。
+      const msg = err instanceof Error ? err.message : String(err)
+      showNotice(`读取剪贴板被拒（${msg}）—— 请改用 Ctrl+V 或右键菜单「粘贴」`, 'error')
     }
-  }, [])
+  }, [showNotice])
 
   const initTerminal = useCallback(() => {
     if (!terminalRef.current || xtermRef.current) return
@@ -510,6 +525,16 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
         onCWDChangeRef.current?.(data.slice(5))
         return
       }
+      // NOTICE marker: \x00NOTICE\x00<tone>|<text> —— 服务端的系统级提示
+      // （如"链路中断，按键已丢弃"）。这类信息属于 UI 外壳，**不能写进终端**，
+      // 否则会污染靶机会话的回滚缓冲、并打乱本地光标与远端 readline 的对应关系。
+      if (data.startsWith('\x00NOTICE\x00')) {
+        const body = data.slice(9)
+        const sep = body.indexOf('|')
+        const tone = (sep > 0 ? body.slice(0, sep) : 'warn') as 'info' | 'warn' | 'error'
+        showNoticeRef.current?.(sep > 0 ? body.slice(sep + 1) : body, tone)
+        return
+      }
       data = data.replace(/\x1b\]0;[^\x07\x1b]*(?:\x07|\x1b\\)/g, '')
       xtermRef.current?.write(data)
     }
@@ -576,6 +601,12 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
       {/* Status Bar */}
       <div className="terminal-status-bar">
         <span className="terminal-title">{renderTitle()}</span>
+        {/* 本地/系统级提示（粘贴失败、链路中断…）显示在这里，不写进终端正文 */}
+        {notice && (
+          <span className={`terminal-notice terminal-notice-${notice.tone}`} title={notice.text}>
+            {notice.text}
+          </span>
+        )}
         <div className="terminal-actions">
           <span className={`terminal-status ${connected ? 'connected' : 'disconnected'}`}>
             {connecting ? (

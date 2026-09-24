@@ -122,6 +122,10 @@ jobs:
             THIRD-PARTY-NOTICES.md
           # 版本号跟随 tag（v1.3.x）；标题也用 tag 名
           name: ${{ github.ref_name }}
+          # 含 '-' 的 tag 视为预发布（semver 预发布，如 v1.3.5-yyx1000.1）。
+          # 不标 prerelease 的话它会成为仓库的 Latest —— 那会把一次验证性构建
+          # 摆到"最新版"的位置。稳定版 tag（v1.4.0）不含 '-'，行为不变。
+          prerelease: ${{ contains(github.ref_name, '-') }}
           # 固定正文：不要用 generate_release_notes —— 它会在每次重跑时重复追加一行
           # "Full Changelog: ..."，导致正文被刷屏。
           body: |

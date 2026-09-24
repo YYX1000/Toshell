@@ -106,7 +106,9 @@ jobs:
           images: ghcr.io/${{ github.repository_owner }}/toshell-server
           tags: |
             type=ref,event=tag
-            type=raw,value=latest
+            # 含 '-' 的预发布 tag 不移动 latest 标签，避免预发布镜像覆盖稳定版；
+            # 手动触发（无 tag）时正常打 latest。
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_dispatch' || !contains(github.ref_name, '-') }}
 
       - uses: docker/build-push-action@v6
         with:

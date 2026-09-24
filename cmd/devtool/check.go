@@ -42,6 +42,7 @@ func cmdCheck(args []string) error {
 	problems = append(problems, checkExampleConfigs(p)...)
 	problems = append(problems, checkPackagingPointers(p)...)
 	problems = append(problems, checkReleaseMatrix(p)...)
+	problems = append(problems, checkViteConfigShadow(p)...)
 	problems = append(problems, checkDocLinks(p)...)
 
 	if len(problems) > 0 {
@@ -287,7 +288,29 @@ func checkReleaseMatrix(p paths) []checkProblem {
 	return out
 }
 
-// ── 6. 文档相对链接 ────────────────────────────────────────────────
+// ── 6. web/vite.config.js 不得存在（会静默遮蔽 vite.config.ts）──────
+
+// Vite 解析配置时优先加载 vite.config.js —— 若源目录里存在一个由 tsc 编译出来的
+// vite.config.js，那么对 vite.config.ts 的任何修改都会被**静默忽略**，直到下次
+// npm run build 重新生成 .js 才"突然生效"。
+//
+// 本仓库被这个坑过：代理目标写在 .ts 里改成 18081，实际仍按旧 .js 的 8081 走，
+// 表现为"改了配置没反应 / 每次开发都得手动设 VITE_PROXY_TARGET"。
+// 已把 tsconfig.node.json 改为 emitDeclarationOnly，从源头不再产出 .js；
+// 这条检查负责兜住"万一又出现"（例如手动跑过别的 tsc 命令）。
+func checkViteConfigShadow(p paths) []checkProblem {
+	shadow := p.join("web", "vite.config.js")
+	if !fileExists(shadow) {
+		return nil
+	}
+	return []checkProblem{{
+		"web/vite.config.js 存在，会遮蔽 vite.config.ts: " + relOrAbs(p.root, shadow),
+		"Vite 优先加载 .js，对 .ts 的修改会被静默忽略（曾导致代理目标改动不生效）。" +
+			"删掉它: rm web/vite.config.js；若反复出现，检查 web/tsconfig.node.json 是否缺 emitDeclarationOnly",
+	}}
+}
+
+// ── 7. 文档相对链接 ────────────────────────────────────────────────
 
 var mdLinkRe = regexp.MustCompile(`\]\(([^)\s]+)\)`)
 

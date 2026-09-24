@@ -190,6 +190,23 @@ export const TerminalComponent = forwardRef<TerminalHandle, TerminalProps>(funct
   useEffect(() => { remoteEchoRef.current = remoteEcho }, [remoteEcho])
   useEffect(() => { visibleRef.current = visible }, [visible])
 
+  // 兜底：wsPath 变了但本组件没被重建（调用方漏了 key）时，绝不能继续沿用旧连接 ——
+  // 那会让标题栏显示新主机、实际却在操作老主机的 shell。
+  // 这里直接断掉（失败必须是"可见的"），真正该做的是调用方用 key 触发重建。
+  const prevWsPathRef = useRef(wsPath)
+  useEffect(() => {
+    if (prevWsPathRef.current === wsPath) return
+    console.warn(
+      '[Terminal] wsPath 变化但组件未重建，已断开旧连接：%s -> %s（调用方应给本组件加 key）',
+      prevWsPathRef.current, wsPath,
+    )
+    prevWsPathRef.current = wsPath
+    if (wsRef.current) { wsRef.current.close(); wsRef.current = null }
+    connectedRef.current = false
+    setConnected(false)
+    setConnecting(false)
+  }, [wsPath])
+
   // Keep xterm on the classic dark palette regardless of global data-theme
   useEffect(() => {
     const mode: 'dark' | 'light' = 'dark'

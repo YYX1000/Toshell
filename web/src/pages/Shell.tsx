@@ -64,6 +64,9 @@ export function Shell() {
       {/* 右侧交互式终端 */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <TerminalComponent
+          // key 带上 sessionId：路由从 /shell/A 换到 /shell/B 时 React 会复用本组件，
+          // 不重建的话会继续用 A 的 xterm 实例和 WebSocket（同 Sessions 详情面板那个问题）。
+          key={sessionId}
           ref={terminalRef}
           wsPath={`/api/v1/sessions/${sessionId}/shell`}
           title={title}

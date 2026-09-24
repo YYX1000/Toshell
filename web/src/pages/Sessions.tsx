@@ -207,7 +207,14 @@ export function Sessions() {
           onClearFilters={clearFilters}
         />
         {selectedSession && (
+          // key 必须带上会话 ID：换主机时如果不重建，React 会复用同一个
+          // SessionDetail 实例，里面的 TerminalComponent 不会重init，
+          // 老会话的 xterm 缓冲和**那条还开着的 WebSocket** 会被原样留下 ——
+          // 标题栏显示新主机、实际却在操作老主机的 shell（实测已复现）。
+          // 带上 key 后所有 per-session 状态（终端/文件浏览器当前目录/进程列表…）
+          // 都会随主机切换整体重置。
           <SessionDetail
+            key={selectedSession.id}
             session={selectedSession}
             onClose={() => setSelectedSession(null)}
           />

@@ -534,6 +534,13 @@ func (s *Session) MarkBusy(d time.Duration) {
 	if d <= 0 {
 		d = HeartbeatTimeout * 2
 	}
+	// 忙期只用于"延长"一个本来就还活着的会话的判活窗口（长任务期间心跳可能停顿），
+	// 不能用来"复活"一个已经超出正常窗口的失联会话：
+	// 否则给植入体早已消失的会话下发任务，会让它凭空多活 BusyGrace 倍窗口
+	// （实测表现：界面一直显示"在线"，但每条命令/Shell 都 no writer 发不出去）。
+	if !s.isAliveAt(time.Now()) {
+		return
+	}
 	until := time.Now().Add(d)
 	s.BusyUntil = until
 }

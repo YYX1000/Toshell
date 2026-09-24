@@ -78,7 +78,7 @@ type gccCandidate struct {
 // CStatus 返回 C 植入端可用性与给运维看的说明（模板 + mingw gcc）。
 func (b *Builder) CStatus() (bool, string) {
 	if !b.cTemplateAvailable() {
-		return false, "未找到 C 植入端模板（implant_c/main.c）：请确认发行包完整，或检查 implant.dir 配置"
+		return false, "未找到 C 植入端模板（implant_c/main.c）：请确认发行包完整，或检查 implant.template_dir 配置"
 	}
 	tool, warning, err := resolveGCC("amd64")
 	if err != nil {

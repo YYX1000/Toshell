@@ -210,9 +210,15 @@
   background: var(--color-text-muted);
 }
 
+/* 状态点：**不加任何无限动画/发光**（发光在部分 GPU 与远程桌面上会闪；
+   用户反馈过"爆闪"，根因是 prefers-reduced-motion 规则，已修，这里也不再依赖动画） */
 .status-indicator.online .status-dot {
   background: var(--color-success);
-  box-shadow: 0 0 8px var(--color-success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-success) 22%, transparent);
+}
+.status-indicator.offline .status-dot {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-danger) 22%, transparent);
 }
 
 .theme-toggle {
@@ -235,9 +241,9 @@
   color: var(--color-primary);
 }
 
-.status-indicator.online {
-  color: var(--color-success);
-}
+.status-indicator.online { color: var(--color-success); }
+.status-indicator.offline { color: var(--color-danger); }
+.status-indicator { white-space: nowrap; }
 
 .content {
   flex: 1;
@@ -282,3 +288,52 @@
   border-color: var(--color-border-hover);
   color: var(--color-primary);
 }
+/* ══════════════════════════════════════════════════════════════════════
+   v1.3.5 UI 优化：侧栏/顶栏的易用性修正
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* 折叠态：图标居中，避免 64px 宽度里图标偏左显得空 */
+.sidebar.collapsed .nav-item { justify-content: center; padding: 10px 0; }
+.sidebar.collapsed .sidebar-header { justify-content: center; padding: 16px 8px; }
+.sidebar.collapsed .logout-btn { justify-content: center; }
+
+/* 导航项键盘可达 + 明确激活条 */
+.nav-item:focus-visible { outline: none; box-shadow: var(--ring); }
+.nav-item.active { font-weight: 600; }
+
+/* 顶部汉堡按钮：只在窄屏出现 */
+.topbar-menu-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  margin-right: 10px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+.topbar-menu-btn:hover { color: var(--color-text); border-color: var(--color-border-hover); }
+
+/* 窄屏浮层侧栏的遮罩 */
+.sidebar-backdrop { display: none; }
+
+@media (max-width: 900px) {
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.45);
+    z-index: 99;
+  }
+  .topbar-menu-btn { display: inline-flex; }
+  .topbar { padding: 0 var(--sp-3); }
+  .page-title { font-size: var(--fs-md); }
+  .content { padding: var(--sp-3); }
+  .topbar-actions { gap: var(--sp-2); }
+}
+
+/* 顶栏在滚动时保持可见（内容区是独立滚动容器，这里加一层阴影让层次更清楚） */
+.topbar { box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04); }

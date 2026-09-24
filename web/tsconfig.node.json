@@ -5,7 +5,12 @@
     "module": "ESNext",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
-    "strict": true
+    "strict": true,
+    // 只产出 .d.ts，绝不能让 tsc 把 vite.config.ts 编译成同目录的 vite.config.js ——
+    // Vite 解析配置时优先加载 vite.config.js，那个产物会**静默遮蔽** .ts：
+    // 改 .ts 完全无效，直到下次 npm run build 重新生成 .js 才"突然生效"。
+    // （本仓库确实被这个坑过一次：代理目标写在 .ts 里却一直按旧 .js 的 8081 走。）
+    "emitDeclarationOnly": true
   },
   "include": ["vite.config.ts"]
 }

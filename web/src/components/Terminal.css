@@ -23,10 +23,13 @@
   border: 1px solid var(--color-border);
 }
 
-/* When inside a detail panel, compensate for parent padding */
+/* When inside a detail panel, compensate for parent padding.
+   .detail-content 的 padding 是 var(--sp-4)=16px，这里必须按 16px 抵消：
+   写成 18px 会多出 2px/边，既让 .detail-content 冒出横向滚动条，
+   也让终端最左侧约 2px 被裁在 padding box 外（点那里点不到终端）。 */
 .detail-content .terminal-component {
-  margin: -18px;
-  width: calc(100% + 36px);
+  margin: -16px;
+  width: calc(100% + 32px);
   border-radius: 0;
   border: none;
   border-bottom: 1px solid var(--color-border);
@@ -62,6 +65,37 @@
 .terminal-title-highlight {
   color: var(--color-primary);
   font-weight: 700;
+}
+
+/* 状态栏提示：本地/系统级信息（粘贴失败、链路中断…）走这里，**不写进终端正文**。
+   终端里只应出现靶机会话的内容；往里写还会打乱本地光标与远端 readline 的对应关系。 */
+.terminal-notice {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-family: var(--font-mono);
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.terminal-notice-info {
+  color: #64b5f6;
+  background: color-mix(in srgb, #64b5f6 14%, transparent);
+}
+
+.terminal-notice-warn {
+  color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent);
+}
+
+.terminal-notice-error {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
 }
 
 .terminal-actions {
@@ -148,10 +182,10 @@
   padding: 0;
 }
 
-/* Override xterm internal padding for seamless fit */
-.terminal-container .xterm-screen {
-  padding: 4px;
-}
+/* 注意：不要给 .xterm-screen 加 padding。
+   它是字符网格的定位基准，点击定位光标要按 getBoundingClientRect() 反算列号，
+   一旦这里加内边距（哪怕 4px），画布原点就与 rect 原点错开，算出来的列会整体偏移。
+   xterm 本身在 .xterm-screen 上也没有内边距。 */
 
 .terminal-container .xterm-viewport::-webkit-scrollbar {
   width: 8px;

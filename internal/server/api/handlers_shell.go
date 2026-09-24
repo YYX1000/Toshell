@@ -22,6 +22,16 @@ type ShellController interface {
 	CloseShell(sessionID string) error
 }
 
+// sendShellNotice 下发一条**系统级**提示（NOTICE 标记）。
+//
+// 这类信息属于 UI 外壳，前端拦截后显示在状态栏，**绝不写进终端正文**：
+// 终端里应该只有靶机会话的内容 —— 往里写会污染回滚缓冲，而且本地 write 会推进
+// xterm 的光标与缓冲区，远端 readline 并不知道，之后远端输出会把这一行盖乱。
+// 底层错误原因只写服务端日志，不下发给用户。
+func sendShellNotice(conn *websocket.Conn, tone, text string) {
+	_ = conn.WriteMessage(websocket.TextMessage, []byte("\x00NOTICE\x00"+tone+"|"+text))
+}
+
 func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	sessionID := vars["id"]
@@ -71,16 +81,27 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	controller, ok := s.listener.(ShellController)
 	if !ok {
 		fmt.Printf("[ERROR] [shell] Listener does not implement ShellController\n")
-		conn.WriteMessage(1, []byte("[错误: 服务端不支持交互式Shell]"))
+		conn.WriteMessage(1, []byte("\x00NOTICE\x00error|当前监听器不支持交互式 Shell"))
 		return
 	}
 
 	if err := controller.OpenShell(sessionID, ""); err != nil {
 		fmt.Printf("[ERROR] [shell] Failed to open shell: %v\n", err)
-		conn.WriteMessage(1, []byte(fmt.Sprintf("[错误: 无法打开Shell - %v]", err)))
+		conn.WriteMessage(1, []byte("\x00NOTICE\x00error|无法打开 Shell：靶机链路不可用，请稍后重试"))
 		return
 	}
-	defer controller.CloseShell(sessionID)
+	// 关键语义：**WS 断开 = 真实关闭靶机上的 shell 进程**，不是前端假断开。
+	// 所以前端切面板必须"只隐藏、不卸载"终端组件；一旦卸载就会走到这里把
+	// 靶机上的 bash 杀掉，切回来只能重开一条新 shell（历史与状态全丢）。
+	// 这条日志存在的意义就是把"前端假断开"和"后端真断开"在日志里区分开：
+	//   - 只看到 "WebSocket read error/close"，没有本行 → 会话通道仍然保持；
+	//   - 看到本行 → 靶机上的 shell 已被真实终止。
+	defer func() {
+		fmt.Printf("[INFO] [shell] WS closed -> tearing down remote shell for session: %s\n", sessionID)
+		if err := controller.CloseShell(sessionID); err != nil {
+			fmt.Printf("[WARN] [shell] CloseShell failed for session %s: %v\n", sessionID, err)
+		}
+	}()
 
 	fmt.Printf("[INFO] [shell] Shell opened for session: %s\n", sessionID)
 	conn.WriteMessage(1, []byte("[Shell已连接，等待输出...]"))
@@ -117,6 +138,9 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 	}()
 	defer close(done)
 
+	// 输入通道是否处于"收发不出去"的状态：用于把每键盘一次的报错收敛成每次中断一条
+	inputBroken := false
+
 	for {
 		_, msg, err := conn.ReadMessage()
 		if err != nil {
@@ -124,8 +148,28 @@ func (s *Server) shellWebSocketHandler(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 
+		// 靶机链路中断期间（植入体在重连空窗里没有 writer），**每一次按键**都会让
+		// SendShellInput 失败。原先是每次失败都往终端写一条且不带换行符，
+		// 于是用户只敲了 6 个字符就糊出一整行 "[错误: no writer for session xxx]" ×6。
+		// 改为"每次中断只提示一次"：首次失败给出原因，后续失败静默丢弃，
+		// 链路恢复后再告知一次。Shell 进程本身不会因此丢失（植入体重连后照常可用）。
+		//
+		// 提示走 NOTICE 标记（前端拦截后显示在状态栏），而不是直接写进终端：
+		// 这是系统级信息，属于 UI 外壳；写进终端会污染靶机会话的回滚缓冲，
+		// 也会打乱本地光标与远端 readline 的对应关系。原始错误只留在服务端日志。
 		if err := controller.SendShellInput(sessionID, string(msg)); err != nil {
-			conn.WriteMessage(1, []byte(fmt.Sprintf("[错误: %v]", err)))
+			if !inputBroken {
+				inputBroken = true
+				fmt.Printf("[WARN] [shell] session %s 输入未送达: %v（后续失败不再重复提示）\n", sessionID, err)
+				conn.WriteMessage(1, []byte(
+					"\x00NOTICE\x00warn|靶机连接中断，输入已丢弃（恢复后可继续）"))
+			}
+			continue
+		}
+		if inputBroken {
+			inputBroken = false
+			fmt.Printf("[INFO] [shell] session %s 输入通道已恢复\n", sessionID)
+			conn.WriteMessage(1, []byte("\x00NOTICE\x00info|靶机连接已恢复"))
 		}
 	}
 

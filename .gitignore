@@ -11,6 +11,14 @@ release/toserver.exe
 release/toserver
 release/implants/
 release/data/
+# Toshell.* 的运行时状态：服务端的启动方式标记（dev|deploy）与 Vite 的 PID 文件
+release/.run-mode
+release/vite.pid
+# 植入端模板生成物：唯一源在 internal/server/builder/implant{,_c}，
+# 由 build / 打包同步到这里，以使本地运行与发布包的模板解析路径完全一致。
+# 不要手工编辑，会被下次同步覆盖。
+release/implant/
+release/implant_c/
 implants/
 *.exe
 *.dll
@@ -45,6 +53,15 @@ dashboard*.png
 *.swp
 .DS_Store
 Thumbs.db
+
+# ── 编辑器 / IDE / 本地工具配置 ──
+# JetBrains 的 .idea/.gitignore 只忽略 workspace.xml，其余（.iml/encodings.xml/
+# modules.xml/vcs.xml 等）仍是未跟踪状态，会一直出现在 git status 里。
+# 这些是每个开发者本地的 IDE 配置，不入库。
+.idea/
+# .mcp.json 虽属项目级 MCP 配置（Claude Code 通常建议提交），但本仓库这份指向的是
+# 本机 IDE 的固定端口（127.0.0.1:64422），含机器相关信息，对他人无意义。
+.mcp.json
 
 # ── 运行时数据目录：仅跟踪"预设文件"，运行时产物（db/上传/传输/uac载荷等）不提交 ──
 # 保留目录结构与必需资产：data/av_fingerprints.json（杀软指纹库，服务端必需）、

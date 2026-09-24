@@ -9,12 +9,57 @@ import (
 	"toshell/internal/server/drivers"
 )
 
-// listDriversHandler 返回内置 BYOVD 驱动目录（供前端"一键加载内置驱动"）。
+// listDriversHandler 返回**操作员自备**的 BYOVD 驱动目录（服务端不再内置任何驱动）：
+// 扫描 exe 同目录 drivers/、CWD drivers/、data/drivers/ 下的 *.sys + manifest.json。
+// 前端据此展示"可加载的驱动"；列表为空表示需要自行放置/上传 .sys。
 func (s *Server) listDriversHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
+	list := drivers.List()
 	json.NewEncoder(w).Encode(map[string]interface{}{
-		"drivers": drivers.List(),
-		"count":   len(drivers.Catalog),
+		"drivers":       list,
+		"count":         len(list),
+		"search_dirs":   drivers.SearchDirs(),
+		"builtin":       false,
+		"manifest_hint": "把 .sys 放进任一 search_dirs，并在同目录 manifest.json 里声明 device/service/ioctl（或在前端加载时手填）",
+	})
+}
+
+// verifyDriverHandler 对**操作员自备**的驱动做加载前自检（ROADMAP P0-1）：
+// sha256 与 manifest 声明是否一致、本机 Authenticode 签名是否有效、本机易受攻击驱动
+// 黑名单是否启用（以及黑名单数据文件是否存在）。
+//
+// 路由：GET /drivers/{name}/verify —— 需在 api.go 注册（见交付说明）。未找到驱动返回 404 + 中文原因。
+func (s *Server) verifyDriverHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	name := mux.Vars(r)["name"]
+	d, err := drivers.Find(name)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": err.Error(),
+			"name":  name,
+		})
+		return
+	}
+	// List() 已经算过 sha256 并复用同一份读取结果做过自检，这里直接用，不再读盘。
+	res := drivers.VerifyResult{}
+	if d.Verify != nil {
+		res = *d.Verify
+	}
+	json.NewEncoder(w).Encode(struct {
+		Driver  string `json:"driver"`
+		File    string `json:"file"`
+		Path    string `json:"path"`
+		OK      bool   `json:"ok"`
+		Summary string `json:"summary"`
+		drivers.VerifyResult
+	}{
+		Driver:       d.Name,
+		File:         d.File,
+		Path:         d.Path,
+		OK:           len(res.Errors) == 0,
+		Summary:      res.Summary(),
+		VerifyResult: res,
 	})
 }
 

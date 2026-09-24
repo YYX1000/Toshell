@@ -58,11 +58,27 @@ jobs:
 
       - name: Build server (tags webui)
         run: |
-          LDFLAGS="-s -w -X main.version=1.3.0 -X main.commit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          LDFLAGS="-s -w -X main.version=1.3.5 -X main.commit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           go build -tags webui -ldflags "$LDFLAGS" -o toserver ./cmd/server
 
       - name: Vet
-        run: go vet ./internal/server/...
+        # 全量 vet：清理掉 24 个不可达包后，`./...` 才第一次真正可跑
+        # （此前只能 vet ./internal/server/...，其余包一旦失效无人察觉）
+        run: go vet ./...
 
-      - name: Run unit tests (non-embedded)
-        run: go test ./internal/common/... ./internal/server/config/...
+      - name: Invariants (devtool check)
+        # 校验 cmd/devtool/check.go 中定义的 5 条不变量：
+        #   · 模板唯一源完好（含 main.go；implant_c 与其同级且有 main.c）
+        #   · release/implant{,_c} 为生成物：不被 git 跟踪，且与唯一源逐字节一致
+        #   · 两份 server.yaml.example 内容一致（打包用前者，本地起服务用后者）
+        #   · 打包与发版门禁指向同一模板源，且不引用生成物
+        #   · web/vite.config.js 不存在（它会遮蔽 vite.config.ts）
+        run: go run ./cmd/devtool check
+
+      - name: Run unit tests
+        # 全量测试（原先只跑 4 个包，而仓库有 11 个包带测试 —— 7 个包没有任何门禁）。
+        # 这个缺口曾经真实存在：internal/server/api 的 3 个用例长期失败却无人发现
+        #   · loader 链测试助手把 mshta 骨架里的 `-enc <注入器Base64>` 占位符当载荷解码
+        #   · shellcode 未签名的落地建议漏了「内存加载」这个术语（已补齐）
+        # 两处已修，故这里改为 ./...；新增测试包不再需要单独登记。
+        run: go test ./...

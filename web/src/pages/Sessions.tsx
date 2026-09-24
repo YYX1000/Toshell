@@ -1,8 +1,9 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { useParams } from 'react-router-dom'
-import { Search, RefreshCw } from 'lucide-react'
-import { SessionTable } from '../components/SessionTable'
+import { Search, RefreshCw, X } from 'lucide-react'
+import { SessionTable, sessionStatusBadge } from '../components/SessionTable'
 import { SessionDetail } from '../components/SessionDetail'
+import { Toolbar } from '../components/ui'
 import { sessionApi } from '../api'
 import { useUIStore } from '../stores/uiStore'
 import type { Session } from '../types'
@@ -17,6 +18,8 @@ export function Sessions() {
   const setSelectedSession = useUIStore((s) => s.setSelectedSession)
   const search = useUIStore((s) => s.sessionSearch)
   const setSearch = useUIStore((s) => s.setSessionSearch)
+  // 状态筛选是纯展示态的客户端过滤，留在本页局部 state（不进 store，不改数据流）
+  const [status, setStatus] = useState<string>('all')
   const [loading, setLoading] = useState(false)
   const wsConnectedRef = useRef(false)
   // ref 镜像选中会话：fetchSessions 读取最新值但不重建回调（避免 WS 重连抖动）
@@ -139,26 +142,57 @@ export function Sessions() {
     }
   }, [id, sessions, setSelectedSession])
 
+  // 状态筛选项来自当前数据（避免写死后端新增状态无法筛选）；始终保留当前选中项
+  const statusOptions = useMemo(() => {
+    const set = new Set<string>()
+    for (const s of sessions) if (s.status) set.add(s.status)
+    const list = Array.from(set).sort()
+    if (status !== 'all' && !list.includes(status)) list.unshift(status)
+    return list
+  }, [sessions, status])
+
+  const clearFilters = useCallback(() => {
+    setSearch('')
+    setStatus('all')
+  }, [setSearch])
+
   return (
     <div className="sessions-page">
-      {/* 搜索栏 */}
-      <div className="page-header">
+      {/* 工具条：搜索 + 状态筛选 + 刷新（筛选/搜索都是客户端过滤） */}
+      <Toolbar>
         <div className="search-box">
-          <Search size={18} className="search-icon" />
+          <Search size={16} className="search-icon" />
           <input
             type="text"
-            placeholder="搜索主机名、用户名或会话ID..."
+            placeholder="搜索主机名 / 用户名 / IP / 进程名 / 会话 ID..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
+            aria-label="搜索会话"
           />
+          {search && (
+            <button type="button" className="search-clear" title="清除搜索" onClick={() => setSearch('')}>
+              <X size={14} />
+            </button>
+          )}
         </div>
-        <div className="header-actions">
-          <button className="refresh-btn" onClick={fetchSessions} disabled={loading}>
-            <RefreshCw size={16} className={loading ? 'spin' : ''} />
-            刷新
-          </button>
-        </div>
-      </div>
+        <select
+          className="ui-select sessions-status-filter"
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          aria-label="按状态筛选"
+          title="按状态筛选"
+        >
+          <option value="all">全部状态</option>
+          {statusOptions.map((st) => (
+            <option key={st} value={st}>{sessionStatusBadge(st).label}</option>
+          ))}
+        </select>
+        <span className="sessions-total">共 {sessions.length} 台</span>
+        <button className="refresh-btn" onClick={fetchSessions} disabled={loading}>
+          <RefreshCw size={15} className={loading ? 'spin' : ''} />
+          刷新
+        </button>
+      </Toolbar>
 
       {/* 表格 + 详情面板（并排布局） */}
       <div className="sessions-container">
@@ -169,9 +203,18 @@ export function Sessions() {
           onSessionsChange={setSessions}
           embedded
           searchFilter={search}
+          statusFilter={status}
+          onClearFilters={clearFilters}
         />
         {selectedSession && (
+          // key 必须带上会话 ID：换主机时如果不重建，React 会复用同一个
+          // SessionDetail 实例，里面的 TerminalComponent 不会重init，
+          // 老会话的 xterm 缓冲和**那条还开着的 WebSocket** 会被原样留下 ——
+          // 标题栏显示新主机、实际却在操作老主机的 shell（实测已复现）。
+          // 带上 key 后所有 per-session 状态（终端/文件浏览器当前目录/进程列表…）
+          // 都会随主机切换整体重置。
           <SessionDetail
+            key={selectedSession.id}
             session={selectedSession}
             onClose={() => setSelectedSession(null)}
           />

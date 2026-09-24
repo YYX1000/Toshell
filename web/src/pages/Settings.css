@@ -1,29 +1,43 @@
+/* 设置页布局：左侧分页导航（切换 4 个分页） + 右侧「吸顶保存条 + 当前分页的语义分组」。
+   视觉（卡片/分组/表单/徽标/提示）全部走 index.css 的 ui-* 基础件，这里只补布局。
+   间距/字号/颜色统一用 index.css 的 token（--sp-* / --fs-* / --color-*），保证深浅主题一致。 */
+
 .settings-page {
   display: flex;
-  gap: 24px;
+  gap: var(--sp-6);
   min-height: calc(100vh - 140px);
+  align-items: flex-start;
+  /* 超宽屏不再把表单无限拉长：整页限宽并居中 */
+  max-width: 1440px;
+  margin: 0 auto;
 }
 
+/* ── 左侧分页导航：点一项切换一个分页（同一时刻只渲染该分页的配置段） ── */
 .settings-sidebar {
-  width: 200px;
+  width: 216px;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
   flex-shrink: 0;
+  position: sticky;
+  top: 0;
+  align-self: flex-start;
 }
 
 .settings-tab {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-3);
   background: none;
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: var(--color-text-secondary);
-  font-size: 14px;
+  font-size: var(--fs-md);
   text-align: left;
-  transition: all 0.2s;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  cursor: pointer;
 }
 
 .settings-tab:hover {
@@ -31,178 +45,211 @@
   color: var(--color-text);
 }
 
+/* 当前分页：主题色混色（token 派生，深浅主题都成立），不写死十六进制 */
 .settings-tab.active {
-  background: var(--color-primary-muted);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--color-bg-secondary));
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
   color: var(--color-primary-hover);
+  font-weight: 600;
+}
+
+.settings-tab-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* 该分页里有未保存修改 */
+.settings-tab-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  flex-shrink: 0;
+}
+
+/* 该分页包含的配置段数量 */
+.settings-tab-count {
+  flex-shrink: 0;
+  min-width: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  text-align: center;
+}
+
+.settings-tab.active .settings-tab-count {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-primary) 38%, var(--color-border));
+  color: inherit;
 }
 
 .settings-content {
   flex: 1;
+  min-width: 0;
+  /* 内容列限宽：表单不再被拉到整屏宽，阅读与填写都更舒服 */
+  max-width: 1040px;
+  /* 竖向留白统一交给 gap：保存条 / 分页标题 / 各配置段之间都是 --sp-5 */
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-5);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  padding: 24px;
+  padding: var(--sp-6);
 }
 
-.settings-section h2 {
-  font-size: 18px;
-  font-weight: 600;
-  margin-bottom: 24px;
-  padding-bottom: 16px;
+/* ── 分页标题：当前分页名 + 包含的配置段一览 ── */
+.settings-page-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--sp-1) var(--sp-3);
+  padding-bottom: var(--sp-3);
   border-bottom: 1px solid var(--color-border);
 }
 
-.settings-group {
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.setting-item {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px;
-  background: var(--color-bg-tertiary);
-  border-radius: var(--radius-md);
-}
-
-.setting-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.setting-info label {
-  font-size: 14px;
-  font-weight: 500;
+.settings-page-title {
+  font-size: var(--fs-lg);
+  font-weight: 650;
   color: var(--color-text);
 }
 
-.setting-desc {
-  font-size: 12px;
+.settings-page-meta {
+  font-size: var(--fs-sm);
   color: var(--color-text-muted);
+  line-height: 1.7;
 }
 
-.setting-input {
-  width: 200px;
-  padding: 8px 12px;
-  background: var(--color-bg-secondary);
+/* 配置段之间的间距由 .settings-content 的 gap 统一控制（Section 自带的 margin-bottom 去掉，避免叠加） */
+.settings-content > .ui-section {
+  margin-bottom: 0;
+}
+
+/* ── 吸顶保存条：状态徽标 + 保存 + 重新加载，滚动时位置固定 ── */
+.settings-savebar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--color-bg);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
-  color: var(--color-text);
-  font-size: 14px;
-  text-align: right;
+  padding: 10px 12px;
+  /* 与下方内容的间距由 .settings-content 的 gap 控制，这里不再写 margin */
+  margin-bottom: 0;
+  box-shadow: var(--shadow-sm);
 }
 
-.setting-input:focus {
-  outline: none;
-  border-color: var(--color-primary);
+.settings-savebar-hint {
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.toggle {
-  position: relative;
-  display: inline-block;
-  width: 48px;
-  height: 26px;
+.settings-savebar .settings-msg {
+  margin: 10px 0 0 0;
 }
 
-.toggle input {
-  opacity: 0;
-  width: 0;
-  height: 0;
+/* ── 分组内栅格：宽屏两列，窄屏自动一列 ── */
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: var(--sp-3) var(--sp-5);
+  align-items: start;
 }
 
-.toggle-slider {
-  position: absolute;
-  cursor: pointer;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: 13px;
-  transition: 0.3s;
+.settings-grid--checks {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
 }
 
-.toggle-slider::before {
-  position: absolute;
-  content: '';
-  height: 18px;
-  width: 18px;
-  left: 3px;
-  bottom: 3px;
-  background: var(--color-text-muted);
-  border-radius: 50%;
-  transition: 0.3s;
-}
-
-.toggle input:checked + .toggle-slider {
-  background: var(--color-primary);
-  border-color: var(--color-primary);
-}
-
-.toggle input:checked + .toggle-slider::before {
-  transform: translateX(22px);
-  background: white;
-}
-
-.settings-actions {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  gap: 12px;
-}
-
-.save-btn {
+/* 启动延迟的 [min, max] 双输入 */
+.settings-inline-pair {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 10px 24px;
+}
+
+.settings-inline-pair .ui-input {
+  width: 100%;
+  min-width: 0;
+}
+
+.settings-tilde {
+  color: var(--color-text-muted);
+}
+
+/* 加载骨架 */
+.settings-skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-3);
+}
+
+/* ── 按钮（吸顶条与分组内动作共用；.ghost 为次要动作） ── */
+.save-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 18px;
   background: var(--color-primary);
-  border: none;
+  border: 1px solid transparent;
   border-radius: var(--radius-md);
   color: white;
-  font-size: 14px;
+  font-size: var(--fs-md);
   font-weight: 500;
+  cursor: pointer;
   transition: all 0.2s;
 }
 
-.save-btn:hover {
+.save-btn:hover:not(:disabled) {
   background: var(--color-primary-hover);
-  transform: translateY(-1px);
 }
 
-.settings-loading {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--color-text-muted);
-  padding: 40px 0;
+.save-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
+.save-btn.ghost {
+  background: var(--color-bg-tertiary);
+  border-color: var(--color-border);
+  color: var(--color-text);
+}
+
+.save-btn.ghost:hover:not(:disabled) {
+  border-color: var(--color-border-hover);
+  color: var(--color-primary);
+}
+
+/* ── 保存/加载反馈（顶部吸顶条内，位置固定） ── */
 .settings-msg {
   display: flex;
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
   border-radius: var(--radius-md);
-  font-size: 13px;
+  font-size: var(--fs-sm);
   margin-bottom: 16px;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .settings-msg.ok {
   background: rgba(34, 197, 94, 0.12);
   border: 1px solid rgba(34, 197, 94, 0.35);
-  color: #4ade80;
+  color: var(--color-success);
 }
 
 .settings-msg.err {
   background: rgba(239, 68, 68, 0.12);
   border: 1px solid rgba(239, 68, 68, 0.35);
-  color: #f87171;
+  color: var(--color-danger);
 }
 
 .settings-msg-close {
@@ -212,21 +259,10 @@
   color: inherit;
   font-size: 16px;
   cursor: pointer;
+  flex-shrink: 0;
 }
 
-.settings-actions {
-  margin-top: 32px;
-  padding-top: 24px;
-  border-top: 1px solid var(--color-border);
-  display: flex;
-  gap: 12px;
-}
-
-.settings-section h2 + h2 {
-  margin-top: 32px;
-  margin-bottom: 16px;
-}
-
+/* 旋转图标：其他页面（Terminal/Tunnels）也在用这个全局类 */
 .spin {
   animation: spin 1s linear infinite;
 }
@@ -235,9 +271,47 @@
   to { transform: rotate(360deg); }
 }
 
-/* ── API 密钥管理 ── */
+/* ── API 密钥管理（脱敏回显 + 轮换） ── */
 .setting-inputs-col { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .api-key-chip { background: var(--color-bg); border: 1px solid var(--color-border); border-radius: 6px; padding: 3px 8px; font-size: 11px; font-family: var(--font-mono); color: var(--color-success); }
-.setting-muted { color: var(--color-text-2); font-size: 12px; }
-.settings-inline-actions { display: flex; gap: 8px; margin-top: 6px; }
-.save-btn.sm { padding: 5px 10px; font-size: 12px; }
+/* 兼容两种写法：JSX 里用的是 .settings-muted（复数），这里保留旧的单数名做兜底 */
+.settings-muted,
+.setting-muted { color: var(--color-text-secondary); font-size: var(--fs-sm); }
+
+/* ── 窄屏：导航变成横向可滚动的分页标签条，栅格单列 ── */
+@media (max-width: 900px) {
+  .settings-page {
+    flex-direction: column;
+    gap: var(--sp-3);
+    max-width: none;
+  }
+
+  .settings-sidebar {
+    position: static;
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    gap: var(--sp-1);
+    overflow-x: auto;
+    padding-bottom: var(--sp-2);
+  }
+
+  /* 标签条上不换行、不收缩：内容区不再被侧栏挤压（横向滚动查看全部分页） */
+  .settings-tab {
+    flex: 0 0 auto;
+    width: auto;
+    white-space: nowrap;
+    padding: var(--sp-2) var(--sp-3);
+  }
+
+  .settings-content {
+    max-width: none;
+    padding: var(--sp-4);
+    gap: var(--sp-4);
+  }
+
+  .settings-grid,
+  .settings-grid--checks {
+    grid-template-columns: 1fr;
+  }
+}

@@ -808,3 +808,100 @@
   font-size: 13px;
   color: var(--color-text-muted);
 }
+
+/* ══════════════════════════════════════════════════════════════════════
+   v1.3.5 UI 优化：一键上线命令的分组/搜索/风险标注，以及弹窗内分组间距。
+   全部用 token，深浅主题都正确。
+   ══════════════════════════════════════════════════════════════════════ */
+
+.oneliner-filters {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+
+/* 分段切换（全部 / 下载即执行 / 加载器链） */
+.oneliner-seg {
+  display: inline-flex;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--color-bg);
+}
+.oneliner-seg button {
+  padding: 5px 10px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition);
+}
+.oneliner-seg button + button { border-left: 1px solid var(--color-border); }
+.oneliner-seg button:hover { background: var(--color-bg-tertiary); color: var(--color-text); }
+.oneliner-seg button.active { background: rgba(99, 102, 241, 0.16); color: var(--color-primary-hover); font-weight: 600; }
+
+.oneliner-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text-muted);
+  min-width: 220px;
+}
+.oneliner-search input {
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--color-text);
+  font-size: var(--fs-sm);
+  width: 100%;
+}
+.oneliner-search:focus-within { border-color: var(--color-primary); box-shadow: var(--ring); }
+
+/* 加载器链的前置条件/风险提示：与普通说明区分开，但仍可读 */
+.oneliner-note {
+  color: var(--color-warning);
+  border-left: 2px solid rgba(245, 158, 11, 0.5);
+  padding-left: var(--sp-2);
+  margin-top: var(--sp-2);
+}
+
+.oneliner-box { transition: border-color var(--transition); }
+.oneliner-box:hover { border-color: var(--color-border-hover); }
+
+/* 弹窗内的分组之间留白更清楚（Section 自带边框，不需要再套 form-section 的 padding） */
+.modal-body .ui-section + .ui-section { margin-top: var(--sp-3); }
+.modal-body .form-row { gap: var(--sp-3); }
+.modal-body .form-group label { color: var(--color-text-secondary); font-size: var(--fs-sm); }
+/* 载荷 ID 填充条：加载器链里的 <DLL载荷ID> / <shellcode载荷ID> 用它一键替换 */
+.oneliner-idfill {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  padding: var(--sp-2) var(--sp-3);
+  margin-bottom: var(--sp-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-size: var(--fs-sm);
+}
+.oneliner-idfill-label { color: var(--color-text-muted); white-space: nowrap; }
+.oneliner-idfill input {
+  flex: 1 1 260px;
+  min-width: 200px;
+  padding: 5px 8px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+}
+.oneliner-idfill input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--ring); }

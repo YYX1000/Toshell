@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react'
 import {
   Shell,
   Github,
@@ -16,14 +17,16 @@ import {
   Bug,
   FileText,
   Wrench,
-  AlertTriangle,
   Satellite,
   GitBranch,
   Video,
   RefreshCw,
   Bot,
   ListOrdered,
+  Info,
+  ExternalLink,
 } from 'lucide-react'
+import { Badge, Callout, Card, KeyValue } from '../components/ui'
 import './About.css'
 
 const features = [
@@ -60,7 +63,7 @@ const features = [
   {
     icon: <Shield size={22} />,
     title: '内核级对抗',
-    desc: '内置 ntdll 脱钩 + ETW 事件抑制（EDR 失明）、BYOVD 驱动加载（内置 WHQL 签名的 kgameprotect：无鉴权进程终止 IOCTL，击杀普通杀软/EDR）、PPL 保护清除（句柄窃取路线）与杀软击杀。',
+    desc: '内置 ntdll 脱钩 + ETW 事件抑制（EDR 失明）、BYOVD 驱动加载（**不再内置驱动**，由操作员自备 .sys：用其无鉴权终止 IOCTL 击杀普通杀软/EDR）、PPL 保护清除（句柄窃取路线）与杀软击杀。',
   },
   {
     icon: <Monitor size={22} />,
@@ -175,18 +178,96 @@ const techStack = [
   'REST API',
 ]
 
+/** 运行/构建依赖（字段与 release/configs/server.yaml.example 的自动探测说明一致） */
+const dependencies: Array<{ k: string; v: ReactNode }> = [
+  {
+    k: 'Go 1.25+',
+    v: (
+      <>
+        服务端与植入端编译（<code>go.mod</code> 声明 go 1.25.0）；面向老系统的 Windows 载荷会自动切换 Go 1.20.14 工具链。
+        <Badge tone="ok" style={{ marginLeft: 6 }}>必需</Badge>
+      </>
+    ),
+  },
+  {
+    k: 'Node.js 18+ / npm',
+    v: (
+      <>
+        仅用于构建 Web 控制台（React 18 + TypeScript 5 + Vite 5），产物嵌入服务端二进制。
+        <Badge tone="ok" style={{ marginLeft: 6 }}>前端构建必需</Badge>
+      </>
+    ),
+  },
+  {
+    k: 'garble',
+    v: (
+      <>
+        可选的 Go 源码混淆工具；构建页勾选「garble 混淆」时使用，未安装时该选项不可用。
+        <Badge style={{ marginLeft: 6 }}>可选</Badge>
+      </>
+    ),
+  },
+  {
+    k: 'UPX',
+    v: (
+      <>
+        可选的载荷压缩工具；构建页勾选「UPX 压缩」时使用，未安装时该选项不可用。
+        <Badge style={{ marginLeft: 6 }}>可选</Badge>
+      </>
+    ),
+  },
+  {
+    k: 'mingw-w64 gcc',
+    v: (
+      <>
+        可选的 C 植入端编译工具链（约 50KB）；可在设置页「载荷构建与签名」里填 <code>builder.mingw_gcc_path</code>，
+        留空时自动探测环境变量（TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX）、便携工具链、常见安装目录与 PATH。
+        <Badge style={{ marginLeft: 6 }}>可选</Badge>
+      </>
+    ),
+  },
+]
+
+/**
+ * 仓库地址。许可证与文档**一律给可在线访问的预览地址**（GitHub blob 链接）：
+ * 以前这里写的是 `/LICENSE`、`/USAGE.md` 这类同源相对路径，但这些文件只存在于
+ * 部署目录里、并不由控制台的静态资源提供 —— 点了就是 404，等于链接是坏的。
+ * 默认分支为 `main`（.github/workflows/ci.yml 的 push 分支）。
+ */
+const REPO = 'https://github.com/iQingshan/Toshell'
+const REPO_BLOB = `${REPO}/blob/main`
+
+/** 许可证与文档（在线预览地址；发布包内也带有同名文件） */
+const docLinks = [
+  { href: `${REPO_BLOB}/LICENSE`, name: 'LICENSE', desc: 'MIT 许可证' },
+  { href: `${REPO_BLOB}/DISCLAIMER.md`, name: 'DISCLAIMER.md', desc: '使用范围与免责声明' },
+  { href: `${REPO_BLOB}/THIRD-PARTY-NOTICES.md`, name: 'THIRD-PARTY-NOTICES.md', desc: '第三方组件与许可证' },
+  { href: `${REPO_BLOB}/USAGE.md`, name: 'USAGE.md', desc: '部署与使用说明' },
+  { href: `${REPO_BLOB}/docs/EVASION.md`, name: 'docs/EVASION.md', desc: '免杀能力与验证状态' },
+  { href: `${REPO_BLOB}/docs/LOADERS.md`, name: 'docs/LOADERS.md', desc: '加载器链与前置条件' },
+  { href: `${REPO_BLOB}/docs/DEPLOY-DOMAIN-CDN.md`, name: 'docs/DEPLOY-DOMAIN-CDN.md', desc: '域名 / CDN 上线' },
+  { href: `${REPO_BLOB}/ROADMAP.md`, name: 'ROADMAP.md', desc: '功能路线图' },
+  { href: `${REPO_BLOB}/CHANGELOG.md`, name: 'CHANGELOG.md', desc: '更新日志' },
+  { href: `${REPO_BLOB}/SECURITY.md`, name: 'SECURITY.md', desc: '安全披露与支持范围' },
+]
+
 export function About() {
   return (
     <div className="about-page">
-      <div className="about-hero">
+      {/* ── 头部：项目 / 版本 / 作者 ── */}
+      <Card className="about-hero-card">
         <div className="about-logo">
           <Shell size={56} />
           <h1>ToShell</h1>
-          <p className="about-version">v1.3.3</p>
+          <div className="about-version-row">
+            <Badge tone="accent">v1.3.5</Badge>
+            <Badge tone="info">MIT License</Badge>
+            <Badge>自托管部署</Badge>
+          </div>
         </div>
         <h2>自托管的 C2（命令与控制）远程管理平台</h2>
         <p className="about-slogan">
-          ToShell（Tanovo）是一个自托管的 C2 框架，用于授权红队演练、渗透测试与安全研究。
+          ToShell 是一个自托管的 C2 框架，用于授权红队演练、渗透测试与安全研究。
           提供多平台、多协议的会话控制、载荷构建与隧道转发能力，覆盖从载荷生成、会话管理到
           任务执行的完整链路。请仅在获得授权的前提下使用。
         </p>
@@ -196,17 +277,56 @@ export function About() {
           <span className="about-author-tag">c0ffee · 核心开发者</span>
         </div>
         <div className="about-hero-links">
-          <a href="" className="about-hero-link">
+          <a href={REPO} className="about-hero-link" target="_blank" rel="noreferrer">
             <Github size={18} /> GitHub
           </a>
-          <a href="" className="about-hero-link">
+          <a href={`${REPO_BLOB}/README.md`} className="about-hero-link" target="_blank" rel="noreferrer">
             <Globe size={18} /> 官方文档
           </a>
         </div>
-      </div>
+      </Card>
 
-      <div className="about-section">
-        <h3>架构组成</h3>
+      {/* ── 项目信息 ── */}
+      <Card title="项目信息" icon={<Info size={16} />}>
+        <KeyValue
+          items={[
+            { k: '名称', v: 'ToShell —— 自托管 C2 远程管理平台' },
+            {
+              k: '版本',
+              v: (
+                <>
+                  v1.3.5 <Badge tone="accent" style={{ marginLeft: 4 }}>当前</Badge>
+                </>
+              ),
+            },
+            {
+              k: '许可证',
+              v: (
+                <>
+                  <Badge tone="ok">MIT</Badge>
+                  <span style={{ marginLeft: 6 }}>详见下方「许可证与文档」</span>
+                </>
+              ),
+            },
+            { k: '作者', v: '青山 / Q1lintu / c0ffee（核心开发者）' },
+            { k: '服务端', v: 'Go（go.mod: go 1.25.0），单进程即含控制台、REST API、C2 监听器与载荷构建' },
+            { k: 'Web 控制台', v: 'React 18 + TypeScript 5 + Vite 5（构建产物内嵌进服务端二进制）' },
+            { k: '通信通道', v: 'TCP 二进制帧 / HTTP(S) 轮询（域前置）/ WebSocket / MQTT' },
+            {
+              k: '授权范围',
+              v: (
+                <>
+                  <Badge tone="warn">仅限授权测试</Badge>
+                  <span style={{ marginLeft: 6 }}>未获书面授权禁止使用</span>
+                </>
+              ),
+            },
+          ]}
+        />
+      </Card>
+
+      {/* ── 架构组成 ── */}
+      <Card title="架构组成" icon={<Server size={16} />}>
         <div className="about-arch">
           {architecture.map((a) => (
             <div key={a.title} className="about-arch-card">
@@ -216,15 +336,15 @@ export function About() {
             </div>
           ))}
         </div>
-        <p className="about-note">
-          通信链路：植入端通过 <b>TCP 长连接（自定义加密帧）</b> 或 <b>HTTPS 轮询（域前置）</b> 与监听器通信
+        <Callout tone="info" title="通信链路">
+          植入端通过 <b>TCP 长连接（自定义加密帧）</b> 或 <b>HTTPS 轮询（域前置）</b> 与监听器通信
           （控制帧 AES-256-GCM + 隧道 SM4-GCM 加密）；Web 控制台通过 <b>REST API（JWT 认证）</b> 管理服务端，
           交互终端走 WebSocket 实时通道。
-        </p>
-      </div>
+        </Callout>
+      </Card>
 
-      <div className="about-section">
-        <h3>核心特性</h3>
+      {/* ── 核心特性 ── */}
+      <Card title="核心特性" icon={<Zap size={16} />}>
         <div className="about-features">
           {features.map((f) => (
             <div key={f.title} className="about-feature-card">
@@ -234,10 +354,10 @@ export function About() {
             </div>
           ))}
         </div>
-      </div>
+      </Card>
 
-      <div className="about-section">
-        <h3>主要功能</h3>
+      {/* ── 能力清单 ── */}
+      <Card title="能力清单" icon={<ListOrdered size={16} />} subtitle="控制台已实现的主要功能模块">
         <ul className="about-modules">
           {modules.map((m) => (
             <li key={m}>
@@ -245,10 +365,10 @@ export function About() {
             </li>
           ))}
         </ul>
-      </div>
+      </Card>
 
-      <div className="about-section">
-        <h3>支持平台与载荷格式</h3>
+      {/* ── 支持平台与载荷格式 ── */}
+      <Card title="支持平台与载荷格式" icon={<Monitor size={16} />}>
         <table className="about-table">
           <thead>
             <tr>
@@ -267,10 +387,10 @@ export function About() {
             ))}
           </tbody>
         </table>
-      </div>
+      </Card>
 
-      <div className="about-section">
-        <h3>内置安全特性</h3>
+      {/* ── 内置安全特性 ── */}
+      <Card title="内置安全特性" icon={<Shield size={16} />}>
         <div className="about-features">
           {securityItems.map((s) => (
             <div key={s.title} className="about-feature-card">
@@ -280,23 +400,54 @@ export function About() {
             </div>
           ))}
         </div>
-        <p className="about-note about-note-warn">
-          <AlertTriangle size={16} style={{ verticalAlign: '-3px' }} /> 混淆不改变载荷功能，
-          但极个别杀软仍可能因行为特征报毒，建议结合 garble + UPX 使用；使用本工具请务必遵守授权范围与当地法律法规。
-        </p>
-      </div>
+        <Callout tone="warn" title="混淆不是免杀保证">
+          混淆不改变载荷功能，但极个别杀软仍可能因行为特征报毒，建议结合 garble + UPX 使用；
+          使用本工具请务必遵守授权范围与当地法律法规。
+        </Callout>
+      </Card>
 
-      <div className="about-section">
-        <h3>技术栈</h3>
+      {/* ── 依赖 ── */}
+      <Card title="依赖（服务端 / 构建工具链）" icon={<Wrench size={16} />}>
+        <KeyValue items={dependencies} />
+      </Card>
+
+      {/* ── 技术栈 ── */}
+      <Card title="技术栈" icon={<Cpu size={16} />}>
         <div className="about-tech">
           {techStack.map((t) => (
             <span key={t} className="about-tech-tag">{t}</span>
           ))}
         </div>
-      </div>
+      </Card>
+
+      {/* ── 许可证与文档 ── */}
+      <Card title="许可证与文档" icon={<FileText size={16} />}>
+        <div className="about-docs">
+          {docLinks.map((d) => (
+            <a key={d.name} className="about-doc" href={d.href} target="_blank" rel="noreferrer">
+              <FileText size={15} />
+              <span className="about-doc-name">{d.name}</span>
+              <span className="about-doc-desc">{d.desc}</span>
+              <ExternalLink size={13} className="about-doc-ext" />
+            </a>
+          ))}
+        </div>
+        <div className="about-docs-hint">
+          以上都是 <b>GitHub 上的在线预览地址</b>（默认分支 <code>main</code>），点开即可阅读、无需登录。
+          发布包（zip）内也带有 <code>LICENSE</code> / <code>DISCLAIMER.md</code> / <code>THIRD-PARTY-NOTICES.md</code> /
+          <code>README.md</code> / <code>USAGE.md</code> 的同名文件，离线环境可直接看这些。
+        </div>
+      </Card>
+
+      {/* ── 合规声明 ── */}
+      <Callout tone="warn" title="合规声明">
+        ToShell 仅用于<b>获得书面授权的渗透测试、红队演练与安全研究</b>。使用者须自行确保授权充分且可举证，
+        并对自己的行为及其后果承担<b>全部责任</b>；禁止用于任何未授权的入侵、攻击、横向移动、数据窃取或干扰行为。
+        因使用本软件造成的任何直接或间接损失，作者与贡献者概不负责。
+      </Callout>
 
       <div className="about-footer">
-        <p>© 2026 ToShell (Tanovo) · 作者：青山 / Q1lintu / c0ffee（核心开发者） · 仅供授权测试与学习使用</p>
+        <p>© 2026 ToShell · 作者：青山 / Q1lintu / c0ffee（核心开发者） · 仅供授权测试与学习使用</p>
       </div>
     </div>
   )

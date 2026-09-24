@@ -34,22 +34,60 @@ jobs:
           name: webdist
           path: cmd/server/webdist
 
-  # 多平台交叉编译 + 打包 + 上传 GitHub Release
-  build:
-    runs-on: ubuntu-latest
+  # ── 发版门禁：端到端冒烟（打包发布前必须通过）──────────────────────────
+  # 覆盖历史事故：改动后忘重编服务端、模板档位构建失败、接口路由/鉴权失效。
+  # 托管 runner 上不跑真实植入端（未签名载荷会被托管杀软拦），故固定 -SkipImplant。
+  e2e-smoke:
+    runs-on: windows-latest
     needs: web
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { goos: windows, goarch: amd64, ext: .exe, zip: toshell-server-windows-amd64.zip, deploy: release/deploy.bat }
-          - { goos: windows, goarch: '386', ext: .exe, zip: toshell-server-windows-386.zip, deploy: release/deploy.bat }
-          - { goos: linux,   goarch: amd64, ext: '', zip: toshell-server-linux-amd64.zip, deploy: release/deploy.sh }
-          - { goos: linux,   goarch: arm64, ext: '', zip: toshell-server-linux-arm64.zip, deploy: release/deploy.sh }
-          - { goos: darwin,  goarch: amd64, ext: '', zip: toshell-server-darwin-amd64.zip, deploy: release/deploy.sh }
-          - { goos: darwin,  goarch: arm64, ext: '', zip: toshell-server-darwin-arm64.zip, deploy: release/deploy.sh }
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: webdist
+          path: cmd/server/webdist
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          check-latest: true
+      - name: Prefetch implant toolchain (Go 1.20.14)
+        shell: powershell
+        run: |
+          $env:GOTOOLCHAIN = 'go1.20.14'
+          go version
+      - name: E2E smoke (server build + 3 payload flavors + auth + routes)
+        # 用 Windows PowerShell 5.1 跑：脚本是按 5.1 语义编写与静态校验的
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts\e2e_smoke.ps1 -SkipImplant -KeepArtifacts
+      - name: Upload smoke artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-smoke-artifacts
+          path: ${{ runner.temp }}\toshell-e2e-*
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # 多平台交叉编译 + 打包 + 上传 GitHub Release
+  # 单 job 构建全部 6 个平台，不再用 matrix：
+  #   · 平台清单只在 cmd/devtool/package.go 定义一处，CI 与本地是同一实现
+  #   · 发布原子性 —— 矩阵配 fail-fast:false 时，某个平台失败仍会把其余 zip 与基于
+  #     它们算出的 checksums 传上 Release，留下没有失败信号的残缺发布
+  #   · 全部文件由单 job 上传，不再有"矩阵并发向同一 Release 追加"的冲突
+  #     （原先 LICENSE/DISCLAIMER/THIRD-PARTY-NOTICES 正是因该冲突被挪到独立的 checksums job）
+  #
+  # devtool 内部依次完成：GOOS/GOARCH + CGO_ENABLED=0 + -tags webui 编译；组装
+  # implant/ implant_c/ configs/ docs/ 等全部条目；写 zip 条目执行位；校验包布局；
+  # 对当前运行平台执行产物并断言自报版本与 tag 一致。
+  # 输出：6 个 zip + checksums.txt（sha256，按文件名排序）
+  build:
+    runs-on: ubuntu-latest
+    needs: [ web, e2e-smoke ]
+    steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           name: webdist
@@ -61,56 +99,35 @@ jobs:
           cache: true
           check-latest: true
 
-      - name: Build server
-        env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
-          CGO_ENABLED: '0'
+      - name: Build + package (cmd/devtool)
         run: |
-          LDFLAGS="-s -w -X main.version=${GITHUB_REF_NAME#v} -X main.commit=$(git rev-parse --short HEAD) -X main.buildTime=$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-          go build -tags webui -ldflags "$LDFLAGS" -o "toserver${{ matrix.ext }}" ./cmd/server
+          go run ./cmd/devtool package --all             --version "${GITHUB_REF_NAME#v}"             --out .
 
-      - name: Package zip
-        run: |
-          # 暂存目录必须用仓库里不存在的名字：以前用 pkg/，而仓库本身有 pkg/goroutine、
-          # pkg/rate 两个源码目录，导致它们被一起打进发布 zip。
-          STAGE="pkgstage"
-          rm -rf "$STAGE"
-          mkdir -p "$STAGE"
-          cp "toserver${{ matrix.ext }}" "$STAGE/toserver${{ matrix.ext }}"
-          # 完整可运行包：植入端模板 + 配置样例 + 依赖目录
-          cp -r release/implant "$STAGE/implant"
-          cp -r release/implant_c "$STAGE/implant_c"
-          # 配置：与 release/configs 布局一致（deploy.sh/bat 从 configs/ 读取）
-          mkdir -p "$STAGE/configs"
-          cp configs/server.yaml.example "$STAGE/configs/server.yaml.example"
-          cp README.md "$STAGE/README.md"
-          cp USAGE.md "$STAGE/USAGE.md"
-          # 许可与第三方声明：包里捆绑了 UPX(GPL) 与第三方签名驱动，必须随包分发
-          cp LICENSE "$STAGE/LICENSE"
-          cp DISCLAIMER.md "$STAGE/DISCLAIMER.md"
-          cp THIRD-PARTY-NOTICES.md "$STAGE/THIRD-PARTY-NOTICES.md"
-          cp "${{ matrix.deploy }}" "$STAGE/"
-          # 一键部署脚本（傻瓜式：环境检测 + 按需在线安装 + 直接启动打包好的服务端）
-          cp release/install.sh "$STAGE/"
-          cp release/install.ps1 "$STAGE/"
-          # 运行时数据预设：data 目录 + 杀软指纹库（服务端必需，db 由首次启动自动创建）
-          mkdir -p "$STAGE/data"
-          cp data/av_fingerprints.json "$STAGE/data/av_fingerprints.json"
-          # upx/drivers/plugins 若存在于仓库则一并打包（可选依赖）
-          for d in upx drivers plugins; do if [ -d "release/$d" ]; then cp -r "release/$d" "$STAGE/$d"; fi; done
-          if [ "${{ matrix.goos }}" != "windows" ]; then chmod +x "$STAGE/deploy.sh"; fi
-          (cd "$STAGE" && zip -q -r "../${{ matrix.zip }}" .)
-          rm -rf "$STAGE"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-zips
+          path: |
+            toshell-server-*.zip
+            checksums.txt
+          if-no-files-found: error
 
       - name: Upload to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ matrix.zip }}
+          files: |
+            toshell-server-*.zip
+            checksums.txt
+            LICENSE
+            DISCLAIMER.md
+            THIRD-PARTY-NOTICES.md
           # 版本号跟随 tag（v1.3.x）；标题也用 tag 名
           name: ${{ github.ref_name }}
-          # 固定正文：不要用 generate_release_notes —— 它会在每次重跑（多平台矩阵 / 重打 tag）
-          # 时重复追加一行 "Full Changelog: ..."，导致正文被刷屏。
+          # 含 '-' 的 tag 视为预发布（semver 预发布，如 v1.3.5-yyx1000.1）。
+          # 不标 prerelease 的话它会成为仓库的 Latest —— 那会把一次验证性构建
+          # 摆到"最新版"的位置。稳定版 tag（v1.4.0）不含 '-'，行为不变。
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          # 固定正文：不要用 generate_release_notes —— 它会在每次重跑时重复追加一行
+          # "Full Changelog: ..."，导致正文被刷屏。
           body: |
             Toshell ${{ github.ref_name }}
 

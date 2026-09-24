@@ -64,12 +64,18 @@ export function Shell() {
       {/* 右侧交互式终端 */}
       <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
         <TerminalComponent
+          // key 带上 sessionId：路由从 /shell/A 换到 /shell/B 时 React 会复用本组件，
+          // 不重建的话会继续用 A 的 xterm 实例和 WebSocket（同 Sessions 详情面板那个问题）。
+          key={sessionId}
           ref={terminalRef}
           wsPath={`/api/v1/sessions/${sessionId}/shell`}
           title={title}
           titleHighlight={session?.hostname}
           autoConnect
           followTheme
+          // PTY 后端（Linux/macOS）自带 readline 回显，输入裸送；Windows 管道仍由前端回显。
+          // 系统未知时保持本地回显（Windows 是更常见的靶机，裸送会变成"打字没反应"）。
+          remoteEcho={!!session?.os && !isWindows}
         />
       </div>
     </div>

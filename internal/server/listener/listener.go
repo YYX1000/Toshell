@@ -162,6 +162,10 @@ func (l *Listener) PushTask(sessionID string, taskInfo *types.TaskInfo) error {
 
 	if err := wsConn.WriteMessage(encrypted); err != nil {
 		l.sessionMgr.ClearConnection(sessionID)
+		// 下发失败 == 任务根本没到植入端，必须一并清掉 Create() 时设下的忙期。
+		// 否则操作员每点一次命令，就给一个已失联的会话续一次忙期，
+		// 判活窗口被放宽 BusyGrace 倍 —— 界面一直显示"在线"但命令全都发不出去。
+		l.sessionMgr.ClearSessionBusy(sessionID)
 		return fmt.Errorf("failed to send task: %w", err)
 	}
 
@@ -643,12 +647,13 @@ func (l *Listener) handleRegister(conn *transport.Conn, packet *protocol.Packet,
 	if l.sessionMgr != nil {
 		// 已存在（重连）：刷新信息而非重建，保留上层状态（隧道/shell 处理器）
 		if existing, gerr := l.sessionMgr.Get(sessInfo.ID); gerr == nil && existing != nil {
-			wasDead := existing.Info == nil || existing.Info.Status == "dead" || existing.Info.Status == "asleep"
 			sessInfo.RemoteAddr = remoteAddr
 			sessInfo.LastSeen = time.Now()
 			_ = l.sessionMgr.RefreshInfo(sessInfo.ID, sessInfo)
-			// 死亡会话重连复活：广播上线事件，前端即时点亮
-			if wasDead && l.onSessionOnline != nil {
+			// 无条件通知（原因见 tcp_listener.handleRegister 的注释）：
+			// BroadcastSessionOnline 自己去重重复广播，但只有被调用到才会取消
+			// 待发的 session_offline；用 wasDead 守卫会导致闪断重连压不住离线广播。
+			if l.onSessionOnline != nil {
 				l.onSessionOnline(sessInfo)
 			}
 		} else {

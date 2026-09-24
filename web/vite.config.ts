@@ -1,12 +1,15 @@
 import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// 开发环境代理目标：通过环境变量 VITE_PROXY_TARGET 配置，
-// 例如 PowerShell:  $env:VITE_PROXY_TARGET="http://192.168.1.28:8081"; npm run dev
-// 默认指向本地服务端，便于开箱即用。
+// 开发环境代理目标：默认指向本地服务端的管理 API，开箱即用。
+// 需要指向别的服务端时用环境变量覆盖，例如 PowerShell:
+//   $env:VITE_PROXY_TARGET="http://192.168.1.28:18081"; npm run dev
+//
+// 端口必须写 server.api_port（默认 18081）—— 服务端**不监听** server.port，
+// 配置里那两个端口不是一回事；写成 8081 之类的默认值会让 /api 代理全部超时。
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, '.', '')
-  const proxyTarget = env.VITE_PROXY_TARGET || 'http://localhost:8081'
+  const proxyTarget = env.VITE_PROXY_TARGET || 'http://localhost:18081'
 
   return {
     plugins: [react()],

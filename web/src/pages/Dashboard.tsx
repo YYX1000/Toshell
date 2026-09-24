@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback, useRef, useMemo } from 'react'
+import type { ReactNode } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Users, ListOrdered, Activity, Clock, Server, Cpu, HardDrive,
-  Radio, ArrowUpRight, Bot, Wifi, WifiOff, Monitor, CheckCircle2,
-  XCircle, Timer, ChevronRight, RefreshCw,
+  Radio, ArrowUpRight, Bot, WifiOff, Monitor, ChevronRight,
 } from 'lucide-react'
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts'
 import { sessionApi, taskApi, systemApi, copilotApi } from '../api'
 import { useUIStore } from '../stores/uiStore'
+import { Card, Empty, Skeleton, SkeletonLines, Stat } from '../components/ui'
 import type { Session, TaskStats } from '../types'
 import type { WSEvent } from '../hooks/useWebSocket'
 import './Dashboard.css'
@@ -152,6 +153,17 @@ export function Dashboard() {
   const settled = completedTasks + failedTasks
   const successRate = settled > 0 ? Math.round((completedTasks / settled) * 100) : 0
 
+  // 今日上线：首次上线时间落在今天 00:00 之后的会话数（只做客户端聚合，不新增请求）
+  const todayOnline = useMemo(() => {
+    const start = new Date()
+    start.setHours(0, 0, 0, 0)
+    const t0 = start.getTime()
+    return sessions.filter((s) => {
+      const t = new Date(s.first_seen).getTime()
+      return !isNaN(t) && t >= t0
+    }).length
+  }, [sessions])
+
   // 内存占用百分比：alloc / sys（进程保留内存）
   const memAlloc = systemStats?.memory?.alloc ?? 0
   const memSys = systemStats?.memory?.sys ?? 0
@@ -159,6 +171,13 @@ export function Dashboard() {
   // 堆内存占比：heap_inuse / sys
   const heapInuse = systemStats?.memory?.heap_inuse ?? 0
   const heapPct = memSys > 0 ? Math.min(Math.round((heapInuse / memSys) * 100), 100) : 0
+
+  // 成功率配色：无结算不着色；≥90% 绿、≥70% 黄、更低红
+  const rateTone = settled === 0 ? undefined : successRate >= 90 ? 'ok' : successRate >= 70 ? 'warn' : 'danger'
+
+  // 加载中的数值位：用骨架屏占位，避免「—」跳成数字时整行抖动
+  const statValue = (v: ReactNode) =>
+    loading ? <Skeleton width={44} height={20} style={{ display: 'inline-block', verticalAlign: 'middle' }} /> : v
 
   // 点击最近会话：先写入全局选中态再跳转（会话页打开时右侧详情直接显示该会话）
   const openSession = (s: Session) => {
@@ -195,164 +214,150 @@ export function Dashboard() {
         </div>
       </div>
 
-      {/* 统计卡片 */}
+      {/* 统计区：同一套 Stat（数值走 --font-mono），异常值用 tone 上色 */}
       <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-icon sessions"><Users size={18} /></div>
-          <div className="stat-main">
-            <span className="stat-spark">总会话</span>
-            <span className="stat-value">{loading ? '—' : sessions.length}</span>
-          </div>
-          <div className="stat-foot">
-            <span className="stat-tag ok"><Wifi size={11} /> {activeSessions} 活跃</span>
-            <span className="stat-tag muted">{deadSessions} 离线</span>
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-icon tasks"><ListOrdered size={18} /></div>
-          <div className="stat-main">
-            <span className="stat-spark">总任务</span>
-            <span className="stat-value">{loading ? '—' : totalTasks}</span>
-          </div>
-          <div className="stat-foot">
-            <span className="stat-tag warn"><Clock size={11} /> {pendingTasks} 待执行</span>
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-icon completed"><CheckCircle2 size={18} /></div>
-          <div className="stat-main">
-            <span className="stat-spark">成功</span>
-            <span className="stat-value">{loading ? '—' : completedTasks}</span>
-          </div>
-          <div className="stat-foot">
-            <span className="stat-tag ok"><Activity size={11} /> 成功率 {successRate}%</span>
-          </div>
-        </div>
-
-        <div className="stat-card">
-          <div className="stat-icon failed"><XCircle size={18} /></div>
-          <div className="stat-main">
-            <span className="stat-spark">失败/超时</span>
-            <span className="stat-value">{loading ? '—' : failedTasks}</span>
-          </div>
-          <div className="stat-foot">
-            <span className="stat-tag err"><Timer size={11} /> 已结算 {settled}</span>
-          </div>
-        </div>
+        <Stat label="在线会话" value={statValue(activeSessions)} tone={!loading && activeSessions > 0 ? 'ok' : undefined} />
+        <Stat label="离线会话" value={statValue(deadSessions)} />
+        <Stat label="总会话" value={statValue(sessions.length)} />
+        <Stat label="今日上线" value={statValue(todayOnline)} tone={!loading && todayOnline > 0 ? 'ok' : undefined} />
+        <Stat label="总任务" value={statValue(totalTasks)} />
+        <Stat label="待执行" value={statValue(pendingTasks)} tone={!loading && pendingTasks > 0 ? 'warn' : undefined} />
+        <Stat label="成功率" value={statValue(settled > 0 ? `${successRate}%` : '—')} tone={loading ? undefined : rateTone} />
+        <Stat
+          label="失败/超时"
+          value={statValue(failedTasks)}
+          tone={!loading && failedTasks > 0 ? 'danger' : undefined}
+        />
       </div>
 
-      {/* 图表 + 系统状态 */}
+      {/* 图表 + 系统状态：统一 Card 标题层级与内边距 */}
       <div className="charts-container">
-        <div className="chart-card">
-          <div className="chart-header">
-            <div>
-              <h3>会话趋势</h3>
-              <span className="chart-subtitle">最近 24 小时上线分布</span>
+        <Card
+          className="dash-card"
+          icon={<Activity size={15} />}
+          title="会话趋势"
+          subtitle="最近 24 小时上线分布"
+          actions={<span className="chart-total">{sessions.length} 个会话</span>}
+        >
+          {loading ? (
+            <div className="chart-body">
+              <SkeletonLines lines={6} />
             </div>
-            <span className="chart-total">{sessions.length} 个会话</span>
-          </div>
-          <div className="chart-body">
-            <ResponsiveContainer width="100%" height={260}>
-              <AreaChart data={trend}>
-                <defs>
-                  <linearGradient id="colorSessions" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#6366f1" stopOpacity={0.35} />
-                    <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 11 }} interval={3} />
-                <YAxis axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 11 }} allowDecimals={false} width={28} />
-                <Tooltip
-                  contentStyle={{
-                    background: 'var(--color-bg-tertiary)',
-                    border: '1px solid var(--color-border)',
-                    borderRadius: '8px',
-                    color: 'var(--color-text)',
-                    fontSize: 12,
-                  }}
-                  formatter={(v: number) => [`${v} 个`, '上线']}
-                  labelFormatter={(l) => `时间 ${l}`}
-                />
-                <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#colorSessions)" />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
+          ) : sessions.length === 0 ? (
+            <div className="chart-body chart-body--empty">
+              <Empty
+                icon={<Activity size={28} />}
+                title="暂无会话数据"
+                desc="有植入端上线后，这里会显示最近 24 小时的上线分布"
+              />
+            </div>
+          ) : (
+            <div className="chart-body">
+              <ResponsiveContainer width="100%" height="100%">
+                <AreaChart data={trend}>
+                  <defs>
+                    <linearGradient id="colorSessions" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#6366f1" stopOpacity={0.35} />
+                      <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                    </linearGradient>
+                  </defs>
+                  <XAxis dataKey="time" axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 11 }} interval={3} />
+                  <YAxis axisLine={false} tickLine={false} tick={{ fill: '#71717a', fontSize: 11 }} allowDecimals={false} width={28} />
+                  <Tooltip
+                    contentStyle={{
+                      background: 'var(--color-bg-tertiary)',
+                      border: '1px solid var(--color-border)',
+                      borderRadius: '8px',
+                      color: 'var(--color-text)',
+                      fontSize: 12,
+                    }}
+                    formatter={(v: number) => [`${v} 个`, '上线']}
+                    labelFormatter={(l) => `时间 ${l}`}
+                  />
+                  <Area type="monotone" dataKey="count" stroke="#6366f1" strokeWidth={2} fillOpacity={1} fill="url(#colorSessions)" />
+                </AreaChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+        </Card>
 
-        <div className="system-card">
-          <div className="chart-header">
-            <div>
-              <h3>系统状态</h3>
-              <span className="chart-subtitle">服务器实时资源</span>
-            </div>
-            <span className="chart-total mono">{systemStats?.hostname || '—'}</span>
-          </div>
-          <div className="system-stats">
-            <div className="system-stat">
-              <div className="system-stat-icon"><Cpu size={20} /></div>
-              <div className="system-stat-info">
-                <span className="system-stat-label">CPU 核心 / 协程</span>
-                <span className="system-stat-value">{systemStats?.cpu_count ?? '—'} 核 · {systemStats?.goroutines ?? '—'} goroutines</span>
-              </div>
-            </div>
-
-            <div className="system-stat">
-              <div className="system-stat-icon mem"><HardDrive size={18} /></div>
-              <div className="system-stat-info">
-                <span className="system-stat-label">内存占用（{memAlloc} MB / {memSys} MB）</span>
-                <div className="progress-bar">
-                  <div className="progress-fill memory" style={{ width: `${memPct}%` }} />
+        <Card
+          className="dash-card"
+          icon={<Server size={15} />}
+          title="系统状态"
+          subtitle="服务器实时资源"
+          actions={<span className="chart-total mono">{systemStats?.hostname || '—'}</span>}
+        >
+          {loading ? (
+            <SkeletonLines lines={6} />
+          ) : (
+            <div className="system-stats">
+              <div className="system-stat">
+                <div className="system-stat-icon"><Cpu size={20} /></div>
+                <div className="system-stat-info">
+                  <span className="system-stat-label">CPU 核心 / 协程</span>
+                  <span className="system-stat-value">{systemStats?.cpu_count ?? '—'} 核 · {systemStats?.goroutines ?? '—'} goroutines</span>
                 </div>
-                <span className="system-stat-value">{memPct}%</span>
               </div>
-            </div>
 
-            <div className="system-stat">
-              <div className="system-stat-icon heap"><Server size={18} /></div>
-              <div className="system-stat-info">
-                <span className="system-stat-label">堆内存（{heapInuse} MB / {memSys} MB）</span>
-                <div className="progress-bar">
-                  <div className="progress-fill disk" style={{ width: `${heapPct}%` }} />
+              <div className="system-stat">
+                <div className="system-stat-icon mem"><HardDrive size={18} /></div>
+                <div className="system-stat-info">
+                  <span className="system-stat-label">内存占用（{memAlloc} MB / {memSys} MB）</span>
+                  <div className="progress-bar">
+                    <div className="progress-fill memory" style={{ width: `${memPct}%` }} />
+                  </div>
+                  <span className="system-stat-value">{memPct}%</span>
                 </div>
-                <span className="system-stat-value">{heapPct}%</span>
+              </div>
+
+              <div className="system-stat">
+                <div className="system-stat-icon heap"><Server size={18} /></div>
+                <div className="system-stat-info">
+                  <span className="system-stat-label">堆内存（{heapInuse} MB / {memSys} MB）</span>
+                  <div className="progress-bar">
+                    <div className="progress-fill disk" style={{ width: `${heapPct}%` }} />
+                  </div>
+                  <span className="system-stat-value">{heapPct}%</span>
+                </div>
+              </div>
+
+              <div className="system-stat">
+                <div className="system-stat-icon uptime"><Clock size={18} /></div>
+                <div className="system-stat-info">
+                  <span className="system-stat-label">运行时间</span>
+                  <span className="system-stat-value">{systemStats?.uptime ? fmtUptime(systemStats.uptime) : '—'}</span>
+                </div>
+              </div>
+
+              <div className="system-meta">
+                <span>Go {systemStats?.go_version || '—'}</span>
+                <span>{systemStats?.timestamp ? new Date(systemStats.timestamp).toLocaleTimeString() : '—'}</span>
               </div>
             </div>
-
-            <div className="system-stat">
-              <div className="system-stat-icon uptime"><Clock size={18} /></div>
-              <div className="system-stat-info">
-                <span className="system-stat-label">运行时间</span>
-                <span className="system-stat-value">{systemStats?.uptime ? fmtUptime(systemStats.uptime) : '—'}</span>
-              </div>
-            </div>
-
-            <div className="system-meta">
-              <span>Go {systemStats?.go_version || '—'}</span>
-              <span>{systemStats?.timestamp ? new Date(systemStats.timestamp).toLocaleTimeString() : '—'}</span>
-            </div>
-          </div>
-        </div>
+          )}
+        </Card>
       </div>
 
       {/* 最近会话 + 最近任务 */}
       <div className="info-container">
-        <div className="panel-card">
-          <div className="panel-header">
-            <div>
-              <h3><Monitor size={16} /> 最近会话</h3>
-              <span className="chart-subtitle">点击查看详情</span>
-            </div>
+        <Card
+          className="dash-card dash-panel"
+          icon={<Monitor size={15} />}
+          title="最近会话"
+          subtitle="点击查看详情"
+          bodyStyle={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+          actions={
             <button className="panel-more" onClick={() => navigate('/sessions')}>
               全部 <ChevronRight size={14} />
             </button>
-          </div>
+          }
+        >
           <div className="panel-list">
             {loading ? (
-              <div className="panel-empty"><RefreshCw size={18} className="spin" /> 加载中...</div>
+              <SkeletonLines lines={5} />
             ) : sessions.length === 0 ? (
-              <div className="panel-empty"><WifiOff size={18} /> 暂无会话</div>
+              <Empty icon={<WifiOff size={26} />} title="暂无会话" desc="植入端上线后会自动出现在这里" />
             ) : (
               sessions.slice(0, 5).map((s) => (
                 <div key={s.id} className="panel-row" onClick={() => openSession(s)}>
@@ -360,8 +365,8 @@ export function Dashboard() {
                     {osIcon(s.os) === 'win' ? 'W' : osIcon(s.os) === 'lin' ? 'L' : osIcon(s.os) === 'mac' ? 'M' : '?'}
                   </span>
                   <div className="panel-row-main">
-                    <span className="panel-row-title">{s.hostname || 'unknown'}</span>
-                    <span className="panel-row-sub">{s.os} {s.arch} · {s.username}</span>
+                    <span className="panel-row-title" title={s.hostname || 'unknown'}>{s.hostname || 'unknown'}</span>
+                    <span className="panel-row-sub" title={`${s.os} ${s.arch} · ${s.username}`}>{s.os} {s.arch} · {s.username}</span>
                   </div>
                   <div className="panel-row-right">
                     <span className={`status-dot ${s.status === 'active' ? 'online' : 'offline'}`} />
@@ -371,23 +376,25 @@ export function Dashboard() {
               ))
             )}
           </div>
-        </div>
+        </Card>
 
-        <div className="panel-card">
-          <div className="panel-header">
-            <div>
-              <h3><ListOrdered size={16} /> 最近任务</h3>
-              <span className="chart-subtitle">最新 8 条</span>
-            </div>
+        <Card
+          className="dash-card dash-panel"
+          icon={<ListOrdered size={15} />}
+          title="最近任务"
+          subtitle="最新 8 条"
+          bodyStyle={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }}
+          actions={
             <button className="panel-more" onClick={() => navigate('/templates')}>
               全部 <ChevronRight size={14} />
             </button>
-          </div>
+          }
+        >
           <div className="panel-list">
             {loading ? (
-              <div className="panel-empty"><RefreshCw size={18} className="spin" /> 加载中...</div>
+              <SkeletonLines lines={5} />
             ) : tasks.length === 0 ? (
-              <div className="panel-empty"><ListOrdered size={18} /> 暂无任务</div>
+              <Empty icon={<ListOrdered size={26} />} title="暂无任务" desc="下发任务后会在这里显示最近 8 条" />
             ) : (
               tasks.map((t) => (
                 <div key={t.id} className="panel-row">
@@ -403,7 +410,7 @@ export function Dashboard() {
               ))
             )}
           </div>
-        </div>
+        </Card>
       </div>
 
       {/* 服务器信息条 */}

@@ -22,22 +22,23 @@ they are **not** covered by the MIT license and remain under their own terms.
 - UPX 仅作为**独立可执行文件**被调用（进程调用，非链接库），其压缩产物不受 GPL 约束；
 - UPX 对应源码可从上游获取（<https://github.com/upx/upx/releases>）；如需我们随包提供源码副本，请开 issue。
 
-## 2. 内置 BYOVD 驱动 `kgameprotect.sys`（仅 Windows，可选）
+## 2. BYOVD 驱动：本项目**不再内置任何驱动**
+
+自 v1.3.3 起发布包**不捆绑任何内核驱动**（此前的 `RTCore64.sys`、`kgameprotect.sys` 均已移除）：
+
+- `RTCore64.sys`（MSI Afterburner，CVE-2019-16098，任意内核读写）被微软易受攻击驱动黑名单与主流杀软重点标记；
+- `kgameprotect.sys`（第三方 WHQL 签名驱动）虽可用，但**内置它等于把驱动名与 IOCTL 明文写进服务端与每个载荷**——这是最稳定的静态查杀特征，同时让项目承担第三方二进制分发责任。
+
+现在改为**操作员自备**：
 
 | 项 | 说明 |
 |---|---|
-| 位置 | `drivers/kgameprotect.sys`（同时以嵌入资源形式编译进 `toserver`） |
-| 大小 / SHA-256 | 59,592 字节 / `6c1d596d18213e24f0c88d58ea7f3ca24114eded806b6198a8abc701251126ee` |
-| 签名 | Authenticode **Valid** —— `CN=Microsoft Windows Hardware Compatibility Publisher`（WHQL 认证签名），PE32+ / AMD64 |
-| 来源 | LOLDrivers 目录收录的公开样本（PR #428：*Add vulnerable kgameprotect.sys process-termination driver*） |
-| 权属 | 该驱动为**第三方厂商**（游戏反作弊驱动）作品，版权归其各自权利人；本项目仅按公开样本原样分发，未做修改 |
+| 放置位置 | 服务端 `drivers/` 或 `data/drivers/`（仓库内打包源目录为 `release/drivers/`，发布 zip 内为 `drivers/`） |
+| 元数据 | 同目录 `manifest.json` 声明 `device` / `service` / `ioctl` / `purpose`；也可在控制台「杀软对抗」页上传 .sys 并手填 |
+| 权属与合规 | 驱动由**使用者自行提供**，其版权、许可、签名有效性与合规性由使用者自行确认；本项目仅做透传与档案登记，不对其合法性背书 |
+| 校验 | 加载前请自行核对 SHA-256 与 Authenticode 签名（`signtool verify /pa /all your.sys`） |
 
-⚠️ 该驱动存在已知设计缺陷（对外暴露一个**无鉴权**的进程终止 IOCTL `0x222048`），属于 BYOVD
-（Bring Your Own Vulnerable Driver）类利用面。**只在你有授权的测试环境加载**，测完请立即在控制台
-「杀软对抗」页点「卸载驱动」。若权利人要求移除，请开 issue，我们会从仓库与后续发布包中删除。
-
-`RTCore64.sys` / `dbutil_2_3.sys` 等其它易受攻击驱动**自 v1.3.3 起不再捆绑**（曾被微软易受攻击驱动
-黑名单与主流杀软重点标记）。如需使用请自行准备并通过控制台上传。
+⚠️ 请仅在你有授权的测试环境加载驱动，测完立即在控制台卸载。
 
 ## 3. Go 模块依赖（MIT / BSD / Apache 等）
 
@@ -48,10 +49,11 @@ they are **not** covered by the MIT license and remain under their own terms.
 | 模块 | 许可 |
 |---|---|
 | `github.com/gorilla/mux`、`github.com/gorilla/websocket` | BSD-3-Clause |
-| `github.com/refraction-networking/utls`（HTTP 载荷 TLS 指纹） | BSD-3-Clause |
+| `github.com/refraction-networking/utls`（HTTP 载荷 TLS 指纹，仅植入端模板 `go.mod`） | BSD-3-Clause |
 | `github.com/Binject/go-donut`（EXE→shellcode 转换） | MIT |
 | `github.com/spf13/viper`、`cobra`、`fsnotify` | MIT |
-| `github.com/eclipse/paho.mqtt.golang`、`mochi-mqtt/server` | EPL-2.0 / MIT |
+| `github.com/eclipse/paho.mqtt.golang` | EPL-2.0 |
+| `github.com/mochi-mqtt/server/v2` | MIT |
 | `github.com/quic-go/quic-go` | MIT |
 | `golang.org/x/*`（crypto、net、sys 等） | BSD-3-Clause |
 
@@ -77,3 +79,12 @@ Slack、Discord 等）为其各自权利人的商标或注册商标，本项目�
 ---
 
 _如认为本文件遗漏了某个组件的声明，欢迎开 issue 指出，我们会尽快补充。_
+
+---
+
+## 相关文档
+
+- [LICENSE](LICENSE) — ToShell 本体许可（MIT）
+- [DISCLAIMER.md](DISCLAIMER.md) — 授权使用范围声明
+- [SECURITY.md](SECURITY.md) — 支持版本与安全 / 滥用报告渠道
+- [USAGE.md](USAGE.md) — 部署与使用说明

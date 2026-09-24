@@ -353,13 +353,12 @@ func (l *HTTPListener) handleRegisterHTTP(w http.ResponseWriter, r *http.Request
 	sess := buildSessionInfo(packet, reg, "http", l.cfg.ID, r.RemoteAddr)
 
 	if err := l.sessionMgr.Add(sess); err != nil {
-		// 重连：若此前被判 dead，本次重新上线要广播复活
-		wasDead := false
-		if existing, gerr := l.sessionMgr.Get(sessionID); gerr == nil && existing != nil {
-			wasDead = existing.Info == nil || existing.Info.Status == "dead" || existing.Info.Status == "asleep"
-		}
+		// 重连：刷新信息。无论此前是否被判 dead 都要走一次上线通知 ——
+		// 它同时负责取消待发的 session_offline（离线观察窗抑制），
+		// 重复广播由 BroadcastSessionOnline 自己按在线状态去重。
+		// 详见 tcp_listener.handleRegister 的注释。
 		l.sessionMgr.Update(sessionID, sess)
-		if wasDead && l.onSessionOnline != nil {
+		if l.onSessionOnline != nil {
 			l.onSessionOnline(sess)
 		}
 	} else if l.onSessionOnline != nil {

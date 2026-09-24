@@ -21,6 +21,49 @@
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
   --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* ── 短别名 ────────────────────────────────────────────────────────
+     历史上很多组件写的是 var(--text-dim, #9a9aab) 这种"变量没定义、只有深色兜底值"
+     的用法，导致**浅色主题下这些地方颜色是错的**。这里把两套命名都指向同一组
+     token（新代码请用 --color-*）。 */
+  --bg: var(--color-bg);
+  --bg-deep: var(--color-bg);
+  --bg-elevated: var(--color-bg-secondary);
+  --surface: var(--color-bg-secondary);
+  --surface-2: var(--color-bg-tertiary);
+  --border: var(--color-border);
+  --border-strong: var(--color-border-hover);
+  --text: var(--color-text);
+  --text-dim: var(--color-text-secondary);
+  --text-mute: var(--color-text-muted);
+  --accent: var(--color-primary);
+  --accent-hover: var(--color-primary-hover);
+  --ok: var(--color-success);
+  --warn: var(--color-warning);
+  --danger: var(--color-danger);
+  --info: var(--color-info);
+  --mono: var(--font-mono);
+
+  /* ── 间距 / 字号 / 动效标尺（新组件统一用这些，别再写魔法数字） ── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 26px;
+  --ring: 0 0 0 2px rgba(99, 102, 241, 0.45);
+  --transition: 0.15s ease;
+  --z-dropdown: 100;
+  --z-modal: 1000;
+  --z-toast: 2000;
 }
 
 [data-theme="light"] {
@@ -42,6 +85,8 @@
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
   --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
   --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1);
+  /* 浅色主题下的聚焦环（深色底用 rgba 亮色，浅色底需要更实的边） */
+  --ring: 0 0 0 2px rgba(79, 70, 229, 0.35);
 }
 
 * {
@@ -2126,4 +2171,269 @@ code, pre {
   background: rgba(59, 130, 246, 0.12);
   border-color: rgba(59, 130, 246, 0.4);
   color: #3b82f6;
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   UI 基础件（v1.3.5 新增）—— 供各页面复用，避免每处再写一遍内联样式。
+   命名前缀统一 ui-，尽量只用 token，深浅主题都正确。
+   ══════════════════════════════════════════════════════════════════════ */
+
+/* ── 焦点可见性（键盘可达性）：以前只有 :hover，没有 :focus-visible ── */
+:where(button, a, input, select, textarea, [tabindex]):focus-visible {
+  outline: none;
+  box-shadow: var(--ring);
+  border-radius: var(--radius-sm);
+}
+
+/* ── 卡片 / 面板 ── */
+.ui-card {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--sp-4);
+}
+.ui-card--tight { padding: var(--sp-3); }
+.ui-card--flush { padding: 0; overflow: hidden; }
+
+.ui-card-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: var(--sp-3);
+}
+.ui-card-title .ui-card-sub {
+  font-size: var(--fs-sm);
+  font-weight: 400;
+  color: var(--color-text-muted);
+}
+
+/* ── 可折叠分组（把塞满一屏的表单/参数按语义分组） ── */
+.ui-section {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+  margin-bottom: var(--sp-3);
+  overflow: hidden;
+}
+.ui-section-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  background: transparent;
+  border: 0;
+  color: var(--color-text);
+  font-size: var(--fs-md);
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition);
+}
+.ui-section-head:hover { background: var(--color-bg-tertiary); }
+.ui-section-head .ui-section-caret { transition: transform var(--transition); color: var(--color-text-muted); }
+.ui-section-head[aria-expanded="false"] .ui-section-caret { transform: rotate(-90deg); }
+.ui-section-head .ui-section-badge { margin-left: auto; }
+.ui-section-body { padding: 0 var(--sp-4) var(--sp-4); }
+.ui-section-desc {
+  font-size: var(--fs-sm);
+  color: var(--color-text-muted);
+  line-height: 1.7;
+  margin-bottom: var(--sp-3);
+}
+
+/* ── 徽标 / 状态点 ── */
+.ui-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: var(--fs-xs);
+  line-height: 1.7;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-tertiary);
+  white-space: nowrap;
+}
+.ui-badge--ok { color: var(--color-success); border-color: rgba(34, 197, 94, 0.4); background: rgba(34, 197, 94, 0.12); }
+.ui-badge--warn { color: var(--color-warning); border-color: rgba(245, 158, 11, 0.4); background: rgba(245, 158, 11, 0.12); }
+.ui-badge--danger { color: var(--color-danger); border-color: rgba(239, 68, 68, 0.4); background: rgba(239, 68, 68, 0.12); }
+.ui-badge--info { color: var(--color-info); border-color: rgba(59, 130, 246, 0.4); background: rgba(59, 130, 246, 0.12); }
+.ui-badge--accent { color: var(--color-primary-hover); border-color: rgba(99, 102, 241, 0.45); background: rgba(99, 102, 241, 0.14); }
+.ui-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+
+/* ── 提示条 / 风险提示（比裸 div 更醒目，也统一了配色） ── */
+.ui-callout {
+  display: flex;
+  gap: var(--sp-2);
+  padding: var(--sp-3);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-bg-tertiary);
+  font-size: var(--fs-sm);
+  line-height: 1.75;
+  color: var(--color-text-secondary);
+}
+.ui-callout--info { border-color: rgba(59, 130, 246, 0.35); background: rgba(59, 130, 246, 0.08); }
+.ui-callout--warn { border-color: rgba(245, 158, 11, 0.35); background: rgba(245, 158, 11, 0.08); }
+.ui-callout--danger { border-color: rgba(239, 68, 68, 0.35); background: rgba(239, 68, 68, 0.08); }
+.ui-callout--ok { border-color: rgba(34, 197, 94, 0.35); background: rgba(34, 197, 94, 0.08); }
+.ui-callout-title { font-weight: 600; color: var(--color-text); margin-bottom: 2px; }
+
+/* ── 表单字段（label + hint + 错误）── */
+.ui-field { display: flex; flex-direction: column; gap: var(--sp-1); min-width: 0; }
+.ui-field-label {
+  font-size: var(--fs-sm);
+  color: var(--color-text-secondary);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+}
+.ui-field-label .ui-req { color: var(--color-danger); }
+.ui-field-hint { font-size: var(--fs-xs); color: var(--color-text-muted); line-height: 1.6; }
+.ui-field-error { font-size: var(--fs-xs); color: var(--color-danger); }
+.ui-input,
+.ui-select,
+.ui-textarea {
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: var(--fs-base);
+  transition: border-color var(--transition), background var(--transition);
+}
+.ui-input:hover, .ui-select:hover, .ui-textarea:hover { border-color: var(--color-border-hover); }
+.ui-input:focus, .ui-select:focus, .ui-textarea:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--ring); }
+.ui-input:disabled, .ui-select:disabled { opacity: 0.55; cursor: not-allowed; }
+.ui-input--mono { font-family: var(--font-mono); }
+
+/* ── 开关式勾选（比裸 checkbox 更容易点中，也更整齐） ── */
+.ui-check {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-base);
+  color: var(--color-text);
+  cursor: pointer;
+  user-select: none;
+}
+.ui-check input[type="checkbox"] { width: 15px; height: 15px; accent-color: var(--color-primary); cursor: pointer; }
+.ui-check--disabled { opacity: 0.55; cursor: not-allowed; }
+
+/* ── 键盘快捷键小标签 ── */
+.ui-kbd {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  padding: 1px 5px;
+  border: 1px solid var(--color-border);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  background: var(--color-bg-tertiary);
+  color: var(--color-text-muted);
+}
+
+/* ── 空态 / 骨架屏（加载与"没有数据"不再是空白一片） ── */
+.ui-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  padding: var(--sp-8) var(--sp-4);
+  color: var(--color-text-muted);
+  text-align: center;
+  font-size: var(--fs-base);
+}
+.ui-empty-title { color: var(--color-text-secondary); font-weight: 600; }
+.ui-skeleton {
+  border-radius: var(--radius-sm);
+  background: linear-gradient(90deg, var(--color-bg-tertiary) 25%, var(--color-border) 37%, var(--color-bg-tertiary) 63%);
+  background-size: 400% 100%;
+  animation: ui-shimmer 1.4s ease infinite;
+}
+@keyframes ui-shimmer {
+  0% { background-position: 100% 50%; }
+  100% { background-position: 0 50%; }
+}
+
+/* ── 统计块（仪表盘/详情页的"标题 + 大数字"） ── */
+.ui-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--sp-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-secondary);
+}
+.ui-stat-label { font-size: var(--fs-xs); color: var(--color-text-muted); }
+.ui-stat-value { font-size: var(--fs-xl); font-weight: 650; font-family: var(--font-mono); }
+.ui-stat-value--ok { color: var(--color-success); }
+.ui-stat-value--warn { color: var(--color-warning); }
+.ui-stat-value--danger { color: var(--color-danger); }
+
+/* ── 工具条（一组按钮/筛选靠右对齐，页面统一） ── */
+.ui-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  flex-wrap: wrap;
+  margin-bottom: var(--sp-3);
+}
+.ui-toolbar .ui-spacer { flex: 1; }
+
+/* ── 键值对列表（详情面板里"字段: 值"对齐展示） ── */
+.ui-kv { display: grid; grid-template-columns: max-content 1fr; gap: var(--sp-1) var(--sp-4); font-size: var(--fs-base); }
+.ui-kv dt { color: var(--color-text-muted); }
+.ui-kv dd { color: var(--color-text); word-break: break-all; }
+
+.ui-divider { height: 1px; background: var(--color-border); margin: var(--sp-3) 0; border: 0; }
+
+/* ── 代码/命令块（一键上线命令、签名者、错误输出都用它） ── */
+.ui-code {
+  display: block;
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-bg);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-text-secondary);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ── 减少动效偏好（prefers-reduced-motion）────────────────────────────────
+   ⚠️ 这里踩过一个坑，务必别改回去：
+   最初写的是
+     * { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+   少了 `animation-iteration-count: 1`，于是**所有 infinite 动画被压成 0.01ms 还继续无限循环**
+   → 每秒循环十万次。用户实测表现：
+     - xterm 的光标闪烁（xterm v6 用 CSS 实现：`animation: blink_xxx 1s step-end infinite`）
+       **疯狂闪烁**；
+     - 右上角"在线"指示点（`livePulse`/`pulse` 类无限动画）**爆闪**。
+   现在的做法：只收敛一次性过渡；无限动画若要去掉，**逐个点名**并显式 `animation: none`，
+   而对于"表达正在进行"的动画（加载 spinner、终端光标）保持原样。 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  /* 装饰性无限动画：直接停掉（不是压时长） */
+  .fade-in,
+  .slide-in,
+  .ui-skeleton,
+  .workflow-status-dot.running,
+  .live-dot,
+  .task-state.run,
+  .pb-step-row.st-running .pb-step-dot {
+    animation: none !important;
+  }
 }

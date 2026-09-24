@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Monitor, FolderOpen, Cpu, Network, Terminal, Upload, Shield, Camera, KeyRound, ShieldCheck, Zap, MonitorPlay, Share2, X } from 'lucide-react'
+import { useState, useEffect, useRef } from 'react'
+import { Monitor, FolderOpen, Cpu, Network, Terminal, Upload, Shield, Camera, KeyRound, ShieldCheck, Zap, MonitorPlay, Share2, X, MoreHorizontal } from 'lucide-react'
 import { format } from 'date-fns'
 import type { Session } from '../types'
 import { FileManager } from './FileManager'
@@ -14,6 +14,8 @@ import { FilelessExecPanel } from './FilelessExecPanel'
 import { ScreenStreamPanel } from './ScreenStreamPanel'
 import { RelayPanel } from './RelayPanel'
 import { pluginApi, sessionApi } from '../api'
+import { Badge } from './ui'
+import './SessionDetail.css'
 
 export type DetailTab = 'info' | 'files' | 'process' | 'injection' | 'shell' | 'bof' | 'persistence' | 'screenshot' | 'credentials' | 'av' | 'fileless' | 'screenstream' | 'relay'
 
@@ -38,8 +40,26 @@ const TABS: { key: DetailTab; icon: React.ReactNode; label: string }[] = [
   { key: 'relay', icon: <Share2 size={14} />, label: '中继' },
 ]
 
+// 常驻显示的 tab（高频：看信息、传文件、看进程、开 Shell、跑内存执行）
+const PINNED_TABS: DetailTab[] = ['info', 'files', 'process', 'shell', 'fileless']
+// 「更多」下拉里的分组顺序（只影响收纳后的展示顺序，不改任何功能）
+const TAB_GROUPS: { title: string; keys: DetailTab[] }[] = [
+  { title: '执行与注入', keys: ['injection', 'bof'] },
+  { title: '环境与对抗', keys: ['av', 'credentials', 'persistence'] },
+  { title: '屏幕', keys: ['screenshot', 'screenstream'] },
+  { title: '网络', keys: ['relay'] },
+]
+
 export function SessionDetail({ session, onClose }: SessionDetailProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>('info')
+  // Shell 面板是否已经挂载过。挂载后**常驻不卸载**，切 tab 只隐藏（见下方渲染处）。
+  const [shellMounted, setShellMounted] = useState(false)
+  // 「更多」下拉的展开状态（tab 太多时收纳用）
+  const [moreOpen, setMoreOpen] = useState(false)
+  // 下拉用 fixed 定位：按按钮实测坐标计算（top / 距右侧距离），避免被 tab 条的 overflow 裁掉
+  const [menuPos, setMenuPos] = useState<{ top: number; right: number }>({ top: 0, right: 0 })
+  const tabsRef = useRef<HTMLDivElement | null>(null)
+  const moreBtnRef = useRef<HTMLButtonElement | null>(null)
   // 服务端能力清单（tabs 白名单）；未加载时用本地 OS 推导兜底
   const [capTabs, setCapTabs] = useState<Record<string, boolean> | null>(null)
 
@@ -84,35 +104,156 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
   // activeTab 被过滤掉时自动回退到 'info'（避免渲染不存在的面板）
   const effectiveTab = availableTabs.some((t) => t.key === activeTab) ? activeTab : 'info'
 
+  // 首次切到 Shell 时挂载终端，之后一直留着（只隐藏），避免切 tab 把会话打断：
+  // 终端卸载 → WebSocket 关闭 → 服务端 defer CloseShell → **靶机上的 shell 进程被真实杀掉**。
+  useEffect(() => {
+    if (effectiveTab === 'shell') setShellMounted(true)
+  }, [effectiveTab])
+
+  // PTY 后端（Linux/macOS bash -i）自带 readline 回显与行编辑，输入必须裸送；
+  // Windows 走 cmd.exe /Q 管道无回显，仍需前端本地回显。详见 Terminal.tsx 的 remoteEcho。
+  const shellRemoteEcho = isLinux || isMac
+
+  // 常驻 tab + 收纳 tab：**当前选中的 tab 永远放进可见区**（否则切到"更多"里的功能后
+  // 看不出自己在哪一页）。菜单里仍然列出全部被收纳项（当前项高亮），计数不随选择变化。
+  const pinnedSet = new Set<DetailTab>(PINNED_TABS)
+  const overflowTabs = availableTabs.filter((t) => !pinnedSet.has(t.key))
+  const visibleTabs = availableTabs.filter(
+    (t) => pinnedSet.has(t.key) || t.key === effectiveTab,
+  )
+
+  // 点空白处 / Esc 关闭「更多」下拉；打开与窗口变化时重算下拉坐标
+  useEffect(() => {
+    if (!moreOpen) return
+    const place = () => {
+      const el = moreBtnRef.current
+      if (!el) return
+      const r = el.getBoundingClientRect()
+      setMenuPos({ top: r.bottom + 6, right: Math.max(8, window.innerWidth - r.right) })
+    }
+    place()
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node
+      // 点在按钮或菜单里都不关闭（菜单项自己会关）
+      if (moreBtnRef.current?.contains(t)) return
+      if (tabsRef.current && tabsRef.current.querySelector('.detail-tabs-menu')?.contains(t)) return
+      setMoreOpen(false)
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setMoreOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    window.addEventListener('resize', place)
+    window.addEventListener('scroll', place, true)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+      window.removeEventListener('resize', place)
+      window.removeEventListener('scroll', place, true)
+    }
+  }, [moreOpen])
+
+  // Esc 关闭详情面板（与「更多」下拉的 Esc 不冲突：下拉关闭后事件仍冒泡，这里只在没有下拉时生效）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && !moreOpen) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [moreOpen, onClose])
+
   return (
     <div className="session-detail-panel">
       <div className="detail-header">
-        <div className="detail-title">
-          <Monitor size={20} />
-          <h3>{session.hostname}</h3>
-          <span
-            className={`status-badge ${
-              getStatusBadge(session.status || '').class
-            }`}
-          >
-            {getStatusBadge(session.status || '').label}
-          </span>
+        <div style={{ minWidth: 0 }}>
+          <div className="detail-title">
+            <Monitor size={20} />
+            <h3>{session.hostname}</h3>
+            <Badge tone={session.status === 'active' ? 'ok' : session.status === 'sleep' ? 'warn' : 'danger'}>
+              <span className="ui-dot" />
+              {getStatusBadge(session.status || '').label}
+            </Badge>
+          </div>
+          {/* 次要信息：面板顶部就能看出"这是哪台机器、什么系统、地址是什么" */}
+          <div className="detail-meta">
+            <span>{session.os || '未知系统'}{session.arch ? ` / ${session.arch}` : ''}</span>
+            {(session as { remote_addr?: string }).remote_addr && (
+              <span>· {(session as { remote_addr?: string }).remote_addr}</span>
+            )}
+            {session.process_name && <span>· {session.process_name}</span>}
+            {session.username && <span>· {session.username}</span>}
+          </div>
         </div>
-        <button className="close-btn" onClick={onClose}>
+        <button className="close-btn" onClick={onClose} title="关闭详情（Esc）">
           <X size={18} />
         </button>
       </div>
 
-      <div className="detail-tabs">
-        {availableTabs.map((tab) => (
+      {/* tab 条：常用 tab 固定显示，其余收进「更多」下拉（按功能分组）。
+          Windows 会话最多 13 个 tab，窄面板里单行横滚等于"把 tab 藏起来"（看不出还能滚），
+          所以这里改成显式收纳：当前选中的 tab 永远出现在可见区。 */}
+      <div className="detail-tabs" ref={tabsRef}>
+        {visibleTabs.map((tab) => (
           <button
             key={tab.key}
             className={`tab-btn ${effectiveTab === tab.key ? 'active' : ''}`}
             onClick={() => setActiveTab(tab.key)}
+            title={tab.label}
           >
             {tab.icon} {tab.label}
           </button>
         ))}
+
+        {overflowTabs.length > 0 && (
+          <div className="detail-tabs-more">
+            <button
+              ref={moreBtnRef}
+              className={`tab-btn tab-more-btn ${overflowTabs.some((t) => t.key === effectiveTab) ? 'active' : ''}`}
+              onClick={() => setMoreOpen((v) => !v)}
+              title="更多功能"
+              aria-expanded={moreOpen}
+            >
+              <MoreHorizontal size={14} /> 更多
+              <span className="tab-more-count">{overflowTabs.length}</span>
+            </button>
+            {moreOpen && (
+              <div
+                className="detail-tabs-menu"
+                role="menu"
+                /* fixed 定位 + 按按钮实测坐标计算：tab 条本身有 overflow（窄屏滚动兜底），
+                   绝对定位的下拉会被它裁掉（用户反馈"更多点不出来"就是这个原因）。
+                   fixed 定位不受任何祖先 overflow 影响。 */
+                style={{ top: menuPos.top, right: menuPos.right }}
+              >
+                {TAB_GROUPS.map((group) => {
+                  const items = group.keys
+                    .map((k) => overflowTabs.find((t) => t.key === k))
+                    .filter((t): t is (typeof overflowTabs)[number] => !!t)
+                  if (items.length === 0) return null
+                  return (
+                    <div key={group.title} className="detail-tabs-menu-group">
+                      <div className="detail-tabs-menu-title">{group.title}</div>
+                      {items.map((tab) => (
+                        <button
+                          key={tab.key}
+                          className={`detail-tabs-menu-item ${effectiveTab === tab.key ? 'active' : ''}`}
+                          onClick={() => {
+                            setActiveTab(tab.key)
+                            setMoreOpen(false)
+                          }}
+                          role="menuitem"
+                        >
+                          {tab.icon} {tab.label}
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="detail-content">
@@ -120,14 +261,27 @@ export function SessionDetail({ session, onClose }: SessionDetailProps) {
         {effectiveTab === 'files' && <FileManager session={session} />}
         {effectiveTab === 'process' && <ProcessList session={session} />}
         {effectiveTab === 'injection' && <ProcessInjectionTab session={session} />}
-        {effectiveTab === 'shell' && (
-          <TerminalComponent
-            wsPath={`/api/v1/sessions/${session.id}/shell`}
-            title={`Shell - ${session.hostname}`}
-            titleHighlight={session.hostname}
-            sessionId={session.id}
-            showNewTab
-          />
+        {/* Shell 终端常驻挂载：切到别的 tab 只隐藏、不卸载。
+            卸载会关闭 WebSocket，而服务端在 WS 关闭时 defer CloseShell(sessionID)，
+            那是真实杀掉靶机上的 shell 进程——切回来只能重开一个新 shell，
+            命令行历史与正在跑的程序全丢。
+            display:contents 让包装层不参与布局，终端仍按 .detail-content 的直接子元素排版。 */}
+        {shellMounted && (
+          <div
+            className="shell-pane"
+            style={{ display: effectiveTab === 'shell' ? 'contents' : 'none' }}
+            aria-hidden={effectiveTab !== 'shell'}
+          >
+            <TerminalComponent
+              wsPath={`/api/v1/sessions/${session.id}/shell`}
+              title={`Shell - ${session.hostname}`}
+              titleHighlight={session.hostname}
+              sessionId={session.id}
+              showNewTab
+              visible={effectiveTab === 'shell'}
+              remoteEcho={shellRemoteEcho}
+            />
+          </div>
         )}
         {effectiveTab === 'bof' && <SessionPluginTab session={session} />}
         {effectiveTab === 'persistence' && <PersistencePanel session={session} />}

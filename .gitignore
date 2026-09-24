@@ -51,6 +51,12 @@ dashboard*.png
 .DS_Store
 Thumbs.db
 
+# ── 编辑器 / IDE 本地配置 ──
+# JetBrains 的 .idea/.gitignore 只忽略 workspace.xml，其余（.iml/encodings.xml/
+# modules.xml/vcs.xml 等）仍是未跟踪状态，会一直出现在 git status 里。
+# 这些是每个开发者本地的 IDE 配置，不入库。
+.idea/
+
 # ── 运行时数据目录：仅跟踪"预设文件"，运行时产物（db/上传/传输/uac载荷等）不提交 ──
 # 保留目录结构与必需资产：data/av_fingerprints.json（杀软指纹库，服务端必需）、
 # data/uploads / data/transfers / data/uac / data/tools / data/backup 目录占位。

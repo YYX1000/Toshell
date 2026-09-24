@@ -76,11 +76,10 @@ jobs:
         #   · 文档相对链接有效（含包内 README 的包内布局链接）
         run: go run ./cmd/devtool check
 
-      - name: Run unit tests (non-embedded)
-        # 除既有基础包外，跑本版新增的纯逻辑测试：
-        #   builder：构建标签矩阵 / 启动延迟模板渲染 / 默认模板不得含进程枚举 / PE 预检
-        #   drivers：manifest sha256 比对、自检结论合并、JSON 字段、列表携带自检
-        # 这些测试用桩函数替代 WinVerifyTrust，不依赖本机证书链与联网，Linux runner 可跑。
-        run: |
-          go test ./internal/common/... ./internal/server/config/... \
-                  ./internal/server/builder/... ./internal/server/drivers/...
+      - name: Run unit tests
+        # 全量测试（原先只跑 4 个包，而仓库有 11 个包带测试 —— 7 个包没有任何门禁）。
+        # 这个缺口曾经真实存在：internal/server/api 的 3 个用例长期失败却无人发现
+        #   · loader 链测试助手把 mshta 骨架里的 `-enc <注入器Base64>` 占位符当载荷解码
+        #   · shellcode 未签名的落地建议漏了「内存加载」这个术语（已补齐）
+        # 两处已修，故这里改为 ./...；新增测试包不再需要单独登记。
+        run: go test ./...

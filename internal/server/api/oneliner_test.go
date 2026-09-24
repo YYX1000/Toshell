@@ -155,11 +155,13 @@ func TestOneLinerVariants(t *testing.T) {
 // 非 -enc 命令原样返回。
 func decodeEncCommand(t *testing.T, cmd string) string {
 	t.Helper()
-	idx := strings.LastIndex(cmd, "-enc ")
-	if idx < 0 {
+	payload := findEncPayload(cmd)
+	if payload == "" {
+		// 该变体没有真实的 -enc 载荷（如 mshta 骨架里只写了 `-enc <注入器Base64>`
+		// 占位符，等操作员自己填）——原样返回，让特征断言直接查这段骨架文本。
 		return cmd
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(cmd[idx+len("-enc "):]))
+	raw, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		t.Fatalf("decode -enc payload: %v", err)
 	}
@@ -168,6 +170,48 @@ func decodeEncCommand(t *testing.T, cmd string) string {
 		u16 = append(u16, uint16(raw[i])|uint16(raw[i+1])<<8)
 	}
 	return string(utf16.Decode(u16))
+}
+
+// findEncPayload 返回第一个后面确实跟着 base64 令牌的 -enc 载荷；没有则返回空串。
+//
+// 不能简单取"最后一个 -enc"：mshta 骨架的正文里会出现 `-enc <注入器Base64>` 这样的
+// 占位说明（那是刻意留的操作员填充点，不是载荷），按位置取会拿到占位符而解码失败。
+// 这里按"令牌内容是不是合法 base64"来判定，与出现位置无关。
+func findEncPayload(cmd string) string {
+	const marker = "-enc "
+	rest := cmd
+	for {
+		i := strings.Index(rest, marker)
+		if i < 0 {
+			return ""
+		}
+		tok := rest[i+len(marker):]
+		// 载荷到下一个分隔符为止（骨架里可能是 '…' / "…" / )… / >… 等收尾）
+		if j := strings.IndexAny(tok, " \t\r\n\"'`)>,;"); j >= 0 {
+			tok = tok[:j]
+		}
+		if isBase64Token(tok) {
+			return tok
+		}
+		rest = rest[i+len(marker):]
+	}
+}
+
+// isBase64Token 判断是否为一段像样的 base64 载荷。
+// 长度下界是为了避免把命令里的短单词误当成载荷。
+func isBase64Token(s string) bool {
+	if len(s) < 16 {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z',
+			r >= '0' && r <= '9', r == '+', r == '/', r == '=':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func TestSupportsOneLiner(t *testing.T) {

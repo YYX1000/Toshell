@@ -61,13 +61,14 @@ const usage = `ToShell 开发/发版管线工具
   devtool build --no-web     同上，但跳过前端构建（沿用 cmd/server/webdist 现有产物）
   devtool sync               仅同步植入端模板到 release/implant{,_c}/
   devtool package [选项]     组装发布包（zip + checksums.txt）
-  devtool check              校验不变量（模板单源、配置镜像、打包指向、文档链接）
+  devtool check              校验不变量（模板单源、生成物与源一致、配置镜像、
+                             打包与发版门禁指向同一模板源、vite 配置遮蔽）
   devtool help               显示本帮助
 
 package 选项:
   --target goos/goarch       只打一个平台，如 linux/amd64（默认 --all）
   --all                      打全部 6 个平台
-  --version X.Y.Z            写入二进制的版本号（默认取 git 描述，回退到 go.mod 前的主版本）
+  --version X.Y.Z            写入二进制的版本号（默认取最近的 git tag，取不到时为 dev）
   --out DIR                  输出目录（默认 release/release-zips）
   --keep-binaries            保留各平台中间二进制（默认打包后删除）
 
